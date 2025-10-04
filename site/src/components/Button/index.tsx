@@ -34,7 +34,7 @@ export const MyButton = (props: ButtonProps) => {
     'whitespace-nowrap',
     !disabled && 'hover:shadow-lg hover:shadow-slate-500/40',
     nomargin ? 'm-0' : 'm-2',
-    'rounded-l-full rounded-r-full',
+    className?.indexOf('rounded') === -1 ? 'rounded-l-full rounded-r-full' : '',
     'py-2 px-6',
     props.size === 'sm' ? 'leading-[1.1875rem]' : 'text-sm',
     // getVariant(type, disabled),

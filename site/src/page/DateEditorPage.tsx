@@ -20,16 +20,16 @@ export const DateEditorPage = () => {
 
   return (
     <div className="flex flex-col items-center min-h-screen bg-gray-800">
-      <h1 className="text-4xl font-bold mb-4">{date}</h1>
+      <h1 className="text-4xl font-bold my-6">{date}</h1>
       <div className="flex items-center mb-4">
         <input
           type="date"
-          className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-2 rounded-xl"
+          className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-4 rounded-xl"
           value={newDate.toISOString().split('T')[0]}
           onChange={(e) => setNewDate(new Date(e.target.value))}
         />
         <Link to={`/editor/${newDate.toISOString().split('T')[0]}`}>
-          <Button>Go to Date</Button>
+          <Button className="rounded-xl">Go to Date</Button>
         </Link>
       </div>
       <DateEditor key={currentDateString} date={dateObject} />
