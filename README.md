@@ -24,7 +24,10 @@ cargo install --path .
 # Use today's date
 time-tracking-cli
 
-# Specify a date
+# Specify a date (positional argument)
+time-tracking-cli 2025-10-03
+
+# Specify a date (using flag)
 time-tracking-cli --date 2025-10-03
 time-tracking-cli -d 2025-10-03
 ```

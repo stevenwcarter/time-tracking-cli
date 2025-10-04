@@ -14,13 +14,19 @@ struct Args {
     /// Date in YYYY-MM-DD format (defaults to today)
     #[arg(short, long)]
     date: Option<String>,
+    
+    /// Date as a positional argument in YYYY-MM-DD format
+    #[arg(value_name = "DATE")]
+    positional_date: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     
-    // Determine the date to use
-    let date = match args.date {
+    // Determine the date to use - prioritize flag over positional, then default to today
+    let date_str = args.date.or(args.positional_date);
+    
+    let date = match date_str {
         Some(date_str) => {
             // Parse the provided date
             NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
