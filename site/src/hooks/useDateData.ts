@@ -1,9 +1,17 @@
 import { useMutation, useQuery } from '@apollo/client';
-import { FILE_CONTENT_FOR_DATE_QUERY, UPDATE_FILE_CONTENT_FOR_DATE_MUTATION } from './queries';
+import {
+  FILE_CONTENT_FOR_DATE_QUERY,
+  GET_DAY_DATA_FOR_DATE_QUERY,
+  UPDATE_FILE_CONTENT_FOR_DATE_MUTATION,
+} from './queries';
 
 export const useDateData = (date: Date) => {
   const dateString = date.toISOString().split('T')[0];
   const { data } = useQuery(FILE_CONTENT_FOR_DATE_QUERY, {
+    variables: { date: dateString },
+    skip: !date,
+  });
+  const { data: parsedData } = useQuery(GET_DAY_DATA_FOR_DATE_QUERY, {
     variables: { date: dateString },
     skip: !date,
   });
@@ -12,9 +20,16 @@ export const useDateData = (date: Date) => {
   const updater = (newContent: string) => {
     updateDateData({
       variables: { date: dateString, content: newContent },
-      refetchQueries: [{ query: FILE_CONTENT_FOR_DATE_QUERY, variables: { date: dateString } }],
+      refetchQueries: [
+        { query: FILE_CONTENT_FOR_DATE_QUERY, variables: { date: dateString } },
+        { query: GET_DAY_DATA_FOR_DATE_QUERY, variables: { date: dateString } },
+      ],
     }).catch(console.error);
   };
 
-  return [data?.fileContentForDate || null, updater];
+  return {
+    content: data?.fileContentForDate || null,
+    parsedData: parsedData?.dataForDate || null,
+    updater,
+  };
 };
