@@ -5,6 +5,10 @@ pub mod file_utils;
 pub mod time_utils;
 
 #[cfg(feature = "webapp")]
+pub mod context;
+#[cfg(feature = "webapp")]
+pub mod graphql;
+#[cfg(feature = "webapp")]
 pub mod web;
 
 pub use config::Config;

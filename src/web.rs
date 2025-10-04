@@ -1,20 +1,34 @@
-use axum::{
-    Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{Html, Json},
-    routing::get,
+use crate::{
+    context::GraphQLContext,
+    graphql::{Schema, create_schema},
 };
+use axum::{
+    Extension, Router,
+    extract::{Path, Query, Request, State},
+    http::{HeaderValue, StatusCode, header},
+    middleware::{self, Next},
+    response::{Html, Json, Response},
+    routing::{MethodFilter, get, on},
+};
+use axum_embed::{FallbackBehavior, ServeEmbed};
 use chrono::{Local, NaiveDate};
+use juniper::GraphQLObject;
+use juniper_axum::{extract::JuniperRequest, graphiql, playground, response::JuniperResponse};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tower_http::cors::CorsLayer;
+use std::{collections::HashMap, sync::Arc};
+use tower::ServiceBuilder;
 use tower_http::services::ServeDir;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
 use crate::{get_time_tracking_dir_with_override, get_week_dates, parse_weekday};
 
-#[derive(Clone)]
-struct AppState {
+#[derive(RustEmbed, Clone)]
+#[folder = "site/build/"]
+struct SiteAssets;
+
+#[derive(Clone, Default)]
+pub struct AppState {
     data_directory: Option<String>,
 }
 
@@ -29,8 +43,8 @@ struct WeekQuery {
     week_start_day: Option<String>,
 }
 
-#[derive(Serialize)]
-struct DayData {
+#[derive(Debug, Serialize, Deserialize, GraphQLObject)]
+pub struct DayData {
     date: String,
     total_hours: f64,
     dead_time_hours: f64,
@@ -40,7 +54,21 @@ struct DayData {
     end_time: Option<String>,
 }
 
-#[derive(Serialize)]
+impl DayData {
+    fn empty(date: NaiveDate) -> Self {
+        DayData {
+            date: date.format("%Y-%m-%d").to_string(),
+            total_hours: 0.0,
+            dead_time_hours: 0.0,
+            projects: vec![],
+            warnings: vec![],
+            start_time: None,
+            end_time: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, GraphQLObject)]
 struct ProjectData {
     name: String,
     total_hours: f64,
@@ -62,15 +90,49 @@ pub async fn run_server(
     data_directory: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState { data_directory };
+    let context = GraphQLContext::new(state.clone());
+    let qm_schema = create_schema();
+
+    let middleware = ServiceBuilder::new().layer(CompressionLayer::new());
+    let graphql_routes = Router::new()
+        .route(
+            "/",
+            on(MethodFilter::GET.or(MethodFilter::POST), custom_graphql),
+        )
+        .route(
+            "/graphiql",
+            get(graphiql("/graphql", "/graphql/subscriptions")),
+        )
+        .route(
+            "/playground",
+            get(playground("/graphql", "/graphql/subscriptions")),
+        )
+        .layer(Extension(context.clone()))
+        .layer(Extension(Arc::new(qm_schema)))
+        .layer(middleware.clone());
+
+    let serve_assets = ServeEmbed::<SiteAssets>::with_parameters(
+        Some("/index.html".to_string()),
+        FallbackBehavior::Ok,
+        None,
+    );
+
+    let fallback_serve_assets = serve_assets.clone();
 
     let app = Router::new()
+        .route_service("/assets/{*uri}", serve_assets)
+        .layer(middleware::from_fn(set_static_cache_control))
         .route("/", get(serve_index))
         .route("/api/day", get(get_day_data))
-        .route("/api/day/:date", get(get_day_data_by_date))
+        .route("/api/day/{date}", get(get_day_data_by_date))
         .route("/api/week", get(get_week_data))
-        .route("/api/week/:date", get(get_week_data_by_date))
+        .route("/api/week/{date}", get(get_week_data_by_date))
+        .nest("/graphql", graphql_routes)
         .nest_service("/static", ServeDir::new("static"))
+        .fallback_service(fallback_serve_assets)
         .layer(CorsLayer::permissive())
+        .layer(Extension(context))
+        .layer(middleware)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
@@ -84,6 +146,14 @@ pub async fn run_server(
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn custom_graphql(
+    Extension(schema): Extension<Arc<Schema>>,
+    Extension(context): Extension<GraphQLContext>,
+    JuniperRequest(request): JuniperRequest,
+) -> JuniperResponse {
+    JuniperResponse(request.execute(&schema, &context).await)
 }
 
 async fn serve_index() -> Html<&'static str> {
@@ -101,7 +171,8 @@ async fn get_day_data(
         None => Local::now().date_naive(),
     };
 
-    get_day_data_impl(date, &state).await
+    let data = get_day_data_impl(date, &state).await?;
+    Ok(Json(data))
 }
 
 async fn get_day_data_by_date(
@@ -111,16 +182,17 @@ async fn get_day_data_by_date(
     let date =
         NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    get_day_data_impl(date, &state).await
+    let data = get_day_data_impl(date, &state).await?;
+    Ok(Json(data))
 }
 
-async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<Json<DayData>, StatusCode> {
+pub async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<DayData, StatusCode> {
     let time_tracking_dir = get_time_tracking_dir_with_override(state.data_directory.as_deref())
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
 
     if !file_path.exists() {
-        return Ok(Json(DayData {
+        return Ok(DayData {
             date: date.format("%Y-%m-%d").to_string(),
             total_hours: 0.0,
             dead_time_hours: 0.0,
@@ -128,7 +200,7 @@ async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<Json<Day
             warnings: vec![],
             start_time: None,
             end_time: None,
-        }));
+        });
     }
 
     let content =
@@ -150,7 +222,7 @@ async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<Json<Day
     let end_time = data.formatted_end_time();
     let warnings = data.warnings.clone();
 
-    Ok(Json(DayData {
+    Ok(DayData {
         date: date.format("%Y-%m-%d").to_string(),
         total_hours: data.total_minutes as f64 / 60.0,
         dead_time_hours: data.dead_time_minutes as f64 / 60.0,
@@ -158,7 +230,7 @@ async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<Json<Day
         warnings,
         start_time: Some(start_time),
         end_time: Some(end_time),
-    }))
+    })
 }
 
 async fn get_week_data(
@@ -205,7 +277,7 @@ async fn get_week_data_impl(
 
     for day_date in &week_dates {
         match get_day_data_impl(*day_date, state).await {
-            Ok(Json(day_data)) => {
+            Ok(day_data) => {
                 total_week_hours += day_data.total_hours;
                 total_dead_hours += day_data.dead_time_hours;
 
@@ -218,15 +290,7 @@ async fn get_week_data_impl(
             }
             Err(_) => {
                 // If we can't get day data, add an empty day
-                days.push(DayData {
-                    date: day_date.format("%Y-%m-%d").to_string(),
-                    total_hours: 0.0,
-                    dead_time_hours: 0.0,
-                    projects: vec![],
-                    warnings: vec![],
-                    start_time: None,
-                    end_time: None,
-                });
+                days.push(DayData::empty(*day_date));
             }
         }
     }
@@ -239,4 +303,13 @@ async fn get_week_data_impl(
         days,
         projects: week_projects,
     }))
+}
+
+async fn set_static_cache_control(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000"),
+    );
+    response
 }

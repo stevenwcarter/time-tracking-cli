@@ -5,7 +5,18 @@ edition = "2024"
 
 [features]
 default = ["webapp"]
-webapp = ["axum", "tokio", "tower", "tower-http", "serde_json"]
+webapp = [
+  "axum",
+  "tokio",
+  "tower",
+  "tower-http",
+  "serde_json",
+  "juniper",
+  "juniper_axum",
+  "juniper_graphql_ws",
+  "rust-embed",
+  "axum-embed",
+]
 
 [[bin]]
 name = "ttcli"
@@ -21,11 +32,37 @@ toml = "0.8"
 dotenvy = "0.15.7"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.20"
+futures = "0.3"
+anyhow = "1.0.100"
 
 # Web server dependencies (optional, behind webapp feature)
-axum = { version = "0.7", optional = true }
+axum = { version = "0.8", optional = true }
 tokio = { version = "1.0", features = ["full"], optional = true }
-tower = { version = "0.4", optional = true }
-tower-http = { version = "0.5", features = ["fs", "cors"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = [
+  "fs",
+  "cors",
+  "compression-gzip",
+  "compression-zstd",
+  "compression-deflate",
+  "full",
+], optional = true }
 serde_json = { version = "1.0", optional = true }
-futures = "0.3"
+juniper_graphql_ws = { git = "https://github.com/graphql-rust/juniper", features = [
+  "graphql-transport-ws",
+], optional = true }
+juniper = { git = "https://github.com/graphql-rust/juniper", features = [
+  "chrono",
+  "bson",
+], default-features = false, optional = true }
+juniper_axum = { git = "https://github.com/graphql-rust/juniper", features = [
+  "subscriptions",
+], optional = true }
+rust-embed = { version = "8.7.2", features = [
+  "axum",
+  "axum-ex",
+  "compression",
+  "debug-embed",
+  "tokio",
+], optional = true }
+axum-embed = { version = "0.1.0", optional = true }
