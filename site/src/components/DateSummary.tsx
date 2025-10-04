@@ -33,8 +33,12 @@ export const DateSummary = (props: { parsedData: any }) => {
       <h3 className="text-xl font-semibold mb-2">Projects:</h3>
       {parsedData.projects.map((project: any) => (
         <div key={project.name} className="mb-4">
-          <p className="font-semibold">{project.name}</p>
-          <p>Total Hours: {project.totalHours}</p>
+          <div className="font-semibold flex text-lg">
+            {project.name}
+            <div className="text-sm ml-2 self-center">
+              ({project.totalHours} {project.totalHours === 1 ? 'hour' : 'hours'})
+            </div>
+          </div>
           <ul className="list-disc list-inside">
             {project.notes.map((note: string, index: number) => (
               <li key={index}>{note}</li>

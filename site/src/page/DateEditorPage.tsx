@@ -19,7 +19,7 @@ export const DateEditorPage = () => {
   const currentDateString = dateObject.toISOString().split('T')[0];
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-800">
+    <div className="flex flex-col items-center min-h-screen bg-gray-800">
       <h1 className="text-4xl font-bold mb-4">{date}</h1>
       <div className="flex items-center mb-4">
         <input
