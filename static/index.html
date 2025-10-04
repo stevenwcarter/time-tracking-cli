@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Time Tracking Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        input, select, button {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .summary-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .summary-card h3 {
+            margin: 0 0 10px 0;
+            color: #495057;
+        }
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .projects {
+            margin-bottom: 30px;
+        }
+        .project {
+            background: #fff;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+        .project-header {
+            display: flex;
+            justify-content: between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .project-name {
+            font-weight: bold;
+            color: #495057;
+        }
+        .project-time {
+            color: #007bff;
+            font-weight: bold;
+        }
+        .project-notes {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .project-notes li {
+            padding: 2px 0;
+            color: #6c757d;
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⏱️ Time Tracking Dashboard</h1>
+            <p>View and analyze your time tracking data</p>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="date">Date:</label>
+                <input type="date" id="date" value="">
+            </div>
+            <div class="control-group">
+                <label for="view">View:</label>
+                <select id="view">
+                    <option value="day">Single Day</option>
+                    <option value="week">Weekly Summary</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <label>&nbsp;</label>
+                <button onclick="loadData()">Load Data</button>
+            </div>
+        </div>
+
+        <div id="content">
+            <div class="loading">Select a date and view type to load your time tracking data</div>
+        </div>
+    </div>
+
+    <script>
+        // Set today's date as default
+        document.getElementById('date').value = new Date().toISOString().split('T')[0];
+
+        async function loadData() {
+            const date = document.getElementById('date').value;
+            const view = document.getElementById('view').value;
+            const content = document.getElementById('content');
+
+            if (!date) {
+                content.innerHTML = '<div class="error">Please select a date</div>';
+                return;
+            }
+
+            content.innerHTML = '<div class="loading">Loading...</div>';
+
+            try {
+                if (view === 'day') {
+                    await loadDayData(date);
+                } else {
+                    await loadWeekData(date);
+                }
+            } catch (error) {
+                content.innerHTML = `<div class="error">Error loading data: ${error.message}</div>`;
+            }
+        }
+
+        async function loadDayData(date) {
+            const response = await fetch(`/api/day/${date}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const data = await response.json();
+            renderDayData(data);
+        }
+
+        async function loadWeekData(date) {
+            const response = await fetch(`/api/week/${date}`);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const data = await response.json();
+            renderWeekData(data);
+        }
+
+        function renderDayData(data) {
+            const content = document.getElementById('content');
+            
+            let html = `
+                <div class="summary">
+                    <div class="summary-card">
+                        <h3>Total Time</h3>
+                        <div class="value">${data.total_hours.toFixed(2)}h</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Dead Time</h3>
+                        <div class="value">${data.dead_time_hours.toFixed(2)}h</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Start Time</h3>
+                        <div class="value">${data.start_time || 'N/A'}</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>End Time</h3>
+                        <div class="value">${data.end_time || 'N/A'}</div>
+                    </div>
+                </div>
+            `;
+
+            if (data.warnings && data.warnings.length > 0) {
+                html += '<div class="error">Warnings:<ul>';
+                data.warnings.forEach(warning => {
+                    html += `<li>${warning}</li>`;
+                });
+                html += '</ul></div>';
+            }
+
+            if (data.projects && data.projects.length > 0) {
+                html += '<div class="projects"><h2>Projects</h2>';
+                data.projects.forEach(project => {
+                    html += `
+                        <div class="project">
+                            <div class="project-header">
+                                <span class="project-name">${project.name}</span>
+                                <span class="project-time">${project.total_hours.toFixed(2)}h</span>
+                            </div>
+                    `;
+                    if (project.notes && project.notes.length > 0) {
+                        html += '<ul class="project-notes">';
+                        project.notes.forEach(note => {
+                            html += `<li>• ${note}</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    html += '</div>';
+                });
+                html += '</div>';
+            } else {
+                html += '<div class="loading">No projects found for this date</div>';
+            }
+
+            content.innerHTML = html;
+        }
+
+        function renderWeekData(data) {
+            const content = document.getElementById('content');
+            
+            let html = `
+                <div class="summary">
+                    <div class="summary-card">
+                        <h3>Weekly Total</h3>
+                        <div class="value">${data.total_hours.toFixed(2)}h</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Dead Time</h3>
+                        <div class="value">${data.dead_time_hours.toFixed(2)}h</div>
+                    </div>
+                    <div class="summary-card">
+                        <h3>Week Period</h3>
+                        <div class="value">${data.start_date} to ${data.end_date}</div>
+                    </div>
+                </div>
+            `;
+
+            if (Object.keys(data.projects).length > 0) {
+                html += '<div class="projects"><h2>Weekly Project Summary</h2>';
+                Object.entries(data.projects).forEach(([name, hours]) => {
+                    html += `
+                        <div class="project">
+                            <div class="project-header">
+                                <span class="project-name">${name}</span>
+                                <span class="project-time">${hours.toFixed(2)}h</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+            }
+
+            // Daily breakdown
+            html += '<div class="projects"><h2>Daily Breakdown</h2>';
+            data.days.forEach(day => {
+                html += `
+                    <div class="project">
+                        <div class="project-header">
+                            <span class="project-name">${day.date}</span>
+                            <span class="project-time">${day.total_hours.toFixed(2)}h</span>
+                        </div>
+                `;
+                if (day.projects && day.projects.length > 0) {
+                    html += '<ul class="project-notes">';
+                    day.projects.forEach(project => {
+                        html += `<li>• ${project.name}: ${project.total_hours.toFixed(2)}h</li>`;
+                    });
+                    html += '</ul>';
+                }
+                html += '</div>';
+            });
+            html += '</div>';
+
+            content.innerHTML = html;
+        }
+
+        // Load today's data by default
+        window.addEventListener('load', () => {
+            loadData();
+        });
+    </script>
+</body>
+</html>

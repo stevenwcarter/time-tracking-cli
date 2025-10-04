@@ -6,6 +6,9 @@ use time_tracking_cli::{
     create_template_content, format_day_with_date, get_time_tracking_dir, get_week_dates,
     open_in_editor, parse_weekday,
 };
+
+#[cfg(feature = "webapp")]
+use time_tracking_cli::run_server;
 use time_tracking_parser::parse_time_tracking_data;
 
 /// Time tracking CLI utility
@@ -31,9 +34,30 @@ struct Args {
     /// Output formatter type (default, plain, markdown)
     #[arg(long, value_name = "FORMAT", default_value = "default")]
     formatter: String,
+
+    /// Launch web server mode
+    #[cfg(feature = "webapp")]
+    #[arg(long)]
+    serve: bool,
+
+    /// Port for web server (default: 3000)
+    #[cfg(feature = "webapp")]
+    #[arg(long, default_value = "3000")]
+    port: u16,
 }
 
+#[cfg(feature = "webapp")]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    main_impl().await
+}
+
+#[cfg(not(feature = "webapp"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    futures::executor::block_on(main_impl())
+}
+
+async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Load configuration
@@ -46,6 +70,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "Saturday".to_string());
 
     let week_start_weekday = parse_weekday(&week_start_day)?;
+
+    // Handle serve mode
+    #[cfg(feature = "webapp")]
+    if args.serve {
+        println!("🚀 Starting Time Tracking Web Server...");
+        return run_server(args.port).await;
+    }
 
     // Determine the date to use - prioritize flag over positional, then default to today
     let date_str = args.date.or(args.positional_date);

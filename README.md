@@ -1,35 +1,93 @@
 # Time Tracking CLI
 
-A command-line utility for tracking and analyzing your work time. This tool creates daily time tracking files, opens them in your default editor, and then parses the data to provide detailed summaries.
+A command-line utility for tracking and analyzing your work time with support for multiple output formats. This tool creates daily time tracking files, opens them in your default editor, and then parses the data to provide detailed summaries.
 
 ## Installation
 
-1. Clone this repository
-2. Build the project:
-   ```bash
-   cargo build --release
-   ```
-3. The binary will be available at `target/release/time-tracking-cli`
-
-You can also install it globally with:
+### Recommended: Install with symlink setup
 ```bash
+# Clone and install
+git clone <your-repo-url>
+cd time-tracking-cli
 cargo install --path .
+./install.sh
+```
+
+This will install the `ttcli` binary and create a `tt` symlink for convenience.
+
+### Alternative: Manual installation
+```bash
+# Option 1: Install the binary only
+cargo install --path .
+
+# Option 2: Create symlink manually (optional)
+ln -s ~/.cargo/bin/ttcli ~/.cargo/bin/tt
+
+# Option 3: Build locally
+cargo build --release
+# Binary will be at target/release/ttcli
 ```
 
 ## Usage
 
-### Basic Usage
+After installation, you can use either command (they're identical):
 
 ```bash
+# These are equivalent:
+ttcli --help
+tt --help
+
 # Use today's date
-time-tracking-cli
+ttcli
+tt
 
 # Specify a date (positional argument)
-time-tracking-cli 2025-10-03
+ttcli 2025-10-03
+tt 2025-10-03
 
 # Specify a date (using flag)
-time-tracking-cli --date 2025-10-03
-time-tracking-cli -d 2025-10-03
+ttcli --date 2025-10-03
+tt -d 2025-10-03
+```
+
+## Output Formats
+
+The CLI supports multiple output formats via the `--formatter` option:
+
+```bash
+# Default format (emoji-rich, colorful)
+tt 2025-10-03
+
+# Plain text format (no emoji)
+tt --formatter plain 2025-10-03
+
+# Markdown format
+tt --formatter markdown 2025-10-03
+```
+
+### Format Examples
+
+**Default format:**
+```
+📅 TIME OVERVIEW
+⏱️  WORKING TIME
+📋 PROJECTS
+  📌 code1 - 5:00 (5.00 hrs)
+```
+
+**Plain format:**
+```
+TIME OVERVIEW
+WORKING TIME  
+PROJECTS
+  * code1 - 5:00 (5.00 hrs)
+```
+
+**Markdown format:**
+```
+**Total Time:** 8.25 hours
+**Projects:**
+  - **code1** - 5.00 hours
 ```
 
 ### How it works
