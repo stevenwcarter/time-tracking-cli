@@ -2,9 +2,9 @@ use chrono::{Local, NaiveDate, Weekday};
 use clap::Parser;
 use std::fs;
 use time_tracking_cli::{
-    Config, DefaultDisplayFormatter, PlainDisplayFormatter, MarkdownDisplayFormatter, DisplayFormatter,
-    create_template_content, format_day_with_date, get_time_tracking_dir_with_override, get_week_dates,
-    open_in_editor, parse_weekday,
+    Config, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
+    PlainDisplayFormatter, create_template_content, format_day_with_date,
+    get_time_tracking_dir_with_override, get_week_dates, open_in_editor, parse_weekday,
 };
 
 #[cfg(feature = "webapp")]
@@ -84,15 +84,11 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     let week_start_weekday = parse_weekday(&week_start_day)?;
 
     // Determine the data directory (priority: CLI arg > config file > default)
-    let resolved_data_directory = args
-        .data_directory
-        .or(config.data_directory);
+    let resolved_data_directory = args.data_directory.or(config.data_directory);
     let data_directory = resolved_data_directory.as_deref(); // Convert Option<String> to Option<&str>
 
     // Determine the template file (priority: CLI arg > config file > default)
-    let resolved_template_file = args
-        .template_file
-        .or(config.template_file);
+    let resolved_template_file = args.template_file.or(config.template_file);
     let template_file = resolved_template_file.as_deref(); // Convert Option<String> to Option<&str>
 
     // Handle serve mode
@@ -126,16 +122,33 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.week {
         // Show weekly summary
-        show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), data_directory)?;
+        show_weekly_summary(
+            &date,
+            week_start_weekday,
+            formatter.as_ref(),
+            data_directory,
+        )?;
     } else {
         // Show single day (existing functionality)
-        show_single_day(&date, formatter.as_ref(), data_directory, args.noedit, template_file)?;
+        show_single_day(
+            &date,
+            formatter.as_ref(),
+            data_directory,
+            args.noedit,
+            template_file,
+        )?;
     }
 
     Ok(())
 }
 
-fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter, data_directory: Option<&str>, noedit: bool, template_file: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn show_single_day(
+    date: &NaiveDate,
+    formatter: &dyn DisplayFormatter,
+    data_directory: Option<&str>,
+    noedit: bool,
+    template_file: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Create the time tracking directory
     let time_tracking_dir = get_time_tracking_dir_with_override(data_directory)?;
     fs::create_dir_all(&time_tracking_dir)?;

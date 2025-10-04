@@ -1,7 +1,7 @@
 use chrono::NaiveDate;
 use dirs::home_dir;
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 
 pub fn get_time_tracking_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     get_time_tracking_dir_with_override(None)
@@ -20,13 +20,16 @@ pub fn get_time_tracking_dir_with_override(
     Ok(home.join(".time-tracking"))
 }
 
-pub fn create_template_content(date: &NaiveDate, template_file: Option<&str>) -> Result<String, Box<dyn std::error::Error>> {
+pub fn create_template_content(
+    date: &NaiveDate,
+    template_file: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
     match template_file {
         Some(file_path) => {
             // Read the template file
             let template_content = fs::read_to_string(file_path)
                 .map_err(|e| format!("Failed to read template file '{}': {}", file_path, e))?;
-            
+
             // Replace {date} placeholder with the formatted date
             let formatted_date = date.format("%Y-%m-%d").to_string();
             Ok(template_content.replace("{date}", &formatted_date))

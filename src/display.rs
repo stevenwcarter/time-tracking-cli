@@ -4,25 +4,25 @@ use time_tracking_parser::Time;
 pub trait DisplayFormatter {
     /// Display a single day's time tracking results
     fn display_day_summary(&self, content: &str, indent: &str);
-    
+
     /// Display the weekly summary header
     fn display_weekly_header(&self, week_start: &str, week_end: &str);
-    
+
     /// Display weekly totals
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32);
-    
+
     /// Display weekly projects summary
     fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]);
-    
+
     /// Display daily breakdowns header
     fn display_daily_breakdowns_header(&self);
-    
+
     /// Display a single day header in weekly view
     fn display_day_header(&self, day_with_date: &str);
-    
+
     /// Display message for missing file
     fn display_no_file_found(&self, indent: &str);
-    
+
     /// Display message for no data
     fn display_no_data_found(&self, indent: &str);
 }
@@ -36,12 +36,12 @@ pub struct PlainDisplayFormatter;
 impl DisplayFormatter for DefaultDisplayFormatter {
     fn display_day_summary(&self, content: &str, indent: &str) {
         let data = time_tracking_parser::parse_time_tracking_data(content);
-        
+
         // Display overview
         println!("{}📅 TIME OVERVIEW\n", indent);
         println!("{}Start Time: {}", indent, data.formatted_start_time());
         println!("{}End Time:   {}\n", indent, data.formatted_end_time());
-        
+
         // Display total working time
         println!("{}⏱️  WORKING TIME", indent);
         println!(
@@ -50,7 +50,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             data.formatted_total_minutes(),
             data.formatted_total_decimal()
         );
-        
+
         // Display dead time
         println!("{}⏸️  DEAD TIME", indent);
         if data.dead_time_minutes == 0 {
@@ -70,7 +70,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             );
         }
         println!();
-        
+
         // Display warnings
         if !data.warnings.is_empty() {
             println!("{}⚠️  WARNINGS", indent);
@@ -78,8 +78,8 @@ impl DisplayFormatter for DefaultDisplayFormatter {
                 println!("{}  ⚠ {}", indent, warning);
             }
             println!();
-   }
-        
+        }
+
         // Display projects
         if !data.projects.is_empty() {
             println!("{}📋 PROJECTS", indent);
@@ -91,7 +91,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
                     Time::format_duration_minutes(project.total_minutes),
                     Time::format_duration_decimal(project.total_minutes)
                 );
-                
+
                 if !project.notes.is_empty() {
                     for note in &project.notes {
                         println!("{}     • {}", indent, note);
@@ -109,24 +109,24 @@ impl DisplayFormatter for DefaultDisplayFormatter {
         }
         println!();
     }
-    
+
     fn display_weekly_header(&self, week_start: &str, week_end: &str) {
         println!("\n{}", "=".repeat(80));
         println!("WEEKLY TIME TRACKING SUMMARY");
         println!("Week of {} to {}", week_start, week_end);
         println!("{}", "=".repeat(80));
     }
-    
+
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
         println!("\n📊 WEEKLY TOTALS");
         println!("{}", "-".repeat(40));
-        
+
         println!(
             "⏱️  Total Working Time: {} ({} hrs)",
             Time::format_duration_minutes(total_minutes),
             Time::format_duration_decimal(total_minutes)
         );
-        
+
         if dead_minutes > 0 {
             println!(
                 "⏸️  Total Dead Time: {} ({} hrs)",
@@ -137,11 +137,11 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             println!("⏸️  Total Dead Time: ✅ None");
         }
     }
-    
+
     fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
         if !projects.is_empty() {
             println!("\n📋 WEEKLY PROJECTS SUMMARY");
-            
+
             for (project_name, (total_minutes, notes)) in projects {
                 println!(
                     "  📌 {} - {} ({} hrs)",
@@ -149,7 +149,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
                     Time::format_duration_minutes(*total_minutes),
                     Time::format_duration_decimal(*total_minutes)
                 );
-                
+
                 if !notes.is_empty() {
                     for note in notes {
                         println!("     • {}", note);
@@ -158,22 +158,22 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             }
         }
     }
-    
+
     fn display_daily_breakdowns_header(&self) {
         println!("\n{}", "=".repeat(80));
         println!("DAILY BREAKDOWNS");
         println!("{}", "=".repeat(80));
     }
-    
+
     fn display_day_header(&self, day_with_date: &str) {
         println!("\n📅 {}", day_with_date);
         println!("{}", "=".repeat(60));
     }
-    
+
     fn display_no_file_found(&self, indent: &str) {
         println!("{}📄 No time tracking file found", indent);
     }
-    
+
     fn display_no_data_found(&self, indent: &str) {
         println!("{}💤 No time tracking data found", indent);
     }
@@ -182,12 +182,12 @@ impl DisplayFormatter for DefaultDisplayFormatter {
 impl DisplayFormatter for PlainDisplayFormatter {
     fn display_day_summary(&self, content: &str, indent: &str) {
         let data = time_tracking_parser::parse_time_tracking_data(content);
-        
+
         // Display overview
         println!("{}TIME OVERVIEW", indent);
         println!("{}Start Time: {}", indent, data.formatted_start_time());
         println!("{}End Time:   {}", indent, data.formatted_end_time());
-        
+
         // Display total working time
         println!("{}WORKING TIME", indent);
         println!(
@@ -196,7 +196,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
             data.formatted_total_minutes(),
             data.formatted_total_decimal()
         );
-        
+
         // Display dead time
         println!("{}DEAD TIME", indent);
         if data.dead_time_minutes == 0 {
@@ -215,7 +215,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
                 data.formatted_dead_decimal()
             );
         }
-        
+
         // Display warnings
         if !data.warnings.is_empty() {
             println!("{}WARNINGS", indent);
@@ -223,7 +223,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
                 println!("{}  - {}", indent, warning);
             }
         }
-        
+
         // Display projects
         if !data.projects.is_empty() {
             println!("{}PROJECTS", indent);
@@ -235,7 +235,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
                     Time::format_duration_minutes(project.total_minutes),
                     Time::format_duration_decimal(project.total_minutes)
                 );
-                
+
                 if !project.notes.is_empty() {
                     for note in &project.notes {
                         println!("{}    - {}", indent, note);
@@ -252,24 +252,24 @@ impl DisplayFormatter for PlainDisplayFormatter {
             println!("{}  - Comment explaining what you did", indent);
         }
     }
-    
+
     fn display_weekly_header(&self, week_start: &str, week_end: &str) {
         println!("\n{}", "=".repeat(80));
         println!("WEEKLY TIME TRACKING SUMMARY");
         println!("Week of {} to {}", week_start, week_end);
         println!("{}", "=".repeat(80));
     }
-    
+
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
         println!("\nWEEKLY TOTALS");
         println!("{}", "-".repeat(40));
-        
+
         println!(
             "Total Working Time: {} ({} hrs)",
             Time::format_duration_minutes(total_minutes),
             Time::format_duration_decimal(total_minutes)
         );
-        
+
         if dead_minutes > 0 {
             println!(
                 "Total Dead Time: {} ({} hrs)",
@@ -280,11 +280,11 @@ impl DisplayFormatter for PlainDisplayFormatter {
             println!("Total Dead Time: None");
         }
     }
-    
+
     fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
         if !projects.is_empty() {
             println!("\nWEEKLY PROJECTS SUMMARY");
-            
+
             for (project_name, (total_minutes, notes)) in projects {
                 println!(
                     "  * {} - {} ({} hrs)",
@@ -292,7 +292,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
                     Time::format_duration_minutes(*total_minutes),
                     Time::format_duration_decimal(*total_minutes)
                 );
-                
+
                 if !notes.is_empty() {
                     for note in notes {
                         println!("    - {}", note);
@@ -301,22 +301,22 @@ impl DisplayFormatter for PlainDisplayFormatter {
             }
         }
     }
-    
+
     fn display_daily_breakdowns_header(&self) {
         println!("\n{}", "=".repeat(80));
         println!("DAILY BREAKDOWNS");
         println!("{}", "=".repeat(80));
     }
-    
+
     fn display_day_header(&self, day_with_date: &str) {
         println!("\n{}", day_with_date);
         println!("{}", "=".repeat(60));
     }
-    
+
     fn display_no_file_found(&self, indent: &str) {
         println!("{}No time tracking file found", indent);
     }
-    
+
     fn display_no_data_found(&self, indent: &str) {
         println!("{}No time tracking data found", indent);
     }
@@ -328,15 +328,17 @@ pub struct MarkdownDisplayFormatter;
 impl DisplayFormatter for MarkdownDisplayFormatter {
     fn display_day_summary(&self, content: &str, indent: &str) {
         let data = time_tracking_parser::parse_time_tracking_data(content);
-        
-        println!("{}**Total Time:** {} hours", 
-            indent, 
+
+        println!(
+            "{}**Total Time:** {} hours",
+            indent,
             data.formatted_total_decimal()
         );
-        
+
         if data.dead_time_minutes > 0 {
-            println!("{}**Dead Time:** {} hours", 
-                indent, 
+            println!(
+                "{}**Dead Time:** {} hours",
+                indent,
                 data.formatted_dead_decimal()
             );
         }
@@ -353,8 +355,9 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
         if !data.projects.is_empty() {
             println!("{}**Projects:**", indent);
             for project in &data.projects {
-                println!("{}  - **{}** - {} hours", 
-                    indent, 
+                println!(
+                    "{}  - **{}** - {} hours",
+                    indent,
                     project.name,
                     Time::format_duration_decimal(project.total_minutes)
                 );
@@ -373,9 +376,15 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
 
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
         println!("## Summary");
-        println!("- **Total Time:** {} hours", Time::format_duration_decimal(total_minutes));
+        println!(
+            "- **Total Time:** {} hours",
+            Time::format_duration_decimal(total_minutes)
+        );
         if dead_minutes > 0 {
-            println!("- **Dead Time:** {} hours", Time::format_duration_decimal(dead_minutes));
+            println!(
+                "- **Dead Time:** {} hours",
+                Time::format_duration_decimal(dead_minutes)
+            );
         }
         println!();
     }
@@ -385,8 +394,11 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
             println!("## Projects");
             for (project_name, (total_minutes, notes)) in projects {
                 println!("### {}", project_name);
-                println!("**Time:** {} hours", Time::format_duration_decimal(*total_minutes));
-                
+                println!(
+                    "**Time:** {} hours",
+                    Time::format_duration_decimal(*total_minutes)
+                );
+
                 if !notes.is_empty() {
                     println!("**Notes:**");
                     for note in notes {
@@ -397,21 +409,21 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
             }
         }
     }
-    
+
     fn display_daily_breakdowns_header(&self) {
         println!("## Daily Breakdowns");
         println!();
     }
-    
+
     fn display_day_header(&self, day_with_date: &str) {
         println!("### {}", day_with_date);
         println!();
     }
-    
+
     fn display_no_file_found(&self, indent: &str) {
         println!("{}*No time tracking file found*", indent);
     }
-    
+
     fn display_no_data_found(&self, indent: &str) {
         println!("{}*No time tracking data found*", indent);
     }

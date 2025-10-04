@@ -26,7 +26,7 @@ impl Default for Config {
 impl Config {
     pub fn load() -> Result<Config, Box<dyn std::error::Error>> {
         let config_path = get_config_path()?;
-        
+
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
             let config: Config = toml::from_str(&content)?;
