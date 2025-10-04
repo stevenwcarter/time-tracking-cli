@@ -122,13 +122,11 @@ pub async fn run_server(
     let app = Router::new()
         .route_service("/assets/{*uri}", serve_assets)
         .layer(middleware::from_fn(set_static_cache_control))
-        .route("/", get(serve_index))
         .route("/api/day", get(get_day_data))
         .route("/api/day/{date}", get(get_day_data_by_date))
         .route("/api/week", get(get_week_data))
         .route("/api/week/{date}", get(get_week_data_by_date))
         .nest("/graphql", graphql_routes)
-        .nest_service("/static", ServeDir::new("static"))
         .fallback_service(fallback_serve_assets)
         .layer(CorsLayer::permissive())
         .layer(Extension(context))
@@ -154,10 +152,6 @@ async fn custom_graphql(
     JuniperRequest(request): JuniperRequest,
 ) -> JuniperResponse {
     JuniperResponse(request.execute(&schema, &context).await)
-}
-
-async fn serve_index() -> Html<&'static str> {
-    Html(include_str!("../static/index.html"))
 }
 
 async fn get_day_data(
