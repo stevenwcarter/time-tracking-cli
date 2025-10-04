@@ -1,1 +1,3 @@
 - [x] Add a custom template file with placeholder for date
+- [ ] Pass configuration through to webapp, including weekday start
+- [ ] Recreate first naive site with React
