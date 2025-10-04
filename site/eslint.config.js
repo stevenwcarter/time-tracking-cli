@@ -43,8 +43,6 @@ export default tseslint.config(
           printWidth: 100,
         },
       ],
-      // 'react/jsx-uses-react': 'error',
-      // 'react/jsx-uses-vars': 'error',
       "n/no-extraneous-import": 0,
       "n/no-missing-import": 0,
       "n/no-missing-require": 0,
@@ -91,8 +89,6 @@ export default tseslint.config(
       "jsx-a11y/label-has-associated-control": [
         2,
         {
-          // "labelComponents": ["CustomInputLabel"],
-          // "labelAttributes": ["label"],
           controlComponents: ["Input"],
           depth: 3,
         },

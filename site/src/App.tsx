@@ -6,7 +6,7 @@ import { RouterProvider, createBrowserRouter } from 'react-router-dom';
 import 'react-toastify/dist/ReactToastify.css';
 
 const PageTemplate = React.lazy(() => import('page/PageTemplate'));
-const Homepage = React.lazy(() => import('page/Homepage'));
+const WeeklySummaryPage = React.lazy(() => import('page/WeeklySummaryPage'));
 const DateEditorPage = React.lazy(() => import('page/DateEditorPage'));
 
 const apolloClient = new ApolloClient({
@@ -21,14 +21,12 @@ const router = createBrowserRouter([
     children: [
       {
         index: true,
-        element: <Homepage />,
+        element: <WeeklySummaryPage />,
       },
+      { path: 'weekly-summary', element: <WeeklySummaryPage /> },
+      { path: 'weekly-summary/:date', element: <WeeklySummaryPage /> },
       { path: 'editor', element: <DateEditorPage /> },
       { path: 'editor/:date', element: <DateEditorPage /> },
-      // {
-      //   path: 'client/:clientUuid',
-      //   element: <Client />,
-      // },
     ],
   },
 ]);

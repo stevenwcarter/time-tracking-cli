@@ -1,7 +1,7 @@
-import Button from 'components/Button';
 import { DateEditor } from 'components/DateEditor';
+import DateSelector from 'components/DateSelector';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router';
+import { useParams } from 'react-router';
 
 export const DateEditorPage = () => {
   const { date } = useParams();
@@ -21,17 +21,7 @@ export const DateEditorPage = () => {
   return (
     <div className="flex flex-col items-center min-h-screen bg-gray-800">
       <h1 className="text-4xl font-bold my-6">{date}</h1>
-      <div className="flex items-center mb-4">
-        <input
-          type="date"
-          className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-4 rounded-xl"
-          value={newDate.toISOString().split('T')[0]}
-          onChange={(e) => setNewDate(new Date(e.target.value))}
-        />
-        <Link to={`/editor/${newDate.toISOString().split('T')[0]}`}>
-          <Button className="rounded-xl">Go to Date</Button>
-        </Link>
-      </div>
+      <DateSelector date={newDate} linkBase="/editor" />
       <DateEditor key={currentDateString} date={dateObject} />
     </div>
   );
