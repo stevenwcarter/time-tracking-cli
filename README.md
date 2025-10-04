@@ -2,6 +2,8 @@
 
 A command-line utility for tracking and analyzing your work time with support for multiple output formats. This tool creates daily time tracking files, opens them in your default editor, and then parses the data to provide detailed summaries.
 
+![short demo](./docs/ttcli-demo.gif)
+
 ## Installation
 
 ### Recommended: Install with symlink setup
