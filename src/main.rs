@@ -1,11 +1,26 @@
-use chrono::{Local, NaiveDate, Datelike, Duration};
+use chrono::{Local, NaiveDate, Datelike, Duration, Weekday};
 use clap::Parser;
 use dirs::home_dir;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use time_tracking_parser::{parse_time_tracking_data, Time};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    /// Day of the week to start the week (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
+    week_start_day: Option<String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            week_start_day: Some("Saturday".to_string()),
+        }
+    }
+}
 
 /// Time tracking CLI utility
 #[derive(Parser)]
@@ -22,10 +37,24 @@ struct Args {
     /// Show weekly summary for the week containing the specified date
     #[arg(short, long)]
     week: bool,
+    
+    /// Day of the week to start the week (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
+    #[arg(long, value_name = "DAY")]
+    week_start_day: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    
+    // Load configuration
+    let config = load_config()?;
+    
+    // Determine the week start day (priority: CLI arg > config file > default)
+    let week_start_day = args.week_start_day
+        .or(config.week_start_day)
+        .unwrap_or_else(|| "Saturday".to_string());
+    
+    let week_start_weekday = parse_weekday(&week_start_day)?;
     
     // Determine the date to use - prioritize flag over positional, then default to today
     let date_str = args.date.or(args.positional_date);
@@ -44,7 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     if args.week {
         // Show weekly summary
-        show_weekly_summary(&date)?;
+        show_weekly_summary(&date, week_start_weekday)?;
     } else {
         // Show single day (existing functionality)
         show_single_day(&date)?;
@@ -80,8 +109,8 @@ fn show_single_day(date: &NaiveDate) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn show_weekly_summary(date: &NaiveDate) -> Result<(), Box<dyn std::error::Error>> {
-    let week_dates = get_week_dates(date);
+fn show_weekly_summary(date: &NaiveDate, week_start_day: Weekday) -> Result<(), Box<dyn std::error::Error>> {
+    let week_dates = get_week_dates(date, week_start_day);
     let time_tracking_dir = get_time_tracking_dir()?;
     
     println!("\n{}", "=".repeat(80));
@@ -203,23 +232,55 @@ fn show_weekly_summary(date: &NaiveDate) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn get_week_dates(date: &NaiveDate) -> Vec<NaiveDate> {
-    // Find the Saturday that starts the week containing the given date
-    // Saturday = 5 in chrono's weekday system (Monday = 0, ..., Saturday = 5, Sunday = 6)
-    let days_since_saturday = match date.weekday().num_days_from_monday() {
-        5 => 0, // Already Saturday
-        6 => 1, // Sunday
-        0 => 2, // Monday
-        1 => 3, // Tuesday
-        2 => 4, // Wednesday
-        3 => 5, // Thursday
-        4 => 6, // Friday
-        _ => unreachable!(),
-    };
+fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let config_path = get_config_path()?;
     
-    let week_start = *date - Duration::days(days_since_saturday as i64);
+    if config_path.exists() {
+        let content = fs::read_to_string(&config_path)?;
+        let config: Config = toml::from_str(&content)?;
+        Ok(config)
+    } else {
+        // Create default config file
+        let default_config = Config::default();
+        fs::create_dir_all(config_path.parent().unwrap())?;
+        let toml_content = toml::to_string_pretty(&default_config)?;
+        fs::write(&config_path, toml_content)?;
+        Ok(default_config)
+    }
+}
+
+fn get_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(config_dir) = dirs::config_dir() {
+        Ok(config_dir.join("time-tracking-rs").join("config.toml"))
+    } else {
+        // Fallback to home directory
+        let home = home_dir().ok_or("Could not determine home directory")?;
+        Ok(home.join(".config").join("time-tracking-rs").join("config.toml"))
+    }
+}
+
+fn parse_weekday(day_str: &str) -> Result<Weekday, Box<dyn std::error::Error>> {
+    match day_str.to_lowercase().as_str() {
+        "monday" | "mon" => Ok(Weekday::Mon),
+        "tuesday" | "tue" => Ok(Weekday::Tue),
+        "wednesday" | "wed" => Ok(Weekday::Wed),
+        "thursday" | "thu" => Ok(Weekday::Thu),
+        "friday" | "fri" => Ok(Weekday::Fri),
+        "saturday" | "sat" => Ok(Weekday::Sat),
+        "sunday" | "sun" => Ok(Weekday::Sun),
+        _ => Err(format!("Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday", day_str).into()),
+    }
+}
+
+fn get_week_dates(date: &NaiveDate, week_start_day: Weekday) -> Vec<NaiveDate> {
+    // Calculate how many days to go back to reach the week start day
+    let current_weekday = date.weekday();
+    let days_since_week_start = (current_weekday.num_days_from_monday() as i32 
+        - week_start_day.num_days_from_monday() as i32 + 7) % 7;
     
-    // Generate all 7 days of the week (Saturday through Friday)
+    let week_start = *date - Duration::days(days_since_week_start as i64);
+    
+    // Generate all 7 days of the week
     (0..7)
         .map(|i| week_start + Duration::days(i))
         .collect()
