@@ -10,7 +10,7 @@ pub mod web;
 pub use config::Config;
 pub use display::{DisplayFormatter, DefaultDisplayFormatter, PlainDisplayFormatter, MarkdownDisplayFormatter};
 pub use editor::open_in_editor;
-pub use file_utils::{get_time_tracking_dir, create_template_content};
+pub use file_utils::{get_time_tracking_dir, get_time_tracking_dir_with_override, create_template_content};
 pub use time_utils::{parse_weekday, get_week_dates, format_day_with_date};
 
 #[cfg(feature = "webapp")]

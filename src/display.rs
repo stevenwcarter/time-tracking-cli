@@ -38,14 +38,14 @@ impl DisplayFormatter for DefaultDisplayFormatter {
         let data = time_tracking_parser::parse_time_tracking_data(content);
         
         // Display overview
-        println!("{}📅 TIME OVERVIEW", indent);
+        println!("{}📅 TIME OVERVIEW\n", indent);
         println!("{}Start Time: {}", indent, data.formatted_start_time());
-        println!("{}End Time:   {}", indent, data.formatted_end_time());
+        println!("{}End Time:   {}\n", indent, data.formatted_end_time());
         
         // Display total working time
         println!("{}⏱️  WORKING TIME", indent);
         println!(
-            "{}Total: {} ({} hours)",
+            "{}Total: {} ({} hours)\n",
             indent,
             data.formatted_total_minutes(),
             data.formatted_total_decimal()
@@ -62,13 +62,14 @@ impl DisplayFormatter for DefaultDisplayFormatter {
                 "❌"
             };
             println!(
-                "{}{} {} ({} hours)",
+                "{}{} {} ({} hours)\n",
                 indent,
                 status_icon,
                 data.formatted_dead_time_minutes(),
                 data.formatted_dead_decimal()
             );
         }
+        println!();
         
         // Display warnings
         if !data.warnings.is_empty() {
@@ -76,7 +77,8 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             for warning in &data.warnings {
                 println!("{}  ⚠ {}", indent, warning);
             }
-        }
+            println!();
+   }
         
         // Display projects
         if !data.projects.is_empty() {
@@ -105,6 +107,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
             println!("{}  11:45-12:15 project_code", indent);
             println!("{}  - Comment explaining what you did", indent);
         }
+        println!();
     }
     
     fn display_weekly_header(&self, week_start: &str, week_end: &str) {

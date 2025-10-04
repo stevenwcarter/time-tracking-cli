@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, Json},
     routing::get,
@@ -12,8 +12,13 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use crate::{
-    get_time_tracking_dir, get_week_dates, parse_weekday,
+    get_time_tracking_dir_with_override, get_week_dates, parse_weekday,
 };
+
+#[derive(Clone)]
+struct AppState {
+    data_directory: Option<String>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct DateQuery {
@@ -54,7 +59,9 @@ struct WeekData {
     projects: HashMap<String, f64>,
 }
 
-pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_server(port: u16, data_directory: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let state = AppState { data_directory };
+    
     let app = Router::new()
         .route("/", get(serve_index))
         .route("/api/day", get(get_day_data))
@@ -62,7 +69,8 @@ pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/week", get(get_week_data))
         .route("/api/week/:date", get(get_week_data_by_date))
         .nest_service("/static", ServeDir::new("static"))
-        .layer(CorsLayer::permissive());
+        .layer(CorsLayer::permissive())
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
     
@@ -78,25 +86,26 @@ async fn serve_index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn get_day_data(Query(params): Query<DateQuery>) -> Result<Json<DayData>, StatusCode> {
+async fn get_day_data(State(state): State<AppState>, Query(params): Query<DateQuery>) -> Result<Json<DayData>, StatusCode> {
     let date = match params.date {
         Some(date_str) => NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
             .map_err(|_| StatusCode::BAD_REQUEST)?,
         None => Local::now().date_naive(),
     };
     
-    get_day_data_impl(date).await
+    get_day_data_impl(date, &state).await
 }
 
-async fn get_day_data_by_date(Path(date_str): Path<String>) -> Result<Json<DayData>, StatusCode> {
+async fn get_day_data_by_date(State(state): State<AppState>, Path(date_str): Path<String>) -> Result<Json<DayData>, StatusCode> {
     let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
-    get_day_data_impl(date).await
+    get_day_data_impl(date, &state).await
 }
 
-async fn get_day_data_impl(date: NaiveDate) -> Result<Json<DayData>, StatusCode> {
-    let time_tracking_dir = get_time_tracking_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<Json<DayData>, StatusCode> {
+    let time_tracking_dir = get_time_tracking_dir_with_override(state.data_directory.as_deref())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
     
     if !file_path.exists() {
@@ -137,7 +146,7 @@ async fn get_day_data_impl(date: NaiveDate) -> Result<Json<DayData>, StatusCode>
     }))
 }
 
-async fn get_week_data(Query(params): Query<WeekQuery>) -> Result<Json<WeekData>, StatusCode> {
+async fn get_week_data(State(state): State<AppState>, Query(params): Query<WeekQuery>) -> Result<Json<WeekData>, StatusCode> {
     let date = match params.date {
         Some(date_str) => NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
             .map_err(|_| StatusCode::BAD_REQUEST)?,
@@ -146,17 +155,17 @@ async fn get_week_data(Query(params): Query<WeekQuery>) -> Result<Json<WeekData>
     
     let week_start_day = params.week_start_day.unwrap_or_else(|| "Saturday".to_string());
     
-    get_week_data_impl(date, week_start_day).await
+    get_week_data_impl(date, week_start_day, &state).await
 }
 
-async fn get_week_data_by_date(Path(date_str): Path<String>) -> Result<Json<WeekData>, StatusCode> {
+async fn get_week_data_by_date(State(state): State<AppState>, Path(date_str): Path<String>) -> Result<Json<WeekData>, StatusCode> {
     let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
-    get_week_data_impl(date, "Saturday".to_string()).await
+    get_week_data_impl(date, "Saturday".to_string(), &state).await
 }
 
-async fn get_week_data_impl(date: NaiveDate, week_start_day: String) -> Result<Json<WeekData>, StatusCode> {
+async fn get_week_data_impl(date: NaiveDate, week_start_day: String, state: &AppState) -> Result<Json<WeekData>, StatusCode> {
     let week_start_weekday = parse_weekday(&week_start_day)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
@@ -168,7 +177,7 @@ async fn get_week_data_impl(date: NaiveDate, week_start_day: String) -> Result<J
     let mut days = Vec::new();
     
     for day_date in &week_dates {
-        match get_day_data_impl(*day_date).await {
+        match get_day_data_impl(*day_date, state).await {
             Ok(Json(day_data)) => {
                 total_week_hours += day_data.total_hours;
                 total_dead_hours += day_data.dead_time_hours;

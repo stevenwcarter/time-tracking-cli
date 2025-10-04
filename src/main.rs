@@ -3,7 +3,7 @@ use clap::Parser;
 use std::fs;
 use time_tracking_cli::{
     Config, DefaultDisplayFormatter, PlainDisplayFormatter, MarkdownDisplayFormatter, DisplayFormatter,
-    create_template_content, format_day_with_date, get_time_tracking_dir, get_week_dates,
+    create_template_content, format_day_with_date, get_time_tracking_dir_with_override, get_week_dates,
     open_in_editor, parse_weekday,
 };
 
@@ -31,9 +31,17 @@ struct Args {
     #[arg(long, value_name = "DAY")]
     week_start_day: Option<String>,
 
+    /// Directory where time tracking files are stored
+    #[arg(long, value_name = "DIR")]
+    data_directory: Option<String>,
+
     /// Output formatter type (default, plain, markdown)
     #[arg(long, value_name = "FORMAT", default_value = "default")]
     formatter: String,
+
+    /// Skip launching the editor, just display the summary
+    #[arg(long)]
+    noedit: bool,
 
     /// Launch web server mode
     #[cfg(feature = "webapp")]
@@ -71,11 +79,17 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     let week_start_weekday = parse_weekday(&week_start_day)?;
 
+    // Determine the data directory (priority: CLI arg > config file > default)
+    let resolved_data_directory = args
+        .data_directory
+        .or(config.data_directory);
+    let data_directory = resolved_data_directory.as_deref(); // Convert Option<String> to Option<&str>
+
     // Handle serve mode
     #[cfg(feature = "webapp")]
     if args.serve {
         println!("🚀 Starting Time Tracking Web Server...");
-        return run_server(args.port).await;
+        return run_server(args.port, resolved_data_directory).await;
     }
 
     // Determine the date to use - prioritize flag over positional, then default to today
@@ -102,18 +116,18 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.week {
         // Show weekly summary
-        show_weekly_summary(&date, week_start_weekday, formatter.as_ref())?;
+        show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), data_directory)?;
     } else {
         // Show single day (existing functionality)
-        show_single_day(&date, formatter.as_ref())?;
+        show_single_day(&date, formatter.as_ref(), data_directory, args.noedit)?;
     }
 
     Ok(())
 }
 
-fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter) -> Result<(), Box<dyn std::error::Error>> {
+fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter, data_directory: Option<&str>, noedit: bool) -> Result<(), Box<dyn std::error::Error>> {
     // Create the time tracking directory
-    let time_tracking_dir = get_time_tracking_dir()?;
+    let time_tracking_dir = get_time_tracking_dir_with_override(data_directory)?;
     fs::create_dir_all(&time_tracking_dir)?;
 
     // Create the filename for the date
@@ -123,18 +137,22 @@ fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter) -> Result
     // Create the file if it doesn't exist
     if !file_path.exists() {
         fs::write(&file_path, create_template_content(date))?;
-        println!("Created new time tracking file: {}", file_path.display());
-    } else {
+        if !noedit {
+            println!("Created new time tracking file: {}", file_path.display());
+        }
+    } else if !noedit {
         println!(
             "Opening existing time tracking file: {}",
             file_path.display()
         );
     }
 
-    // Open the file in the default editor
-    open_in_editor(&file_path)?;
+    // Open the file in the default editor only if noedit is false
+    if !noedit {
+        open_in_editor(&file_path)?;
+    }
 
-    // After editor closes, parse and display the results
+    // Parse and display the results
     let content = fs::read_to_string(&file_path)?;
     formatter.display_day_summary(&content, "");
 
@@ -145,9 +163,10 @@ fn show_weekly_summary(
     date: &NaiveDate,
     week_start_day: Weekday,
     formatter: &dyn DisplayFormatter,
+    data_directory: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let week_dates = get_week_dates(date, week_start_day);
-    let time_tracking_dir = get_time_tracking_dir()?;
+    let time_tracking_dir = get_time_tracking_dir_with_override(data_directory)?;
 
     formatter.display_weekly_header(
         &format_day_with_date(&week_dates[0]),

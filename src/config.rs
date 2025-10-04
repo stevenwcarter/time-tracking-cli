@@ -7,12 +7,15 @@ use std::path::PathBuf;
 pub struct Config {
     /// Day of the week to start the week (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
     pub week_start_day: Option<String>,
+    /// Directory where time tracking files are stored (defaults to ~/.time-tracking)
+    pub data_directory: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             week_start_day: Some("Saturday".to_string()),
+            data_directory: None,
         }
     }
 }
