@@ -1,3 +1,5 @@
+import { toast } from 'react-toastify';
+
 // export const testdata = {
 //   date: '2025-10-04',
 //   totalHours: 3,
@@ -21,6 +23,30 @@
 
 export const DateSummary = (props: { parsedData: any }) => {
   const { parsedData } = props;
+
+  // Helper function to copy project notes to clipboard
+  const copyProjectNotesToClipboard = async (projectName: string, notes: string[]) => {
+    if (notes.length === 0) return;
+
+    const formattedNotes = notes.map((note) => `- ${note}`).join('\n');
+
+    try {
+      await navigator.clipboard.writeText(formattedNotes);
+      toast.success(`${projectName} notes copied to clipboard!`, {
+        position: 'top-right',
+        autoClose: 2000,
+        hideProgressBar: false,
+        closeOnClick: true,
+        pauseOnHover: true,
+        draggable: true,
+      });
+    } catch (err) {
+      toast.error('Failed to copy to clipboard', {
+        position: 'top-right',
+        autoClose: 2000,
+      });
+    }
+  };
 
   return (
     <div className="px-2 overflow-y-auto">
@@ -49,7 +75,11 @@ export const DateSummary = (props: { parsedData: any }) => {
               ({project.totalHours} {project.totalHours === 1 ? 'hour' : 'hours'})
             </div>
           </div>
-          <ul className="list-disc list-inside">
+          <ul
+            className="list-disc list-inside cursor-pointer hover:bg-gray-800 p-2 rounded transition-colors"
+            onClick={() => copyProjectNotesToClipboard(project.name, project.notes)}
+            title="Click to copy notes to clipboard"
+          >
             {project.notes.map((note: string, index: number) => (
               <li key={index}>{note}</li>
             ))}

@@ -1,7 +1,8 @@
+import Button from 'components/Button';
 import { DateEditor } from 'components/DateEditor';
 import DateSelector from 'components/DateSelector';
 import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router';
+import { Link, useParams } from 'react-router';
 
 export const DateEditorPage = () => {
   const { date } = useParams();
@@ -22,6 +23,9 @@ export const DateEditorPage = () => {
     <div className="flex flex-col items-center min-h-screen bg-gray-800">
       <h1 className="text-4xl font-bold my-6">{date}</h1>
       <DateSelector date={newDate} linkBase="/editor" />
+      <Link to={`/weekly-summary/${currentDateString}`}>
+        <Button>Go to weekly summary</Button>
+      </Link>
       <DateEditor key={currentDateString} date={dateObject} />
     </div>
   );

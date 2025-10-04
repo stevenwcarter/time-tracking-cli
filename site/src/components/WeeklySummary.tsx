@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { toast } from 'react-toastify';
+import { useNavigate } from 'react-router';
 
 interface Project {
   name: string;
@@ -35,6 +36,7 @@ interface WeeklySummaryProps {
 
 const WeeklySummary = ({ data }: WeeklySummaryProps) => {
   const weekData = data?.weekDataForDate;
+  const navigate = useNavigate();
 
   const tableData = useMemo(() => {
     if (!weekData || !weekData.days || !Array.isArray(weekData.days)) {
@@ -138,6 +140,10 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
     );
   }
 
+  const editDate = (date: string) => {
+    navigate(`/editor/${date}`);
+  };
+
   return (
     <div className="p-6 bg-gray-900 text-white rounded shadow-lg">
       {/* Week Summary Header */}
@@ -168,7 +174,8 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
               {tableData.dates.map(({ date, dayOfWeek }) => (
                 <th
                   key={date}
-                  className="border border-gray-600 p-3 text-center font-semibold min-w-[100px]"
+                  className="border cursor-pointer border-gray-600 p-3 text-center font-semibold min-w-[100px]"
+                  onClick={() => editDate(date)}
                 >
                   <div className="text-sm">{dayOfWeek}</div>
                   <div className="text-xs text-gray-400">{date}</div>
