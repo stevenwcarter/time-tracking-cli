@@ -5,6 +5,17 @@
 
 set -e
 
+cd site
+
+yarn
+
+yarn build
+
+cd ..
+
+cargo install --path .
+
+
 # Get the cargo bin directory
 CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 

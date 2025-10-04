@@ -5,49 +5,43 @@ A command-line utility for tracking and analyzing your work time with support fo
 ## Installation
 
 ### Recommended: Install with symlink setup
+
+```bash
+git clone <repo-url>
+cd time-tracking-cli
+bash install.sh
+```
+
+#### Manual steps without symlink setup
+
 ```bash
 # Clone and install
 git clone <your-repo-url>
 cd time-tracking-cli
+cd site
+yarn
+yarn build
+cd ..
+# The previous steps build the web assets for the site accessible via `ttcli --serve`
 cargo install --path .
-./install.sh
 ```
 
-This will install the `ttcli` binary and create a `tt` symlink for convenience.
-
-### Alternative: Manual installation
-```bash
-# Option 1: Install the binary only
-cargo install --path .
-
-# Option 2: Create symlink manually (optional)
-ln -s ~/.cargo/bin/ttcli ~/.cargo/bin/tt
-
-# Option 3: Build locally
-cargo build --release
-# Binary will be at target/release/ttcli
-```
+This will install the full `ttcli` binary and website
 
 ## Usage
-
-After installation, you can use either command (they're identical):
 
 ```bash
 # These are equivalent:
 ttcli --help
-tt --help
 
 # Use today's date
 ttcli
-tt
 
 # Specify a date (positional argument)
 ttcli 2025-10-03
-tt 2025-10-03
 
 # Specify a date (using flag)
 ttcli --date 2025-10-03
-tt -d 2025-10-03
 ```
 
 ## Output Formats
@@ -56,18 +50,19 @@ The CLI supports multiple output formats via the `--formatter` option:
 
 ```bash
 # Default format (emoji-rich, colorful)
-tt 2025-10-03
+ttcli 2025-10-03
 
 # Plain text format (no emoji)
-tt --formatter plain 2025-10-03
+ttcli --formatter plain 2025-10-03
 
 # Markdown format
-tt --formatter markdown 2025-10-03
+ttcli --formatter markdown 2025-10-03
 ```
 
 ### Format Examples
 
 **Default format:**
+
 ```
 📅 TIME OVERVIEW
 ⏱️  WORKING TIME
@@ -76,6 +71,7 @@ tt --formatter markdown 2025-10-03
 ```
 
 **Plain format:**
+
 ```
 TIME OVERVIEW
 WORKING TIME  
@@ -84,6 +80,7 @@ PROJECTS
 ```
 
 **Markdown format:**
+
 ```
 **Total Time:** 8.25 hours
 **Projects:**
@@ -116,9 +113,9 @@ In the editor, enter your time tracking data using this format:
 
 ### Time Format
 
-- **Time ranges**: Use 24-hour format (e.g., `11:45-12:15`, `2-4`, `14:30-15:45`)
-- **Project codes**: Any alphanumeric identifier (e.g., `code1`, `PROJ-123`, `meeting`)
-- **Comments**: Lines starting with `-` are treated as notes for the preceding time entry
+- **Time ranges**: Use 12-hour format (e.g., `11:45-12:15`, `2-4`, `2:30-3`). There's really no concept of "AM" or "PM" here; just use the times that make sense for your day.
+- **Project codes**: Any alphanumeric identifier (e.g., `code1`, `client-bd`, `admin`)
+- **Comments**: Lines following a time entry are treated as notes for that entry
 
 ### Features
 
@@ -167,6 +164,7 @@ export VISUAL=code
 ```
 
 Common editors:
+
 - `vim` or `nvim` for Vim/Neovim
 - `code` for VS Code
 - `nano` for a simple terminal editor
