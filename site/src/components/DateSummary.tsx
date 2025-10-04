@@ -30,7 +30,17 @@ export const DateSummary = (props: { parsedData: any }) => {
       <p className="mb-4">
         Start Time: {parsedData.startTime} - End Time: {parsedData.endTime}
       </p>
-      <h3 className="text-xl font-semibold mb-2">Projects:</h3>
+      {parsedData.warnings.length > 0 && (
+        <div className="mt-4 p-2 text-black bg-yellow-200 border border-yellow-400 rounded">
+          <h3 className="font-semibold">Warnings:</h3>
+          <ul className="list-disc list-inside">
+            {parsedData.warnings.map((warning: string, index: number) => (
+              <li key={index}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <h3 className="text-xl font-semibold mt-8 mb-2">Projects:</h3>
       {parsedData.projects.map((project: any) => (
         <div key={project.name} className="mb-4">
           <div className="font-semibold flex text-lg">
@@ -46,16 +56,6 @@ export const DateSummary = (props: { parsedData: any }) => {
           </ul>
         </div>
       ))}
-      {parsedData.warnings.length > 0 && (
-        <div className="mt-4 p-2 bg-yellow-200 border border-yellow-400 rounded">
-          <h3 className="font-semibold">Warnings:</h3>
-          <ul className="list-disc list-inside">
-            {parsedData.warnings.map((warning: string, index: number) => (
-              <li key={index}>{warning}</li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 };
