@@ -9,6 +9,8 @@ pub struct Config {
     pub week_start_day: Option<String>,
     /// Directory where time tracking files are stored (defaults to ~/.time-tracking)
     pub data_directory: Option<String>,
+    /// Path to a template file to use when creating new time tracking files
+    pub template_file: Option<String>,
 }
 
 impl Default for Config {
@@ -16,6 +18,7 @@ impl Default for Config {
         Self {
             week_start_day: Some("Saturday".to_string()),
             data_directory: None,
+            template_file: None,
         }
     }
 }

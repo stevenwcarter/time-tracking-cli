@@ -35,6 +35,10 @@ struct Args {
     #[arg(long, value_name = "DIR")]
     data_directory: Option<String>,
 
+    /// Path to a template file to use when creating new time tracking files
+    #[arg(long, value_name = "FILE")]
+    template_file: Option<String>,
+
     /// Output formatter type (default, plain, markdown)
     #[arg(long, value_name = "FORMAT", default_value = "default")]
     formatter: String,
@@ -85,6 +89,12 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
         .or(config.data_directory);
     let data_directory = resolved_data_directory.as_deref(); // Convert Option<String> to Option<&str>
 
+    // Determine the template file (priority: CLI arg > config file > default)
+    let resolved_template_file = args
+        .template_file
+        .or(config.template_file);
+    let template_file = resolved_template_file.as_deref(); // Convert Option<String> to Option<&str>
+
     // Handle serve mode
     #[cfg(feature = "webapp")]
     if args.serve {
@@ -119,13 +129,13 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
         show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), data_directory)?;
     } else {
         // Show single day (existing functionality)
-        show_single_day(&date, formatter.as_ref(), data_directory, args.noedit)?;
+        show_single_day(&date, formatter.as_ref(), data_directory, args.noedit, template_file)?;
     }
 
     Ok(())
 }
 
-fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter, data_directory: Option<&str>, noedit: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter, data_directory: Option<&str>, noedit: bool, template_file: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     // Create the time tracking directory
     let time_tracking_dir = get_time_tracking_dir_with_override(data_directory)?;
     fs::create_dir_all(&time_tracking_dir)?;
@@ -136,7 +146,8 @@ fn show_single_day(date: &NaiveDate, formatter: &dyn DisplayFormatter, data_dire
 
     // Create the file if it doesn't exist
     if !file_path.exists() {
-        fs::write(&file_path, create_template_content(date))?;
+        let template_content = create_template_content(date, template_file)?;
+        fs::write(&file_path, template_content)?;
         if !noedit {
             println!("Created new time tracking file: {}", file_path.display());
         }

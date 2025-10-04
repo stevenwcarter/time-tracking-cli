@@ -1,0 +1,1 @@
+- [x] Add a custom template file with placeholder for date
