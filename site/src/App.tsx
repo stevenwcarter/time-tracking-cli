@@ -7,6 +7,7 @@ import 'react-toastify/dist/ReactToastify.css';
 
 const PageTemplate = React.lazy(() => import('page/PageTemplate'));
 const Homepage = React.lazy(() => import('page/Homepage'));
+const DateEditorPage = React.lazy(() => import('page/DateEditorPage'));
 
 const apolloClient = new ApolloClient({
   cache: new InMemoryCache({ addTypename: false }),
@@ -22,6 +23,8 @@ const router = createBrowserRouter([
         index: true,
         element: <Homepage />,
       },
+      { path: 'editor', element: <DateEditorPage /> },
+      { path: 'editor/:date', element: <DateEditorPage /> },
       // {
       //   path: 'client/:clientUuid',
       //   element: <Client />,

@@ -1,4 +1,5 @@
 use crate::{
+    Config,
     context::GraphQLContext,
     graphql::{Schema, create_schema},
 };
@@ -7,7 +8,7 @@ use axum::{
     extract::{Path, Query, Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
-    response::{Html, Json, Response},
+    response::{Json, Response},
     routing::{MethodFilter, get, on},
 };
 use axum_embed::{FallbackBehavior, ServeEmbed};
@@ -18,7 +19,6 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use tower::ServiceBuilder;
-use tower_http::services::ServeDir;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
 use crate::{get_time_tracking_dir_with_override, get_week_dates, parse_weekday};
@@ -29,7 +29,7 @@ struct SiteAssets;
 
 #[derive(Clone, Default)]
 pub struct AppState {
-    data_directory: Option<String>,
+    pub config: Config,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -45,17 +45,17 @@ struct WeekQuery {
 
 #[derive(Debug, Serialize, Deserialize, GraphQLObject)]
 pub struct DayData {
-    date: String,
-    total_hours: f64,
-    dead_time_hours: f64,
-    projects: Vec<ProjectData>,
-    warnings: Vec<String>,
-    start_time: Option<String>,
-    end_time: Option<String>,
+    pub date: String,
+    pub total_hours: f64,
+    pub dead_time_hours: f64,
+    pub projects: Vec<ProjectData>,
+    pub warnings: Vec<String>,
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
 }
 
 impl DayData {
-    fn empty(date: NaiveDate) -> Self {
+    pub fn empty(date: NaiveDate) -> Self {
         DayData {
             date: date.format("%Y-%m-%d").to_string(),
             total_hours: 0.0,
@@ -69,27 +69,30 @@ impl DayData {
 }
 
 #[derive(Debug, Serialize, Deserialize, GraphQLObject)]
-struct ProjectData {
-    name: String,
-    total_hours: f64,
-    notes: Vec<String>,
+pub struct ProjectData {
+    pub name: String,
+    pub total_hours: f64,
+    pub notes: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct WeekData {
-    start_date: String,
-    end_date: String,
-    total_hours: f64,
-    dead_time_hours: f64,
-    days: Vec<DayData>,
-    projects: HashMap<String, f64>,
+#[derive(Debug, Serialize, Deserialize, GraphQLObject)]
+pub struct ProjectSummary {
+    pub name: String,
+    pub total_hours: f64,
 }
 
-pub async fn run_server(
-    port: u16,
-    data_directory: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let state = AppState { data_directory };
+#[derive(Debug, Serialize, Deserialize, GraphQLObject)]
+pub struct WeekData {
+    pub start_date: String,
+    pub end_date: String,
+    pub total_hours: f64,
+    pub dead_time_hours: f64,
+    pub days: Vec<DayData>,
+    pub project_summaries: Vec<ProjectSummary>,
+}
+
+pub async fn run_server(port: u16, config: Config) -> Result<(), Box<dyn std::error::Error>> {
+    let state = AppState { config };
     let context = GraphQLContext::new(state.clone());
     let qm_schema = create_schema();
 
@@ -181,8 +184,9 @@ async fn get_day_data_by_date(
 }
 
 pub async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<DayData, StatusCode> {
-    let time_tracking_dir = get_time_tracking_dir_with_override(state.data_directory.as_deref())
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let time_tracking_dir =
+        get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
 
     if !file_path.exists() {
@@ -289,13 +293,18 @@ async fn get_week_data_impl(
         }
     }
 
+    let project_summaries: Vec<ProjectSummary> = week_projects
+        .into_iter()
+        .map(|(name, total_hours)| ProjectSummary { name, total_hours })
+        .collect();
+
     Ok(Json(WeekData {
         start_date: week_dates[0].format("%Y-%m-%d").to_string(),
         end_date: week_dates[6].format("%Y-%m-%d").to_string(),
         total_hours: total_week_hours,
         dead_time_hours: total_dead_hours,
         days,
-        projects: week_projects,
+        project_summaries,
     }))
 }
 

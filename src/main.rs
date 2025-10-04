@@ -95,7 +95,15 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "webapp")]
     if args.serve {
         println!("🚀 Starting Time Tracking Web Server...");
-        return run_server(args.port, resolved_data_directory).await;
+
+        // Create the final config combining file config with CLI overrides
+        let final_config = Config {
+            week_start_day: Some(week_start_day),
+            data_directory: resolved_data_directory,
+            template_file: resolved_template_file,
+        };
+
+        return run_server(args.port, final_config).await;
     }
 
     // Determine the date to use - prioritize flag over positional, then default to today
