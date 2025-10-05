@@ -1,0 +1,39 @@
+{
+  "types": [
+    {
+      "type": "feat",
+      "section": "Features"
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes"
+    },
+    {
+      "type": "chore",
+      "section": "Chore"
+    },
+    {
+      "type": "docs",
+      "section": "Docs"
+    },
+    {
+      "type": "style",
+      "section": "Style"
+    },
+    {
+      "type": "refactor",
+      "hidden": true
+    },
+    {
+      "type": "perf",
+      "section": "Performance"
+    },
+    {
+      "type": "test",
+      "hidden": true
+    }
+  ],
+  "header": "Here are some recent changes:",
+  "commitUrlFormat": "https://github.com/stevenwcarter/time-tracking-cli/commits/{{hash}}",
+  "compareUrlFormat": "https://github.com/stevenwcarter/time-tracking-cli/compare/{{previousTag}}...{{currentTag}}"
+}
