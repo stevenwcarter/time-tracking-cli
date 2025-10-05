@@ -1,4 +1,14 @@
 Here are some recent changes:
+### [0.5.3](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.2...v0.5.3) (2025-10-05)
+
+
+### Chore
+
+* added manual workflow dispatch for releases ([b712eb9](https://github.com/stevenwcarter/time-tracking-cli/commits/b712eb91dca3e1e9e6cef843cf47e417202f92ab))
+* adding package permissions to build for releases ([85a6e0e](https://github.com/stevenwcarter/time-tracking-cli/commits/85a6e0ef8ef2e0e43c34bc318ed39ffb8fd644cf))
+* adding windows build to releases ([db04a80](https://github.com/stevenwcarter/time-tracking-cli/commits/db04a80bdb5bf68dbf1651ff671933add1e6763b))
+* bumping build node version to 22 ([06b7c10](https://github.com/stevenwcarter/time-tracking-cli/commits/06b7c10c70e4a1cac8a16cf252f689c9536a7072))
+
 ### 0.5.2 (2025-10-05)
 
 
