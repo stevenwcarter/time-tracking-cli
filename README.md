@@ -28,7 +28,7 @@ cd ..
 cargo install --path .
 ```
 
-This will install the full `ttcli` binary and website
+This will install the full `ttcli` binary and website (available with --serve option)
 
 ## Usage
 
