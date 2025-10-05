@@ -58,12 +58,19 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
             name: intel-mac
+            archive_format: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
             name: silicon-mac
+            archive_format: tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             name: linux-x64
+            archive_format: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: windows-x64
+            archive_format: zip
 
     steps:
       - name: Checkout code
@@ -95,16 +102,23 @@ jobs:
             echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create tar.gz archive
+      - name: Create archive
+        shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz ttcli
+          if [ "${{ matrix.archive_format }}" = "zip" ]; then
+            # Windows: Create zip file with .exe extension
+            7z a ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.zip ttcli.exe
+          else
+            # Unix: Create tar.gz file
+            tar -czf ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz ttcli
+          fi
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}
-          path: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz
+          path: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.${{ matrix.archive_format }}
 
   release:
     name: Create GitHub Release
@@ -139,5 +153,6 @@ jobs:
             time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac.tar.gz
             time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac.tar.gz
             time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64.tar.gz
+            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-windows-x64/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-windows-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
