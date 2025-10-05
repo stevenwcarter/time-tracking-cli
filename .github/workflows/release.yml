@@ -3,12 +3,43 @@ name: Release Build
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
+  build-frontend:
+    name: Build Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Install frontend dependencies
+        working-directory: ./site
+        run: yarn install
+
+      - name: Build frontend
+        working-directory: ./site
+        run: yarn build
+
+      - name: Upload frontend build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build
+          path: site/build/
+          retention-days: 1
+
   build:
     name: Build for ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    needs: build-frontend
     strategy:
       matrix:
         include:
@@ -26,21 +57,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Download frontend build
+        uses: actions/download-artifact@v4
         with:
-          node-version: '18'
-
-      - name: Install yarn
-        run: npm install -g yarn
-
-      - name: Install frontend dependencies
-        working-directory: ./site
-        run: yarn install
-
-      - name: Build frontend
-        working-directory: ./site
-        run: yarn build
+          name: frontend-build
+          path: site/build/
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
