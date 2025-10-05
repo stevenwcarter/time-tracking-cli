@@ -1,0 +1,17 @@
+sign-commit = true
+sign-tag = true
+push = true
+publish = false
+release = false
+consolidate-commits = true
+tag-message = "chore: release {{version}}"
+pre-release-hook = [
+  "git",
+  "cliff",
+  "-c",
+  "github",
+  "-o",
+  "CHANGELOG.md",
+  "--tag",
+  "{{version}}",
+]
