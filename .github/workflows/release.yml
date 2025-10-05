@@ -1,0 +1,96 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build for ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: intel-mac
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: silicon-mac
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install yarn
+        run: npm install -g yarn
+
+      - name: Install frontend dependencies
+        working-directory: ./site
+        run: yarn install
+
+      - name: Build frontend
+        working-directory: ./site
+        run: yarn build
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+
+      - name: Build Rust binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Get tag name
+        id: tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create tar.gz archive
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz ttcli
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}
+          path: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Get tag name
+        id: tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
+          name: Release ${{ steps.tag.outputs.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: |
+            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac.tar.gz
+            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac.tar.gz
+            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
