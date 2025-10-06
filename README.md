@@ -4,9 +4,36 @@ A command-line utility for tracking and analyzing your work time with support fo
 
 ![short demo](./docs/ttcli-demo.gif)
 
+## Main uses cases:
+
+- Quickly track time throughout your day. Just run `ttcli` which will open today's file in the editor defined by your `$EDITOR` environment variable. After saving/exiting, you'll see a summary of your tracked time.
+- See a summary of your tracked time for a specific day without launching the editor by running `ttcli --noedit YYYY-MM-DD` such as `ttcli --noedit 2025-10-03`.
+- Edit a previous day's time tracking by running `ttcli YYYY-MM-DD` such as `ttcli 2025-10-03`.
+- See a summary of your tracked time in different formats (default, plain text, markdown) using the `--formatter` option. `ttcli --formatter markdown` is great for copying into reports or notes.
+- See a weekly summary of your tracked time with `ttcli --week` (or `--week YYYY-MM-DD` for a specific week, where YYYY-MM-DD is a date within that week). Note that you can change which day the week starts on with the `--week-start` option (default is Monday).
+- Use `ttcli --serve` to start a local web server that serves a web interface for viewing and editing your time tracking data. The web interface provides a more visual way to interact with your time tracking files. Note that you can specify a different port with `ttcli --serve --port 8080` to launch it on port 8080.
+- Create a "template file" and configure the data directory if you want to have a predefined structure for your daily time tracking files. Create a file named `template.md` in the `~/.time-tracking/` directory, and it will be used as the starting point for new daily files. For instance, you could store your time tracking data within the directory for another note system, provided it can read markdown formats. (Obsidian for example, where you could use the Daily Note feature).
+- Configure the interface with your configuration file. On Mac, this is typically located at `~/Library/Application Support/time-tracking-cli/config.toml`. On Linux, it's usually at `~/.config/time-tracking-cli/config.toml`. You can customize settings like the data directory, default editor, and more. If the file doesn't exist, it will be created with default settings when you first run `ttcli`.
+
+### Example configuration
+
+```toml
+week_start_day = "Saturday"
+data_directory = "/Users/your.username/Documents/Daily Log"
+template_file = "/Users/your.username/Documents/Templates/Daily Template.md"
+```
+
 ## Installation
 
-### Recommended: Install with symlink setup
+### From Releases
+
+- Grab the latest from (Releases)[http://github.com/stevenwcarter/time-tracking-cli/releases] for your architecture
+- Extract the file, which should just contain a single `ttcli` binary.
+- Move the binary to a directory in your `$PATH`, such as `/usr/local/bin` or `~/bin`, ensuring the chosen directory is in your `$PATH`.
+
+### Manual: Install with symlink setup
+
+These commands will clone the repo, build the web assets, and compile/install the binary.
 
 ```bash
 git clone <repo-url>
@@ -14,7 +41,7 @@ cd time-tracking-cli
 bash install.sh
 ```
 
-#### Manual steps without symlink setup
+### Manual steps without symlink setup
 
 ```bash
 # Clone and install
@@ -76,7 +103,7 @@ ttcli --formatter markdown 2025-10-03
 
 ```
 TIME OVERVIEW
-WORKING TIME  
+WORKING TIME
 PROJECTS
   * code1 - 5:00 (5.00 hrs)
 ```
