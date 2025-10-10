@@ -14,6 +14,7 @@ pub mod web;
 pub use config::Config;
 pub use display::{
     DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
+    show_single_day, show_weekly_summary,
 };
 pub use editor::open_in_editor;
 pub use file_utils::{

@@ -40,3 +40,203 @@ pub fn create_template_content(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn test_get_time_tracking_dir_no_override() {
+        let result = get_time_tracking_dir();
+        assert!(result.is_ok());
+        
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().ends_with(".time-tracking"));
+    }
+
+    #[test]
+    fn test_get_time_tracking_dir_with_override_none() {
+        let result = get_time_tracking_dir_with_override(None);
+        assert!(result.is_ok());
+        
+        let path = result.unwrap();
+        assert!(path.to_string_lossy().ends_with(".time-tracking"));
+    }
+
+    #[test]
+    fn test_get_time_tracking_dir_with_override_some() {
+        let override_path = "/custom/path/time-tracking";
+        let result = get_time_tracking_dir_with_override(Some(override_path));
+        assert!(result.is_ok());
+        
+        let path = result.unwrap();
+        assert_eq!(path, PathBuf::from(override_path));
+    }
+
+    #[test]
+    fn test_get_time_tracking_dir_with_override_relative_path() {
+        let override_path = "relative/path";
+        let result = get_time_tracking_dir_with_override(Some(override_path));
+        assert!(result.is_ok());
+        
+        let path = result.unwrap();
+        assert_eq!(path, PathBuf::from(override_path));
+    }
+
+    #[test]
+    fn test_get_time_tracking_dir_with_override_empty_string() {
+        let result = get_time_tracking_dir_with_override(Some(""));
+        assert!(result.is_ok());
+        
+        let path = result.unwrap();
+        assert_eq!(path, PathBuf::from(""));
+    }
+
+    #[test]
+    fn test_create_template_content_no_template() {
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, None);
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_create_template_content_with_template_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("template.md");
+        
+        let template_content = "# Daily Report for {date}\n\n## Tasks\n- Task 1\n- Task 2\n\n## Notes\nDate: {date}";
+        fs::write(&template_path, template_content).unwrap();
+        
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert_eq!(content, "# Daily Report for 2023-10-15\n\n## Tasks\n- Task 1\n- Task 2\n\n## Notes\nDate: 2023-10-15");
+    }
+
+    #[test]
+    fn test_create_template_content_multiple_date_placeholders() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("template.md");
+        
+        let template_content = "Date: {date}\nFilename: {date}.md\nTitle: Report for {date}";
+        fs::write(&template_path, template_content).unwrap();
+        
+        let date = NaiveDate::from_ymd_opt(2023, 12, 25).unwrap();
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert_eq!(content, "Date: 2023-12-25\nFilename: 2023-12-25.md\nTitle: Report for 2023-12-25");
+    }
+
+    #[test]
+    fn test_create_template_content_no_date_placeholders() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("template.md");
+        
+        let template_content = "# Static Template\n\nThis template has no date placeholders.";
+        fs::write(&template_path, template_content).unwrap();
+        
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        assert_eq!(content, "# Static Template\n\nThis template has no date placeholders.");
+    }
+
+    #[test]
+    fn test_create_template_content_empty_template_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("empty_template.md");
+        
+        fs::write(&template_path, "").unwrap();
+        
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_create_template_content_file_not_found() {
+        let non_existent_path = "/path/that/does/not/exist/template.md";
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, Some(non_existent_path));
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Failed to read template file"));
+        assert!(error.to_string().contains(non_existent_path));
+    }
+
+    #[test]
+    fn test_create_template_content_date_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("template.md");
+        
+        let template_content = "Date: {date}";
+        fs::write(&template_path, template_content).unwrap();
+        
+        // Test different date formats
+        let dates_and_expected = [
+            (NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(), "2023-01-01"),
+            (NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(), "2023-12-31"),
+            (NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(), "2024-02-29"), // Leap year
+            (NaiveDate::from_ymd_opt(2000, 6, 15).unwrap(), "2000-06-15"),
+        ];
+        
+        for (date, expected_date_str) in dates_and_expected {
+            let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+            assert!(result.is_ok());
+            let content = result.unwrap();
+            assert_eq!(content, format!("Date: {}", expected_date_str));
+        }
+    }
+
+    #[test]
+    fn test_create_template_content_complex_template() {
+        let temp_dir = TempDir::new().unwrap();
+        let template_path = temp_dir.path().join("complex_template.md");
+        
+        let template_content = r#"# Time Tracking Report - {date}
+
+## Summary
+Date: {date}
+Week: Week of {date}
+
+## Time Entries
+| Start | End | Project | Description |
+|-------|-----|---------|-------------|
+|       |     |         |             |
+
+## Notes
+Report generated for {date}
+
+---
+*Generated on {date}*"#;
+        fs::write(&template_path, template_content).unwrap();
+        
+        let date = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        
+        assert!(result.is_ok());
+        let content = result.unwrap();
+        
+        // Verify all {date} placeholders were replaced
+        assert!(!content.contains("{date}"));
+        assert!(content.contains("2023-10-15"));
+        
+        // Count occurrences of the date
+        let date_count = content.matches("2023-10-15").count();
+        assert_eq!(date_count, 5); // Should appear 5 times
+    }
+}
