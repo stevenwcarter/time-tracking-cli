@@ -11,6 +11,10 @@ pub struct Config {
     pub data_directory: Option<String>,
     /// Path to a template file to use when creating new time tracking files
     pub template_file: Option<String>,
+    /// Optional prefix to search for before beginning parsing time entries (e.g. ```timetracking)
+    pub prefix: Option<String>,
+    /// Optional suffix to search for, after which stop parsing time entries (e.g. ``` )
+    pub suffix: Option<String>,
 }
 
 impl Default for Config {
@@ -19,6 +23,8 @@ impl Default for Config {
             week_start_day: Some("Saturday".to_string()),
             data_directory: None,
             template_file: None,
+            prefix: None,
+            suffix: None,
         }
     }
 }
@@ -77,6 +83,16 @@ impl Config {
     pub fn get_template_file(&self) -> Option<&str> {
         self.template_file.as_deref()
     }
+
+    /// Get the prefix as Option<&str>
+    pub fn get_prefix(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+
+    /// Get the suffix as Option<&str>
+    pub fn get_suffix(&self) -> Option<&str> {
+        self.suffix.as_deref()
+    }
 }
 
 fn get_config_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -103,6 +119,8 @@ mod tests {
             week_start_day: Some("Monday".to_string()),
             data_directory: Some("/test/data".to_string()),
             template_file: Some("/test/template.md".to_string()),
+            prefix: None,
+            suffix: None,
         }
     }
 
@@ -111,6 +129,8 @@ mod tests {
             week_start_day: None,
             data_directory: None,
             template_file: None,
+            prefix: None,
+            suffix: None,
         }
     }
 
@@ -402,6 +422,8 @@ mod tests {
             week_start_day: None,
             data_directory: Some("/data".to_string()),
             template_file: Some("/template.md".to_string()),
+            prefix: None,
+            suffix: None,
         };
 
         assert_eq!(config.get_week_start_day(), "Saturday");
@@ -411,6 +433,8 @@ mod tests {
             week_start_day: Some("".to_string()),
             data_directory: None,
             template_file: None,
+            prefix: None,
+            suffix: None,
         };
 
         assert_eq!(config.get_week_start_day(), "");
@@ -423,6 +447,8 @@ mod tests {
             week_start_day: Some("Monday".to_string()),
             data_directory: None,
             template_file: None,
+            prefix: None,
+            suffix: None,
         }
         .with_args_applied(
             None, // Keep Monday

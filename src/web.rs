@@ -204,7 +204,11 @@ pub async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<DayD
     let content =
         std::fs::read_to_string(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let data = time_tracking_parser::parse_time_tracking_data(&content);
+    let data = time_tracking_parser::parse_time_tracking_data(
+        &content,
+        state.config.get_prefix(),
+        state.config.get_suffix(),
+    );
 
     let projects: Vec<ProjectData> = data
         .projects

@@ -6,8 +6,14 @@ use super::DisplayFormatter;
 pub struct PlainDisplayFormatter;
 
 impl DisplayFormatter for PlainDisplayFormatter {
-    fn display_day_summary(&self, content: &str, indent: &str) {
-        let data = time_tracking_parser::parse_time_tracking_data(content);
+    fn display_day_summary(
+        &self,
+        content: &str,
+        indent: &str,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) {
+        let data = time_tracking_parser::parse_time_tracking_data(content, prefix, suffix);
 
         // Display overview
         println!("{}TIME OVERVIEW", indent);
