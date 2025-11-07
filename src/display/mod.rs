@@ -1,3 +1,5 @@
+use std::clone::Clone;
+use std::fmt::Debug;
 use std::fs;
 
 mod default;
@@ -8,32 +10,39 @@ pub use default::DefaultDisplayFormatter;
 pub use markdown::MarkdownDisplayFormatter;
 pub use plain::PlainDisplayFormatter;
 
-use chrono::{NaiveDate, Weekday};
+use anyhow::Result;
+use time::{Date, Weekday, macros::format_description};
 use time_tracking_parser::parse_time_tracking_data;
 
 use crate::{
-    Config, create_template_content, format_day_with_date, get_time_tracking_dir_with_override,
-    get_week_dates, open_in_editor,
+    Config, DATE_FORMAT, create_template_content, format_day_with_date,
+    get_time_tracking_dir_with_override, get_week_dates, open_in_editor,
 };
 
 /// Trait for formatting and displaying time tracking data
-pub trait DisplayFormatter {
+pub trait DisplayFormatter: Debug + Send + Sync {
     /// Display a single day's time tracking results
+    fn day_summary(&self, content: &str, indent: &str) -> String;
     fn display_day_summary(&self, content: &str, indent: &str);
 
     /// Display the weekly summary header
+    fn weekly_header(&self, week_start: &str, week_end: &str) -> String;
     fn display_weekly_header(&self, week_start: &str, week_end: &str);
 
     /// Display weekly totals
+    fn weekly_totals(&self, total_minutes: u32, dead_minutes: u32) -> String;
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32);
 
     /// Display weekly projects summary
+    fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String;
     fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]);
 
     /// Display daily breakdowns header
+    fn daily_breakdowns_header(&self) -> String;
     fn display_daily_breakdowns_header(&self);
 
     /// Display a single day header in weekly view
+    fn day_header(&self, day_with_date: &str) -> String;
     fn display_day_header(&self, day_with_date: &str);
 
     /// Display message for missing file
@@ -43,12 +52,12 @@ pub trait DisplayFormatter {
     fn display_no_data_found(&self, indent: &str);
 }
 
-pub fn show_weekly_summary(
-    date: &NaiveDate,
+pub async fn show_weekly_summary(
+    date: &Date,
     week_start_day: Weekday,
     formatter: &dyn DisplayFormatter,
     config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     let week_dates = get_week_dates(date, week_start_day);
     let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
 
@@ -66,7 +75,7 @@ pub fn show_weekly_summary(
 
     // First pass: collect all data
     for day_date in &week_dates {
-        let filename = format!("{}.md", day_date.format("%Y-%m-%d"));
+        let filename = format!("{}.md", day_date.format(DATE_FORMAT).unwrap());
         let file_path = time_tracking_dir.join(&filename);
 
         if file_path.exists() {
@@ -142,8 +151,27 @@ pub fn show_weekly_summary(
     Ok(())
 }
 
-pub fn show_single_day(
-    date: &NaiveDate,
+pub async fn read_day(date: &Date, config: &Config) -> Result<Option<String>> {
+    // Create the time tracking directory
+    let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
+    fs::create_dir_all(&time_tracking_dir)?;
+
+    let custom_format = format_description!("[year]-[month]-[day]");
+    // Create the filename for the date
+    let filename = format!("{}.md", date.format(&custom_format)?);
+    let file_path = time_tracking_dir.join(&filename);
+
+    // Create the file if it doesn't exist
+    if !file_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&file_path)?;
+
+    Ok(Some(content))
+}
+pub async fn show_single_day(
+    date: &Date,
     formatter: &dyn DisplayFormatter,
     config: &Config,
     noedit: bool,
@@ -153,7 +181,10 @@ pub fn show_single_day(
     fs::create_dir_all(&time_tracking_dir)?;
 
     // Create the filename for the date
-    let filename = format!("{}.md", date.format("%Y-%m-%d"));
+    let filename = format!(
+        "{}.md",
+        date.format(&format_description!("[year]-[month]-[day]"))?
+    );
     let file_path = time_tracking_dir.join(&filename);
 
     // Create the file if it doesn't exist
@@ -176,8 +207,10 @@ pub fn show_single_day(
     }
 
     // Parse and display the results
-    let content = fs::read_to_string(&file_path)?;
-    formatter.display_day_summary(&content, "");
+    let content = read_day(date, config).await?;
+    if let Some(content) = content {
+        formatter.display_day_summary(&content, "");
+    }
 
     Ok(())
 }
@@ -211,8 +244,8 @@ mod tests {
         let _formatter_ref: &dyn DisplayFormatter = &formatter;
     }
 
-    #[test]
-    fn test_display_formatter_trait_methods() {
+    #[tokio::test]
+    async fn test_display_formatter_trait_methods() {
         let formatter = DefaultDisplayFormatter;
 
         // Test that all trait methods can be called without panicking
@@ -234,8 +267,8 @@ mod tests {
         formatter.display_weekly_projects(&projects);
     }
 
-    #[test]
-    fn test_plain_display_formatter_methods() {
+    #[tokio::test]
+    async fn test_plain_display_formatter_methods() {
         let formatter = PlainDisplayFormatter;
 
         // Test that all trait methods can be called without panicking
@@ -250,8 +283,8 @@ mod tests {
         formatter.display_weekly_projects(&empty_projects);
     }
 
-    #[test]
-    fn test_markdown_display_formatter_methods() {
+    #[tokio::test]
+    async fn test_markdown_display_formatter_methods() {
         let formatter = MarkdownDisplayFormatter;
 
         // Test that all trait methods can be called without panicking
@@ -268,8 +301,8 @@ mod tests {
         formatter.display_weekly_projects(&projects);
     }
 
-    #[test]
-    fn test_display_day_summary_with_sample_data() {
+    #[tokio::test]
+    async fn test_display_day_summary_with_sample_data() {
         let formatter = DefaultDisplayFormatter;
 
         // Test with various content strings
@@ -286,8 +319,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_display_methods_with_different_indents() {
+    #[tokio::test]
+    async fn test_display_methods_with_different_indents() {
         let formatter = DefaultDisplayFormatter;
 
         let test_indents = ["", "  ", "    ", "\t", ">>"];
@@ -299,8 +332,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_weekly_totals_edge_cases() {
+    #[tokio::test]
+    async fn test_weekly_totals_edge_cases() {
         let formatter = DefaultDisplayFormatter;
 
         // Test edge cases for weekly totals
@@ -310,8 +343,8 @@ mod tests {
         formatter.display_weekly_totals(u32::MAX, u32::MAX); // Maximum values
     }
 
-    #[test]
-    fn test_projects_display_edge_cases() {
+    #[tokio::test]
+    async fn test_projects_display_edge_cases() {
         let formatter = DefaultDisplayFormatter;
 
         // Empty projects
@@ -343,8 +376,8 @@ mod tests {
         formatter.display_weekly_projects(&multiple_projects);
     }
 
-    #[test]
-    fn test_formatter_polymorphism() {
+    #[tokio::test]
+    async fn test_formatter_polymorphism() {
         let formatters: Vec<Box<dyn DisplayFormatter>> = vec![
             Box::new(DefaultDisplayFormatter),
             Box::new(PlainDisplayFormatter),
@@ -359,8 +392,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_date_string_handling() {
+    #[tokio::test]
+    async fn test_date_string_handling() {
         let formatter = DefaultDisplayFormatter;
 
         // Test with various date string formats

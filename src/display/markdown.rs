@@ -2,101 +2,125 @@ use super::DisplayFormatter;
 use time_tracking_parser::Time;
 
 /// Markdown-formatted display formatter
+#[derive(Debug, Clone)]
 pub struct MarkdownDisplayFormatter;
 
 impl DisplayFormatter for MarkdownDisplayFormatter {
-    fn display_day_summary(&self, content: &str, indent: &str) {
+    fn day_summary(&self, content: &str, indent: &str) -> String {
         let data = time_tracking_parser::parse_time_tracking_data(content);
+        let mut msg = String::new();
 
-        println!(
-            "{}**Total Time:** {} hours",
+        msg.push_str(&format!(
+            "{}**Total Time:** {} hours\n",
             indent,
-            data.formatted_total_decimal()
-        );
+            data.formatted_total_decimal(),
+        ));
 
         if data.dead_time_minutes > 0 {
-            println!(
-                "{}**Dead Time:** {} hours",
+            msg.push_str(&format!(
+                "{}**Dead Time:** {} hours\n",
                 indent,
-                data.formatted_dead_decimal()
-            );
+                data.formatted_dead_decimal(),
+            ));
         }
 
         // Display warnings
         if !data.warnings.is_empty() {
-            println!("{}**Warnings:**", indent);
+            msg.push_str(&format!("{}**Warnings:**\n", indent));
             for warning in &data.warnings {
-                println!("{}  - ⚠️ {}", indent, warning);
+                msg.push_str(&format!("{}  - ⚠️ {}\n", indent, warning));
             }
         }
 
         // Display projects
         if !data.projects.is_empty() {
-            println!("{}**Projects:**", indent);
+            msg.push_str(&format!("{}**Projects:**\n", indent));
             for project in &data.projects {
-                println!(
+                msg.push_str(&format!(
                     "{}  - **{}** - {} hours",
                     indent,
                     project.name,
-                    Time::format_duration_decimal(project.total_minutes)
-                );
+                    Time::format_duration_decimal(project.total_minutes),
+                ));
                 for note in &project.notes {
-                    println!("{}    - {}", indent, note);
+                    msg.push_str(&format!("{}    - {}\n", indent, note));
                 }
             }
         }
+        msg
+    }
+    fn display_day_summary(&self, content: &str, indent: &str) {
+        println!("{}", self.day_summary(content, indent));
     }
 
+    fn weekly_header(&self, week_start: &str, week_end: &str) -> String {
+        let mut msg = String::new();
+        msg.push_str(&format!("# Weekly Summary\n"));
+        msg.push_str(&format!("**Period:** {} to {}\n\n", week_start, week_end));
+        msg
+    }
     fn display_weekly_header(&self, week_start: &str, week_end: &str) {
-        println!("# Weekly Summary");
-        println!("**Period:** {} to {}", week_start, week_end);
-        println!();
+        println!("{}", self.weekly_header(week_start, week_end));
     }
 
-    fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
-        println!("## Summary");
-        println!(
-            "- **Total Time:** {} hours",
-            Time::format_duration_decimal(total_minutes)
-        );
+    fn weekly_totals(&self, total_minutes: u32, dead_minutes: u32) -> String {
+        let mut msg = String::new();
+        msg.push_str(&format!("## Summary\n"));
+        msg.push_str(&format!(
+            "- **Total Time:** {} hours\n",
+            Time::format_duration_decimal(total_minutes),
+        ));
         if dead_minutes > 0 {
-            println!(
-                "- **Dead Time:** {} hours",
-                Time::format_duration_decimal(dead_minutes)
-            );
+            msg.push_str(&format!(
+                "- **Dead Time:** {} hours\n",
+                Time::format_duration_decimal(dead_minutes),
+            ));
         }
-        println!();
+        msg.push('\n');
+        msg
+    }
+    fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
+        println!("{}", self.weekly_totals(total_minutes, dead_minutes));
     }
 
-    fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
+    fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String {
+        let mut msg = String::new();
         if !projects.is_empty() {
-            println!("## Projects");
+            msg.push_str(&format!("## Projects\n"));
             for (project_name, (total_minutes, notes)) in projects {
-                println!("### {}", project_name);
-                println!(
-                    "**Time:** {} hours",
-                    Time::format_duration_decimal(*total_minutes)
-                );
+                msg.push_str(&format!("### {}\n", project_name));
+                msg.push_str(&format!(
+                    "**Time:** {} hours\n",
+                    Time::format_duration_decimal(*total_minutes),
+                ));
 
                 if !notes.is_empty() {
-                    println!("**Notes:**");
+                    msg.push_str(&format!("**Notes:**\n"));
                     for note in notes {
-                        println!("- {}", note);
+                        msg.push_str(&format!("- {}\n", note));
                     }
                 }
-                println!();
+                msg.push('\n');
             }
         }
+        msg
+    }
+    fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
+        println!("{}", self.weekly_projects(projects));
     }
 
+    fn daily_breakdowns_header(&self) -> String {
+        "## Daily Breakdowns\n".to_owned()
+    }
     fn display_daily_breakdowns_header(&self) {
-        println!("## Daily Breakdowns");
-        println!();
+        println!("{}", self.daily_breakdowns_header());
     }
 
+    fn day_header(&self, day_with_date: &str) -> String {
+        format!("### {}\n", day_with_date)
+    }
     fn display_day_header(&self, day_with_date: &str) {
-        println!("### {}", day_with_date);
-        println!();
+        println!("{}", self.day_header(day_with_date));
     }
 
     fn display_no_file_found(&self, indent: &str) {

@@ -1,7 +1,8 @@
-use chrono::{Local, NaiveDate};
+use anyhow::Result;
 use clap::Parser;
+use time::{Date, OffsetDateTime};
 use time_tracking_cli::{
-    Config, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
+    Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
     PlainDisplayFormatter, parse_weekday, show_single_day, show_weekly_summary,
 };
 
@@ -49,21 +50,19 @@ struct Args {
     #[arg(long)]
     serve: bool,
 
+    #[cfg(feature = "tui")]
+    #[arg(long)]
+    tui: bool,
+
     /// Port for web server (default: 3000)
     #[cfg(feature = "webapp")]
     #[arg(long, default_value = "3000")]
     port: u16,
 }
 
-#[cfg(feature = "webapp")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     main_impl().await
-}
-
-#[cfg(not(feature = "webapp"))]
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    futures::executor::block_on(main_impl())
 }
 
 async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
@@ -91,24 +90,34 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     let date = match date_str {
         Some(date_str) => {
             // Parse the provided date
-            NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+            Date::parse(&date_str, DATE_FORMAT)
                 .map_err(|_| "Invalid date format. Please use YYYY-MM-DD")?
         }
         None => {
             // Use today's date
-            Local::now().date_naive()
+            OffsetDateTime::now_local().unwrap().date()
         }
     };
 
-    // Select the appropriate formatter
     let formatter = parse_formatter(&args.formatter);
+
+    #[cfg(feature = "tui")]
+    if args.tui {
+        use tracing::info;
+
+        info!("🚀 Starting Time Tracking TUI...");
+        let _ = time_tracking_cli::tui::tui(&config, date, formatter).await;
+        return Ok(());
+    }
+
+    // Select the appropriate formatter
 
     if args.week {
         // Show weekly summary
-        show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), &config)?;
+        show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), &config).await?;
     } else {
         // Show single day (existing functionality)
-        show_single_day(&date, formatter.as_ref(), &config, args.noedit)?;
+        show_single_day(&date, formatter.as_ref(), &config, args.noedit).await?;
     }
 
     Ok(())

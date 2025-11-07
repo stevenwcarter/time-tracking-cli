@@ -1,23 +1,25 @@
-use chrono::{Datelike, Duration, NaiveDate, Weekday};
+use time::{Date, Duration, Weekday};
+
+use crate::DATE_FORMAT;
 
 pub fn parse_weekday(day_str: &str) -> Result<Weekday, Box<dyn std::error::Error>> {
     match day_str.to_lowercase().as_str() {
-        "monday" | "mon" => Ok(Weekday::Mon),
-        "tuesday" | "tue" => Ok(Weekday::Tue),
-        "wednesday" | "wed" => Ok(Weekday::Wed),
-        "thursday" | "thu" => Ok(Weekday::Thu),
-        "friday" | "fri" => Ok(Weekday::Fri),
-        "saturday" | "sat" => Ok(Weekday::Sat),
-        "sunday" | "sun" => Ok(Weekday::Sun),
+        "monday" | "mon" => Ok(Weekday::Monday),
+        "tuesday" | "tue" => Ok(Weekday::Tuesday),
+        "wednesday" | "wed" => Ok(Weekday::Wednesday),
+        "thursday" | "thu" => Ok(Weekday::Thursday),
+        "friday" | "fri" => Ok(Weekday::Friday),
+        "saturday" | "sat" => Ok(Weekday::Saturday),
+        "sunday" | "sun" => Ok(Weekday::Sunday),
         _ => Err(format!("Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday", day_str).into()),
     }
 }
 
-pub fn get_week_dates(date: &NaiveDate, week_start_day: Weekday) -> Vec<NaiveDate> {
+pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {
     // Calculate how many days to go back to reach the week start day
     let current_weekday = date.weekday();
-    let days_since_week_start = (current_weekday.num_days_from_monday() as i32
-        - week_start_day.num_days_from_monday() as i32
+    let days_since_week_start = (current_weekday.number_from_monday() as i32
+        - week_start_day.number_from_monday() as i32
         + 7)
         % 7;
 
@@ -27,8 +29,8 @@ pub fn get_week_dates(date: &NaiveDate, week_start_day: Weekday) -> Vec<NaiveDat
     (0..7).map(|i| week_start + Duration::days(i)).collect()
 }
 
-pub fn format_day_with_date(date: &NaiveDate) -> String {
-    let day_name = match date.weekday().num_days_from_monday() {
+pub fn format_day_with_date(date: &Date) -> String {
+    let day_name = match date.weekday().number_from_monday() {
         0 => "Monday",
         1 => "Tuesday",
         2 => "Wednesday",
@@ -39,43 +41,44 @@ pub fn format_day_with_date(date: &NaiveDate) -> String {
         _ => unreachable!(),
     };
 
-    format!("{} {}", day_name, date.format("%Y-%m-%d"))
+    format!("{} {}", day_name, date.format(&DATE_FORMAT).unwrap())
 }
 
 #[cfg(test)]
 mod tests {
+    use time::macros::date;
+
     use super::*;
-    use chrono::NaiveDate;
 
     #[test]
     fn test_parse_weekday_full_names() {
-        assert_eq!(parse_weekday("Monday").unwrap(), Weekday::Mon);
-        assert_eq!(parse_weekday("Tuesday").unwrap(), Weekday::Tue);
-        assert_eq!(parse_weekday("Wednesday").unwrap(), Weekday::Wed);
-        assert_eq!(parse_weekday("Thursday").unwrap(), Weekday::Thu);
-        assert_eq!(parse_weekday("Friday").unwrap(), Weekday::Fri);
-        assert_eq!(parse_weekday("Saturday").unwrap(), Weekday::Sat);
-        assert_eq!(parse_weekday("Sunday").unwrap(), Weekday::Sun);
+        assert_eq!(parse_weekday("Monday").unwrap(), Weekday::Monday);
+        assert_eq!(parse_weekday("Tuesday").unwrap(), Weekday::Tuesday);
+        assert_eq!(parse_weekday("Wednesday").unwrap(), Weekday::Wednesday);
+        assert_eq!(parse_weekday("Thursday").unwrap(), Weekday::Thursday);
+        assert_eq!(parse_weekday("Friday").unwrap(), Weekday::Friday);
+        assert_eq!(parse_weekday("Saturday").unwrap(), Weekday::Saturday);
+        assert_eq!(parse_weekday("Sunday").unwrap(), Weekday::Sunday);
     }
 
     #[test]
     fn test_parse_weekday_short_names() {
-        assert_eq!(parse_weekday("Mon").unwrap(), Weekday::Mon);
-        assert_eq!(parse_weekday("Tue").unwrap(), Weekday::Tue);
-        assert_eq!(parse_weekday("Wed").unwrap(), Weekday::Wed);
-        assert_eq!(parse_weekday("Thu").unwrap(), Weekday::Thu);
-        assert_eq!(parse_weekday("Fri").unwrap(), Weekday::Fri);
-        assert_eq!(parse_weekday("Sat").unwrap(), Weekday::Sat);
-        assert_eq!(parse_weekday("Sun").unwrap(), Weekday::Sun);
+        assert_eq!(parse_weekday("Mon").unwrap(), Weekday::Monday);
+        assert_eq!(parse_weekday("Tue").unwrap(), Weekday::Tuesday);
+        assert_eq!(parse_weekday("Wed").unwrap(), Weekday::Wednesday);
+        assert_eq!(parse_weekday("Thu").unwrap(), Weekday::Thursday);
+        assert_eq!(parse_weekday("Fri").unwrap(), Weekday::Friday);
+        assert_eq!(parse_weekday("Sat").unwrap(), Weekday::Saturday);
+        assert_eq!(parse_weekday("Sun").unwrap(), Weekday::Sunday);
     }
 
     #[test]
     fn test_parse_weekday_case_insensitive() {
-        assert_eq!(parse_weekday("monday").unwrap(), Weekday::Mon);
-        assert_eq!(parse_weekday("TUESDAY").unwrap(), Weekday::Tue);
-        assert_eq!(parse_weekday("WeDnEsDaY").unwrap(), Weekday::Wed);
-        assert_eq!(parse_weekday("thu").unwrap(), Weekday::Thu);
-        assert_eq!(parse_weekday("FRI").unwrap(), Weekday::Fri);
+        assert_eq!(parse_weekday("monday").unwrap(), Weekday::Monday);
+        assert_eq!(parse_weekday("TUESDAY").unwrap(), Weekday::Tuesday);
+        assert_eq!(parse_weekday("WeDnEsDaY").unwrap(), Weekday::Wednesday);
+        assert_eq!(parse_weekday("thu").unwrap(), Weekday::Thursday);
+        assert_eq!(parse_weekday("FRI").unwrap(), Weekday::Friday);
     }
 
     #[test]
@@ -95,128 +98,101 @@ mod tests {
     #[test]
     fn test_get_week_dates_monday_start() {
         // Test with a Wednesday (2023-10-11)
-        let date = NaiveDate::from_ymd_opt(2023, 10, 11).unwrap();
-        let week_dates = get_week_dates(&date, Weekday::Mon);
+        let date = date!(2023 - 10 - 11);
+        let week_dates = get_week_dates(&date, Weekday::Monday);
 
         assert_eq!(week_dates.len(), 7);
         // Week should start on Monday 2023-10-09
-        assert_eq!(week_dates[0], NaiveDate::from_ymd_opt(2023, 10, 9).unwrap());
-        assert_eq!(
-            week_dates[1],
-            NaiveDate::from_ymd_opt(2023, 10, 10).unwrap()
-        );
-        assert_eq!(
-            week_dates[2],
-            NaiveDate::from_ymd_opt(2023, 10, 11).unwrap()
-        ); // Input date
-        assert_eq!(
-            week_dates[6],
-            NaiveDate::from_ymd_opt(2023, 10, 15).unwrap()
-        );
+        assert_eq!(week_dates[0], date!(2023 - 10 - 9));
+        assert_eq!(week_dates[1], date!(2023 - 10 - 10));
+        assert_eq!(week_dates[2], date!(2023 - 10 - 11)); // Input date
+        assert_eq!(week_dates[6], date!(2023 - 10 - 15));
 
         // Verify weekdays
-        assert_eq!(week_dates[0].weekday(), Weekday::Mon);
-        assert_eq!(week_dates[6].weekday(), Weekday::Sun);
+        assert_eq!(week_dates[0].weekday(), Weekday::Monday);
+        assert_eq!(week_dates[6].weekday(), Weekday::Sunday);
     }
 
     #[test]
     fn test_get_week_dates_saturday_start() {
         // Test with a Wednesday (2023-10-11)
-        let date = NaiveDate::from_ymd_opt(2023, 10, 11).unwrap();
-        let week_dates = get_week_dates(&date, Weekday::Sat);
+        let date = date!(2023 - 10 - 11);
+        let week_dates = get_week_dates(&date, Weekday::Saturday);
 
         assert_eq!(week_dates.len(), 7);
         // Week should start on Saturday 2023-10-07
-        assert_eq!(week_dates[0], NaiveDate::from_ymd_opt(2023, 10, 7).unwrap());
-        assert_eq!(
-            week_dates[4],
-            NaiveDate::from_ymd_opt(2023, 10, 11).unwrap()
-        ); // Input date (Wed)
-        assert_eq!(
-            week_dates[6],
-            NaiveDate::from_ymd_opt(2023, 10, 13).unwrap()
-        );
+        assert_eq!(week_dates[0], date!(2023 - 10 - 7));
+        assert_eq!(week_dates[4], date!(2023 - 10 - 11)); // Input date (Wednesday)
+        assert_eq!(week_dates[6], date!(2023 - 10 - 13));
 
         // Verify weekdays
-        assert_eq!(week_dates[0].weekday(), Weekday::Sat);
-        assert_eq!(week_dates[6].weekday(), Weekday::Fri);
+        assert_eq!(week_dates[0].weekday(), Weekday::Saturday);
+        assert_eq!(week_dates[6].weekday(), Weekday::Friday);
     }
 
     #[test]
     fn test_get_week_dates_sunday_start() {
         // Test with a Monday (2023-10-09)
-        let date = NaiveDate::from_ymd_opt(2023, 10, 9).unwrap();
-        let week_dates = get_week_dates(&date, Weekday::Sun);
+        let date = date!(2023 - 10 - 9);
+        let week_dates = get_week_dates(&date, Weekday::Sunday);
 
         assert_eq!(week_dates.len(), 7);
         // Week should start on Sunday 2023-10-08
-        assert_eq!(week_dates[0], NaiveDate::from_ymd_opt(2023, 10, 8).unwrap());
-        assert_eq!(week_dates[1], NaiveDate::from_ymd_opt(2023, 10, 9).unwrap()); // Input date
-        assert_eq!(
-            week_dates[6],
-            NaiveDate::from_ymd_opt(2023, 10, 14).unwrap()
-        );
+        assert_eq!(week_dates[0], date!(2023 - 10 - 8));
+        assert_eq!(week_dates[1], date!(2023 - 10 - 9)); // Input date
+        assert_eq!(week_dates[6], date!(2023 - 10 - 14));
 
         // Verify weekdays
-        assert_eq!(week_dates[0].weekday(), Weekday::Sun);
-        assert_eq!(week_dates[6].weekday(), Weekday::Sat);
+        assert_eq!(week_dates[0].weekday(), Weekday::Sunday);
+        assert_eq!(week_dates[6].weekday(), Weekday::Saturday);
     }
 
     #[test]
     fn test_get_week_dates_same_day_as_week_start() {
         // Test when the input date is the same as week start day
-        let saturday = NaiveDate::from_ymd_opt(2023, 10, 7).unwrap(); // Saturday
-        let week_dates = get_week_dates(&saturday, Weekday::Sat);
+        let saturday = date!(2023 - 10 - 7); // Saturday
+        let week_dates = get_week_dates(&saturday, Weekday::Saturday);
 
         assert_eq!(week_dates.len(), 7);
         assert_eq!(week_dates[0], saturday); // Should start on the same day
-        assert_eq!(
-            week_dates[6],
-            NaiveDate::from_ymd_opt(2023, 10, 13).unwrap()
-        );
+        assert_eq!(week_dates[6], date!(2023 - 10 - 13));
     }
 
     #[test]
     fn test_get_week_dates_end_of_month() {
         // Test with last day of month
-        let date = NaiveDate::from_ymd_opt(2023, 10, 31).unwrap(); // Tuesday
-        let week_dates = get_week_dates(&date, Weekday::Mon);
+        let date = date!(2023 - 10 - 31); // Tuesday
+        let week_dates = get_week_dates(&date, Weekday::Monday);
 
         assert_eq!(week_dates.len(), 7);
         // Week should start on Monday 2023-10-30
-        assert_eq!(
-            week_dates[0],
-            NaiveDate::from_ymd_opt(2023, 10, 30).unwrap()
-        );
+        assert_eq!(week_dates[0], date!(2023 - 10 - 30));
         assert_eq!(week_dates[1], date); // Input date
         // Should continue into November
-        assert_eq!(week_dates[6], NaiveDate::from_ymd_opt(2023, 11, 5).unwrap());
+        assert_eq!(week_dates[6], date!(2023 - 11 - 5));
     }
 
     #[test]
     fn test_get_week_dates_year_boundary() {
         // Test with date near year boundary
-        let date = NaiveDate::from_ymd_opt(2023, 12, 31).unwrap(); // Sunday
-        let week_dates = get_week_dates(&date, Weekday::Mon);
+        let date = date!(2023 - 12 - 31); // Sunday
+        let week_dates = get_week_dates(&date, Weekday::Monday);
 
         assert_eq!(week_dates.len(), 7);
         // Week should start on Monday 2023-12-25
-        assert_eq!(
-            week_dates[0],
-            NaiveDate::from_ymd_opt(2023, 12, 25).unwrap()
-        );
+        assert_eq!(week_dates[0], date!(2023 - 12 - 25));
         assert_eq!(week_dates[6], date); // Input date should be last day
     }
 
     #[test]
     fn test_format_day_with_date() {
-        let monday = NaiveDate::from_ymd_opt(2023, 10, 9).unwrap();
-        let tuesday = NaiveDate::from_ymd_opt(2023, 10, 10).unwrap();
-        let wednesday = NaiveDate::from_ymd_opt(2023, 10, 11).unwrap();
-        let thursday = NaiveDate::from_ymd_opt(2023, 10, 12).unwrap();
-        let friday = NaiveDate::from_ymd_opt(2023, 10, 13).unwrap();
-        let saturday = NaiveDate::from_ymd_opt(2023, 10, 14).unwrap();
-        let sunday = NaiveDate::from_ymd_opt(2023, 10, 15).unwrap();
+        let monday = date!(2023 - 10 - 9);
+        let tuesday = date!(2023 - 10 - 10);
+        let wednesday = date!(2023 - 10 - 11);
+        let thursday = date!(2023 - 10 - 12);
+        let friday = date!(2023 - 10 - 13);
+        let saturday = date!(2023 - 10 - 14);
+        let sunday = date!(2023 - 10 - 15);
 
         assert_eq!(format_day_with_date(&monday), "Monday 2023-10-09");
         assert_eq!(format_day_with_date(&tuesday), "Tuesday 2023-10-10");
@@ -229,8 +205,8 @@ mod tests {
 
     #[test]
     fn test_format_day_with_date_different_years() {
-        let date_2022 = NaiveDate::from_ymd_opt(2022, 1, 1).unwrap(); // Saturday
-        let date_2024 = NaiveDate::from_ymd_opt(2024, 12, 25).unwrap(); // Wednesday
+        let date_2022 = date!(2022 - 1 - 1); // Saturday
+        let date_2024 = date!(2024 - 12 - 25); // Wednesday
 
         assert_eq!(format_day_with_date(&date_2022), "Saturday 2022-01-01");
         assert_eq!(format_day_with_date(&date_2024), "Wednesday 2024-12-25");
@@ -238,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_format_day_with_date_leap_year() {
-        let leap_day = NaiveDate::from_ymd_opt(2024, 2, 29).unwrap(); // Thursday
+        let leap_day = date!(2024 - 2 - 29); // Thursday
         assert_eq!(format_day_with_date(&leap_day), "Thursday 2024-02-29");
     }
 }

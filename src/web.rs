@@ -1,5 +1,5 @@
 use crate::{
-    Config,
+    Config, DATE_FORMAT,
     context::GraphQLContext,
     graphql::{Schema, create_schema},
 };
@@ -12,12 +12,12 @@ use axum::{
     routing::{MethodFilter, get, on},
 };
 use axum_embed::{FallbackBehavior, ServeEmbed};
-use chrono::{Local, NaiveDate};
 use juniper::GraphQLObject;
 use juniper_axum::{extract::JuniperRequest, graphiql, playground, response::JuniperResponse};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
+use time::{Date, OffsetDateTime};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
@@ -55,9 +55,9 @@ pub struct DayData {
 }
 
 impl DayData {
-    pub fn empty(date: NaiveDate) -> Self {
+    pub fn empty(date: Date) -> Self {
         DayData {
-            date: date.format("%Y-%m-%d").to_string(),
+            date: date.format(&DATE_FORMAT).unwrap(),
             total_hours: 0.0,
             dead_time_hours: 0.0,
             projects: vec![],
@@ -163,9 +163,11 @@ async fn get_day_data(
 ) -> Result<Json<DayData>, StatusCode> {
     let date = match params.date {
         Some(date_str) => {
-            NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_| StatusCode::BAD_REQUEST)?
+            Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?
         }
-        None => Local::now().date_naive(),
+        None => OffsetDateTime::now_local()
+            .expect("Failed to get local time")
+            .date(),
     };
 
     let data = get_day_data_impl(date, &state).await?;
@@ -176,22 +178,21 @@ async fn get_day_data_by_date(
     State(state): State<AppState>,
     Path(date_str): Path<String>,
 ) -> Result<Json<DayData>, StatusCode> {
-    let date =
-        NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_| StatusCode::BAD_REQUEST)?;
+    let date = Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     let data = get_day_data_impl(date, &state).await?;
     Ok(Json(data))
 }
 
-pub async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<DayData, StatusCode> {
+pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
     let time_tracking_dir =
         get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
+    let file_path = time_tracking_dir.join(format!("{}.md", date.format(&DATE_FORMAT).unwrap()));
 
     if !file_path.exists() {
         return Ok(DayData {
-            date: date.format("%Y-%m-%d").to_string(),
+            date: date.format(&DATE_FORMAT).unwrap().to_string(),
             total_hours: 0.0,
             dead_time_hours: 0.0,
             projects: vec![],
@@ -221,7 +222,7 @@ pub async fn get_day_data_impl(date: NaiveDate, state: &AppState) -> Result<DayD
     let warnings = data.warnings.clone();
 
     Ok(DayData {
-        date: date.format("%Y-%m-%d").to_string(),
+        date: date.format(&DATE_FORMAT).unwrap().to_string(),
         total_hours: data.total_minutes as f64 / 60.0,
         dead_time_hours: data.dead_time_minutes as f64 / 60.0,
         projects,
@@ -237,9 +238,10 @@ async fn get_week_data(
 ) -> Result<Json<WeekData>, StatusCode> {
     let date = match params.date {
         Some(date_str) => {
-            NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_| StatusCode::BAD_REQUEST)?
+            Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?
+            //
         }
-        None => Local::now().date_naive(),
+        None => OffsetDateTime::now_local().unwrap().date(),
     };
 
     let week_start_day = params
@@ -253,14 +255,13 @@ async fn get_week_data_by_date(
     State(state): State<AppState>,
     Path(date_str): Path<String>,
 ) -> Result<Json<WeekData>, StatusCode> {
-    let date =
-        NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_| StatusCode::BAD_REQUEST)?;
+    let date = Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?;
 
     get_week_data_impl(date, "Saturday".to_string(), &state).await
 }
 
 async fn get_week_data_impl(
-    date: NaiveDate,
+    date: Date,
     week_start_day: String,
     state: &AppState,
 ) -> Result<Json<WeekData>, StatusCode> {
@@ -299,8 +300,12 @@ async fn get_week_data_impl(
         .collect();
 
     Ok(Json(WeekData {
-        start_date: week_dates[0].format("%Y-%m-%d").to_string(),
-        end_date: week_dates[6].format("%Y-%m-%d").to_string(),
+        start_date: week_dates[0]
+            .format(DATE_FORMAT)
+            .expect("could not parse date"),
+        end_date: week_dates[6]
+            .format(DATE_FORMAT)
+            .expect("could not parse date"),
         total_hours: total_week_hours,
         dead_time_hours: total_dead_hours,
         days,

@@ -1,8 +1,9 @@
-use chrono::NaiveDate;
 use juniper::{EmptySubscription, FieldResult, RootNode};
 use std::fs;
+use time::Date;
 
 use crate::{
+    DATE_FORMAT,
     context::GraphQLContext,
     create_template_content, get_time_tracking_dir_with_override, get_week_dates, parse_weekday,
     web::{DayData, ProjectSummary, WeekData, get_day_data_impl},
@@ -20,7 +21,7 @@ impl Query {
     #[graphql(name = "dataForDate")]
     pub async fn data_for_date(context: &GraphQLContext, date: String) -> FieldResult<DayData> {
         let state = &context.app_state;
-        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
         get_day_data_impl(date, state).await.map_err(|e| e.into())
@@ -32,13 +33,13 @@ impl Query {
         date: String,
     ) -> FieldResult<String> {
         let state = &context.app_state;
-        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
         let time_tracking_dir =
             get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
                 .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
-        let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
+        let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
 
         if !file_path.exists() {
             // Create file with template content if it doesn't exist
@@ -60,7 +61,7 @@ impl Query {
         week_start_day: Option<String>,
     ) -> FieldResult<WeekData> {
         let state = &context.app_state;
-        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
         let week_start_day = week_start_day
@@ -104,8 +105,8 @@ impl Query {
             .collect();
 
         Ok(WeekData {
-            start_date: week_dates[0].format("%Y-%m-%d").to_string(),
-            end_date: week_dates[6].format("%Y-%m-%d").to_string(),
+            start_date: week_dates[0].format(DATE_FORMAT).unwrap(),
+            end_date: week_dates[6].format(DATE_FORMAT).unwrap(),
             total_hours: total_week_hours,
             dead_time_hours: total_dead_hours,
             days,
@@ -130,7 +131,7 @@ impl Mutation {
         content: String,
     ) -> FieldResult<String> {
         let state = &context.app_state;
-        let date = NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+        let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
         let time_tracking_dir =
@@ -141,13 +142,13 @@ impl Mutation {
         fs::create_dir_all(&time_tracking_dir)
             .map_err(|e| format!("Failed to create directory: {}", e))?;
 
-        let file_path = time_tracking_dir.join(format!("{}.md", date.format("%Y-%m-%d")));
+        let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
 
         fs::write(&file_path, &content).map_err(|e| format!("Failed to write file: {}", e))?;
 
         Ok(format!(
             "Successfully updated file for date {}",
-            date.format("%Y-%m-%d")
+            date.format(DATE_FORMAT).unwrap()
         ))
     }
 }
