@@ -31,13 +31,13 @@ pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {
 
 pub fn format_day_with_date(date: &Date) -> String {
     let day_name = match date.weekday().number_from_monday() {
-        0 => "Monday",
-        1 => "Tuesday",
-        2 => "Wednesday",
-        3 => "Thursday",
-        4 => "Friday",
-        5 => "Saturday",
-        6 => "Sunday",
+        1 => "Monday",
+        2 => "Tuesday",
+        3 => "Wednesday",
+        4 => "Thursday",
+        5 => "Friday",
+        6 => "Saturday",
+        7 => "Sunday",
         _ => unreachable!(),
     };
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_format_day_with_date_different_years() {
-        let date_2022 = date!(2022 - 1 - 1); // Saturday
+        let date_2022 = date!(2022 - 01 - 01); // Saturday
         let date_2024 = date!(2024 - 12 - 25); // Wednesday
 
         assert_eq!(format_day_with_date(&date_2022), "Saturday 2022-01-01");

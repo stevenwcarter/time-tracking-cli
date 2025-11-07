@@ -1,20 +1,20 @@
 {
-  "name": "time-tracking-cli",
-  "version": "0.5.3",
-  "description": "CLI tool for tracking time",
-  "main": "index.js",
-  "repository": "git@github.com:stevenwcarter/time-tracking-cli.git",
-  "author": "Steven Carter <steve@javapl.us>",
-  "license": "MIT",
-  "scripts": {
-    "release": "standard-version -s",
-    "prepare": "husky"
-  },
-  "devDependencies": {
-    "@commitlint/cli": "^20.1.0",
-    "@commitlint/config-conventional": "^20.0.0",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.3",
-    "standard-version": "^9.5.0"
-  }
+    "name": "time-tracking-cli",
+    "version": "0.5.4",
+    "description": "CLI tool for tracking time",
+    "main": "index.js",
+    "repository": "git@github.com:stevenwcarter/time-tracking-cli.git",
+    "author": "Steven Carter <steve@javapl.us>",
+    "license": "MIT",
+    "scripts": {
+        "release": "standard-version -s",
+        "prepare": "husky"
+    },
+    "devDependencies": {
+        "@commitlint/cli": "^20.1.0",
+        "@commitlint/config-conventional": "^20.0.0",
+        "husky": "^9.1.7",
+        "lint-staged": "^16.2.3",
+        "standard-version": "^9.5.0"
+    }
 }

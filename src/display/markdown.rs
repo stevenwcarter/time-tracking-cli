@@ -6,8 +6,14 @@ use time_tracking_parser::Time;
 pub struct MarkdownDisplayFormatter;
 
 impl DisplayFormatter for MarkdownDisplayFormatter {
-    fn day_summary(&self, content: &str, indent: &str) -> String {
-        let data = time_tracking_parser::parse_time_tracking_data(content);
+    fn day_summary(
+        &self,
+        content: &str,
+        indent: &str,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) -> String {
+        let data = time_tracking_parser::parse_time_tracking_data(content, prefix, suffix);
         let mut msg = String::new();
 
         msg.push_str(&format!(
@@ -49,8 +55,14 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
         }
         msg
     }
-    fn display_day_summary(&self, content: &str, indent: &str) {
-        println!("{}", self.day_summary(content, indent));
+    fn display_day_summary(
+        &self,
+        content: &str,
+        indent: &str,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) {
+        println!("{}", self.day_summary(content, indent, prefix, suffix));
     }
 
     fn weekly_header(&self, week_start: &str, week_end: &str) -> String {

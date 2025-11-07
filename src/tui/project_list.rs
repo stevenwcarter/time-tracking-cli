@@ -23,7 +23,7 @@ const TEXT_FG_COLOR: Color = SLATE.c200;
 const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
 #[derive(Default)]
-struct ProjectListWidget {
+pub struct ProjectListWidget {
     data: TimeTrackingData,
     project_list: ProjectList,
 }

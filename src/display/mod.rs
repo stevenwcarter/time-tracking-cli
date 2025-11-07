@@ -22,8 +22,20 @@ use crate::{
 /// Trait for formatting and displaying time tracking data
 pub trait DisplayFormatter: Debug + Send + Sync {
     /// Display a single day's time tracking results
-    fn day_summary(&self, content: &str, indent: &str) -> String;
-    fn display_day_summary(&self, content: &str, indent: &str);
+    fn day_summary(
+        &self,
+        content: &str,
+        indent: &str,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    ) -> String;
+    fn display_day_summary(
+        &self,
+        content: &str,
+        indent: &str,
+        prefix: Option<&str>,
+        suffix: Option<&str>,
+    );
 
     /// Display the weekly summary header
     fn weekly_header(&self, week_start: &str, week_end: &str) -> String;
@@ -80,7 +92,7 @@ pub async fn show_weekly_summary(
 
         if file_path.exists() {
             let content = fs::read_to_string(&file_path)?;
-            let data = parse_time_tracking_data(&content);
+            let data = parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
 
             // Add to weekly totals
             total_week_minutes += data.total_minutes;
@@ -137,7 +149,12 @@ pub async fn show_weekly_summary(
 
         if let Some(data) = data_opt {
             if data.total_minutes > 0 {
-                formatter.display_day_summary(&content, "  ");
+                formatter.display_day_summary(
+                    &content,
+                    "  ",
+                    config.get_prefix(),
+                    config.get_suffix(),
+                );
             } else {
                 formatter.display_no_data_found("  ");
             }
@@ -209,7 +226,7 @@ pub async fn show_single_day(
     // Parse and display the results
     let content = read_day(date, config).await?;
     if let Some(content) = content {
-        formatter.display_day_summary(&content, "");
+        formatter.display_day_summary(&content, "", config.get_prefix(), config.get_suffix());
     }
 
     Ok(())
@@ -315,7 +332,7 @@ mod tests {
 
         for content in &test_contents {
             // Test that the method doesn't panic with various inputs
-            formatter.display_day_summary(content, "  ");
+            formatter.display_day_summary(content, "  ", None, None);
         }
     }
 
@@ -328,7 +345,7 @@ mod tests {
         for indent in &test_indents {
             formatter.display_no_file_found(indent);
             formatter.display_no_data_found(indent);
-            formatter.display_day_summary("9:00-10:00 test", indent);
+            formatter.display_day_summary("9:00-10:00 test", indent, None, None);
         }
     }
 

@@ -1,4 +1,23 @@
 Here are some recent changes:
+### [0.5.4](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.3...v0.5.4) (2025-11-06)
+
+
+### Features
+
+* added optional prefix/suffix ([c1b97cc](https://github.com/stevenwcarter/time-tracking-cli/commits/c1b97cce91a3c0df6001464dbd133475172862b7))
+
+
+### Docs
+
+* expanded detail in README.md for new users ([7f36e85](https://github.com/stevenwcarter/time-tracking-cli/commits/7f36e85dd0cc7fa2540618dd8282aff4f3cbbf8a))
+
+
+### Chore
+
+* added build script to re-run `yarn build` ([4a020dd](https://github.com/stevenwcarter/time-tracking-cli/commits/4a020ddf28d4c17c3b405ac006ef7a67ed816c9e))
+* fixed windows build extraction step ([419c0d3](https://github.com/stevenwcarter/time-tracking-cli/commits/419c0d320a2088be0f76e88dce4e774fca3d2fc3))
+* updated page title ([c37b761](https://github.com/stevenwcarter/time-tracking-cli/commits/c37b761e64869d0ff58c8981a782ded95cfee7a0))
+
 ### [0.5.3](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.2...v0.5.3) (2025-10-05)
 
 

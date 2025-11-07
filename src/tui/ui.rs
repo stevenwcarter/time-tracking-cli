@@ -10,6 +10,8 @@ use ratatui::{
 };
 use time::format_description;
 
+use crate::tui::project_list::ProjectListWidget;
+
 use super::app::App;
 
 impl Widget for &App {
@@ -49,20 +51,25 @@ impl Widget for &App {
             .title(self.active_date.format(&datetime_format).unwrap())
             .title_alignment(Alignment::Center)
             .border_type(BorderType::Rounded);
-        let time_tracking_data = format!(
-            "\nActive date: {}\n{}",
-            self.active_date.format(&datetime_format).unwrap(),
-            self.day_summary
-                .as_deref()
-                .unwrap_or("No data available for this date.")
-        );
-        let tt_par = Paragraph::new(time_tracking_data)
-            .block(block)
-            .fg(Color::Yellow)
-            .bg(Color::Black)
-            .alignment(Alignment::Left);
+        // let time_tracking_data = format!(
+        //     "\nActive date: {}\n{}",
+        //     self.active_date.format(&datetime_format).unwrap(),
+        //     self.day_summary
+        //         .as_deref()
+        //         .unwrap_or("No data available for this date.")
+        // );
 
-        tt_par.render(chunks[1], buf);
+        if let Some(data) = self.data.clone() {
+            let mut widget = ProjectListWidget::new(&data);
+            widget.render(chunks[1], buf);
+        } else {
+            let tt_par = Paragraph::new("No data found for date")
+                .block(block)
+                .fg(Color::Yellow)
+                .bg(Color::Black)
+                .alignment(Alignment::Left);
+            tt_par.render(chunks[1], buf);
+        }
     }
 }
 

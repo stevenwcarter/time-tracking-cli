@@ -17,6 +17,7 @@ pub struct App {
     pub running: bool,
     /// Counter.
     pub counter: u8,
+    pub selected_item: u8,
     pub config: Config,
     pub active_date: Date,
     pub formatter: Box<dyn DisplayFormatter>,
@@ -31,6 +32,7 @@ impl Default for App {
         Self {
             running: true,
             counter: 0,
+            selected_item: 0,
             active_date: OffsetDateTime::now_utc().date(),
             events: EventHandler::new(),
             formatter: Box::new(DefaultDisplayFormatter),
@@ -71,11 +73,19 @@ impl App {
                     AppEvent::NextDate => {
                         self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
                         self.load_data_for_active_date().await?;
+                        self.selected_item = 0;
                     }
                     AppEvent::PreviousDate => {
                         self.active_date =
                             self.active_date.previous_day().unwrap_or(self.active_date);
                         self.load_data_for_active_date().await?;
+                        self.selected_item = 0;
+                    }
+                    AppEvent::NextItem => {
+                        let _ = self.selected_item.saturating_add(1);
+                    }
+                    AppEvent::PreviousItem => {
+                        let _ = self.selected_item.saturating_sub(1);
                     }
                     AppEvent::Increment => self.increment_counter(),
                     AppEvent::Decrement => self.decrement_counter(),
@@ -93,11 +103,16 @@ impl App {
         if let Some(content) = content {
             let data = time_tracking_parser::parse_time_tracking_data(
                 &content,
-                self.config.prefix,
-                self.config.suffix,
+                self.config.prefix.as_deref(),
+                self.config.suffix.as_deref(),
             );
             self.data = Some(data);
-            self.day_summary = Some(self.formatter.day_summary(&content, ""));
+            self.day_summary = Some(self.formatter.day_summary(
+                &content,
+                "",
+                self.config.prefix.as_deref(),
+                self.config.suffix.as_deref(),
+            ));
         } else {
             self.data = None;
             self.day_summary = None;
@@ -120,6 +135,8 @@ impl App {
                 self.events.send(AppEvent::Decrement);
                 self.events.send(AppEvent::PreviousDate);
             }
+            KeyCode::Char('j') | KeyCode::Down => self.events.send(AppEvent::NextItem),
+            KeyCode::Char('k') | KeyCode::Up => self.events.send(AppEvent::PreviousItem),
             // Other handlers you could add here.
             _ => {}
         }
