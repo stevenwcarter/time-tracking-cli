@@ -5,6 +5,7 @@ use anyhow::Result;
 
 pub mod app;
 pub mod event;
+pub mod project_list;
 pub mod ui;
 
 pub async fn tui(config: &Config, date: Date, formatter: Box<dyn DisplayFormatter>) -> Result<()> {

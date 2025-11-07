@@ -11,6 +11,8 @@ pub struct Config {
     pub data_directory: Option<String>,
     /// Path to a template file to use when creating new time tracking files
     pub template_file: Option<String>,
+    /// Optional prefix
+    /// Optional suffix
 }
 
 impl Default for Config {

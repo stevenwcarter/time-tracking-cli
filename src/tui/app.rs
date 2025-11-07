@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    widgets::List,
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
@@ -53,6 +54,7 @@ impl App {
 
     /// Run the application's main loop.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        self.load_data_for_active_date().await?;
         while self.running {
             terminal.draw(|frame| frame.render_widget(&self, frame.area()))?;
             match self.events.next().await.context("couldn't read events")? {
@@ -89,7 +91,11 @@ impl App {
             .await
             .context("could not read day")?;
         if let Some(content) = content {
-            let data = time_tracking_parser::parse_time_tracking_data(&content);
+            let data = time_tracking_parser::parse_time_tracking_data(
+                &content,
+                self.config.prefix,
+                self.config.suffix,
+            );
             self.data = Some(data);
             self.day_summary = Some(self.formatter.day_summary(&content, ""));
         } else {
