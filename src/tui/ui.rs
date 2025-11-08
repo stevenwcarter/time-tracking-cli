@@ -2,7 +2,10 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize, palette::tailwind::SLATE},
+    style::{
+        Color, Modifier, Style, Stylize,
+        palette::tailwind::{BLUE, SLATE},
+    },
     widgets::{
         Block, BorderType, Borders, Padding, Paragraph, Widget,
         calendar::{CalendarEventStore, Monthly},
@@ -28,7 +31,7 @@ impl App {
         let mut es = CalendarEventStore::default();
         self.populated_dates
             .iter()
-            .for_each(|d| es.add(*d, Style::new().add_modifier(Modifier::UNDERLINED)));
+            .for_each(|d| es.add(*d, Style::new().fg(BLUE.c300).add_modifier(Modifier::BOLD)));
         es.add(self.active_date, Style::new().red().bold());
         Monthly::new(self.active_date, es)
             .block(calendar_block)

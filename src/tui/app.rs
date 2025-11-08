@@ -1,4 +1,10 @@
-use std::{io::stdout, path::PathBuf};
+use std::{
+    collections::HashMap,
+    fs,
+    io::stdout,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use crate::{
     Config, DefaultDisplayFormatter, DisplayFormatter, display::read_day, editor::open_in_editor,
@@ -42,6 +48,10 @@ pub struct App {
     pub project_list_widget: Option<ProjectListWidget>,
     /// Populated dates (have hours)
     pub populated_dates: Vec<Date>,
+    /// Cache of file modification times for performance
+    file_mod_times: HashMap<Date, SystemTime>,
+    /// Last time populated dates were checked
+    last_populated_check: Option<SystemTime>,
 }
 
 impl Default for App {
@@ -56,6 +66,8 @@ impl Default for App {
             data: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
+            file_mod_times: HashMap::new(),
+            last_populated_check: None,
         }
     }
 }
@@ -190,10 +202,112 @@ impl App {
     }
 
     pub async fn find_populated_dates(&mut self) -> Result<()> {
-        // TODO: Populate dates with hours for this month and the previous/next month
-        // Load each date for the current month, previous month, and next month, then any that have
-        // more than 0 hours should be included in self.populated_dates (which is a Vec<time::Date>)
+        let now = SystemTime::now();
+
+        // Skip if we checked recently and no files have been modified
+        // if let Some(last_check) = self.last_populated_check {
+        //     if now.duration_since(last_check).unwrap_or_default().as_secs() < 5 {
+        //         // Only re-scan if it's been more than 30 seconds
+        //         return Ok(());
+        //     }
+        // }
+
+        let time_tracking_dir =
+            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
+
+        // Create directory if it doesn't exist
+        if !time_tracking_dir.exists() {
+            return Ok(());
+        }
+
+        let mut new_populated_dates = Vec::new();
+        let mut new_mod_times = HashMap::new();
+
+        // Get current month, previous month, and next month
+        let current_month = self.active_date.replace_day(1).unwrap();
+        let prev_month = current_month
+            .replace_month(current_month.month().previous())
+            .unwrap_or_else(|_| {
+                current_month
+                    .replace_year(current_month.year() - 1)
+                    .unwrap()
+                    .replace_month(time::Month::December)
+                    .unwrap()
+            });
+        let next_month = current_month
+            .replace_month(current_month.month().next())
+            .unwrap_or_else(|_| {
+                current_month
+                    .replace_year(current_month.year() + 1)
+                    .unwrap()
+                    .replace_month(time::Month::January)
+                    .unwrap()
+            });
+
+        // Check all dates in the three months
+        for month_start in [prev_month, current_month, next_month] {
+            let days_in_month = month_start.month().length(month_start.year());
+
+            for day in 1..=days_in_month {
+                if let Ok(date) = month_start.replace_day(day)
+                    && let Ok(has_data) = self
+                        .check_date_has_data(&date, &time_tracking_dir, &mut new_mod_times)
+                        .await
+                    && has_data
+                {
+                    new_populated_dates.push(date);
+                }
+            }
+        }
+
+        self.populated_dates = new_populated_dates;
+        self.file_mod_times = new_mod_times;
+        self.last_populated_check = Some(now);
+
         Ok(())
+    }
+
+    async fn check_date_has_data(
+        &self,
+        date: &Date,
+        time_tracking_dir: &Path,
+        mod_times: &mut HashMap<Date, SystemTime>,
+    ) -> Result<bool> {
+        let date_str = date
+            .format(&time::format_description::parse("[year]-[month]-[day]").unwrap())
+            .unwrap();
+        let filename = format!("{}.md", date_str);
+        let file_path = time_tracking_dir.join(filename);
+
+        if !file_path.exists() {
+            return Ok(false);
+        }
+
+        // Check file modification time for caching
+        let metadata = fs::metadata(&file_path)?;
+        let mod_time = metadata.modified()?;
+
+        // If we have a cached modification time and it hasn't changed, use cached result
+        if let Some(cached_mod_time) = self.file_mod_times.get(date)
+            && *cached_mod_time == mod_time
+        {
+            // File hasn't changed, check if we already know it has data
+            return Ok(self.populated_dates.contains(date));
+        }
+
+        // Store the modification time
+        mod_times.insert(*date, mod_time);
+
+        // Read and parse the file to check for data
+        let content = fs::read_to_string(&file_path)?;
+        let data = time_tracking_parser::parse_time_tracking_data(
+            &content,
+            self.config.get_prefix(),
+            self.config.get_suffix(),
+        );
+
+        // Consider a date populated if it has projects with time > 0
+        Ok(!data.projects.is_empty() && data.total_minutes > 0)
     }
 
     /// Handles the key events and updates the state of [`App`].
