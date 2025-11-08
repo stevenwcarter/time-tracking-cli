@@ -1,10 +1,19 @@
-use crate::{Config, DefaultDisplayFormatter, DisplayFormatter, display::read_day};
+use std::{io::stdout, path::PathBuf};
+
+use crate::{
+    Config, DefaultDisplayFormatter, DisplayFormatter, display::read_day, editor::open_in_editor,
+    file_utils::get_time_tracking_dir_with_override,
+};
 
 use super::{
     event::{AppEvent, Event, EventHandler},
     project_list::ProjectListWidget,
 };
 use anyhow::{Context, Result};
+use crossterm::{
+    ExecutableCommand,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
@@ -17,8 +26,6 @@ use time_tracking_parser::TimeTrackingData;
 pub struct App {
     /// Is the application running?
     pub running: bool,
-    /// Counter.
-    pub counter: u8,
     pub config: Config,
     pub active_date: Date,
     pub formatter: Box<dyn DisplayFormatter>,
@@ -34,7 +41,6 @@ impl Default for App {
     fn default() -> Self {
         Self {
             running: true,
-            counter: 0,
             active_date: OffsetDateTime::now_local().unwrap().date(),
             events: EventHandler::new(),
             formatter: Box::new(DefaultDisplayFormatter),
@@ -73,6 +79,11 @@ impl App {
                     _ => {}
                 },
                 Event::App(app_event) => match app_event {
+                    AppEvent::Edit => {
+                        self.run_editor(&mut terminal)?;
+                        // Reload data after returning from editor
+                        self.load_data_for_active_date().await?;
+                    }
                     AppEvent::Today => {
                         self.active_date = OffsetDateTime::now_local().unwrap().date();
                         self.load_data_for_active_date().await?;
@@ -86,13 +97,55 @@ impl App {
                             self.active_date.previous_day().unwrap_or(self.active_date);
                         self.load_data_for_active_date().await?;
                     }
-                    AppEvent::Increment => self.increment_counter(),
-                    AppEvent::Decrement => self.decrement_counter(),
                     AppEvent::Quit => self.quit(),
                 },
             }
         }
         Ok(())
+    }
+
+    pub fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        // Pause event polling to prevent interference with editor
+        self.events.pause();
+
+        // Stop the TUI completely before opening editor
+        stdout().execute(LeaveAlternateScreen)?;
+        disable_raw_mode()?;
+
+        // Build the file path for the current date using config
+        let file_path = self.get_file_path_for_active_date()?;
+
+        // Open the file in the user's editor
+        if let Err(e) = open_in_editor(&file_path) {
+            eprintln!("Failed to open editor: {}", e);
+        }
+
+        // Restore the TUI after editor exits
+        stdout().execute(EnterAlternateScreen)?;
+        enable_raw_mode()?;
+        terminal.clear()?;
+
+        // Resume event polling
+        self.events.resume();
+        Ok(())
+    }
+
+    fn get_file_path_for_active_date(&self) -> Result<PathBuf> {
+        // Get the time tracking directory using config data_directory
+        let time_tracking_dir =
+            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
+
+        let prefix = self.config.get_prefix().unwrap_or("");
+        let suffix = self.config.get_suffix().unwrap_or("");
+
+        // Format the date as YYYY-MM-DD
+        let date_str = self
+            .active_date
+            .format(&time::format_description::parse("[year]-[month]-[day]").unwrap())
+            .unwrap();
+        let filename = format!("{}{}{}.md", prefix, date_str, suffix);
+
+        Ok(time_tracking_dir.join(filename))
     }
 
     pub async fn load_data_for_active_date(&mut self) -> Result<()> {
@@ -144,17 +197,18 @@ impl App {
             KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
                 self.events.send(AppEvent::Quit)
             }
+            KeyCode::Char('e') => {
+                self.events.send(AppEvent::Edit);
+            }
             KeyCode::Char('t' | 'T') => {
                 // For testing: reload data for the active date
                 self.events.send(AppEvent::Today);
             }
-            KeyCode::Right => {
-                self.events.send(AppEvent::Increment);
+            KeyCode::Char('l') | KeyCode::Right => {
                 self.events.send(AppEvent::NextDate);
             }
-            KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 // Only handle left arrow for date navigation if project list didn't handle it
-                self.events.send(AppEvent::Decrement);
                 self.events.send(AppEvent::PreviousDate);
             }
             // Remove these since they're now handled by the project list widget
@@ -175,13 +229,5 @@ impl App {
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
         self.running = false;
-    }
-
-    pub fn increment_counter(&mut self) {
-        self.counter = self.counter.saturating_add(1);
-    }
-
-    pub fn decrement_counter(&mut self) {
-        self.counter = self.counter.saturating_sub(1);
     }
 }

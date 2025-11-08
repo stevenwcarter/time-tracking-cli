@@ -32,10 +32,7 @@ pub enum Event {
 /// You can extend this enum with your own custom events.
 #[derive(Clone, Debug)]
 pub enum AppEvent {
-    /// Increment the counter.
-    Increment,
-    /// Decrement the counter.
-    Decrement,
+    Edit,
     NextDate,
     PreviousDate,
     Today,
@@ -50,15 +47,22 @@ pub struct EventHandler {
     sender: mpsc::UnboundedSender<Event>,
     /// Event receiver channel.
     receiver: mpsc::UnboundedReceiver<Event>,
+    /// Pause sender to control the event task
+    pause_sender: mpsc::UnboundedSender<bool>,
 }
 
 impl EventHandler {
     /// Constructs a new instance of [`EventHandler`] and spawns a new thread to handle events.
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let actor = EventTask::new(sender.clone());
+        let (pause_sender, pause_receiver) = mpsc::unbounded_channel();
+        let actor = EventTask::new(sender.clone(), pause_receiver);
         tokio::spawn(async { actor.run().await });
-        Self { sender, receiver }
+        Self {
+            sender,
+            receiver,
+            pause_sender,
+        }
     }
 
     /// Receives an event from the sender.
@@ -86,28 +90,59 @@ impl EventHandler {
         // reference to it
         let _ = self.sender.send(Event::App(app_event));
     }
+
+    /// Pause event polling (for editor sessions)
+    pub fn pause(&mut self) {
+        let _ = self.pause_sender.send(true);
+    }
+
+    /// Resume event polling
+    pub fn resume(&mut self) {
+        let _ = self.pause_sender.send(false);
+    }
 }
 
 /// A thread that handles reading crossterm events and emitting tick events on a regular schedule.
 struct EventTask {
     /// Event sender channel.
     sender: mpsc::UnboundedSender<Event>,
+    /// Pause receiver channel.
+    pause_receiver: mpsc::UnboundedReceiver<bool>,
 }
 
 impl EventTask {
     /// Constructs a new instance of [`EventThread`].
-    fn new(sender: mpsc::UnboundedSender<Event>) -> Self {
-        Self { sender }
+    fn new(
+        sender: mpsc::UnboundedSender<Event>,
+        pause_receiver: mpsc::UnboundedReceiver<bool>,
+    ) -> Self {
+        Self {
+            sender,
+            pause_receiver,
+        }
     }
 
     /// Runs the event thread.
     ///
     /// This function emits tick events at a fixed rate and polls for crossterm events in between.
-    async fn run(self) -> Result<()> {
+    async fn run(mut self) -> Result<()> {
         let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
         let mut reader = crossterm::event::EventStream::new();
         let mut tick = tokio::time::interval(tick_rate);
+        let mut paused = false;
+
         loop {
+            // Check for pause/resume signals
+            while let Ok(pause_signal) = self.pause_receiver.try_recv() {
+                paused = pause_signal;
+            }
+
+            if paused {
+                // When paused, just sleep and check for resume signals
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+
             let tick_delay = tick.tick();
             let crossterm_event = reader.next().fuse();
             tokio::select! {
