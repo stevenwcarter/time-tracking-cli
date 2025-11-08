@@ -5,6 +5,7 @@ use anyhow::Result;
 
 pub mod app;
 pub mod event;
+pub mod popup;
 pub mod project_list;
 pub mod ui;
 

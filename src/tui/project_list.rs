@@ -18,7 +18,7 @@ use time_tracking_parser::{TimeTrackingData, format_time_option};
 const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
 const ALT_ROW_BG_COLOR: Color = SLATE.c900;
-const SELECTED_STYLE: Style = Style::new().bg(SLATE.c800).add_modifier(Modifier::BOLD);
+const SELECTED_STYLE: Style = Style::new().bg(BLUE.c950).add_modifier(Modifier::BOLD);
 const TEXT_FG_COLOR: Color = SLATE.c200;
 const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
@@ -176,7 +176,7 @@ impl Widget for &mut ProjectListWidget {
         let [header_area, main_area, footer_area] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Fill(1),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .areas(area);
 
@@ -199,8 +199,8 @@ impl ProjectListWidget {
         .render(area, buf);
     }
     fn render_footer(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new("Use ↓↑ or j/k to move, g/G to go to the top or bottom, Enter to copy the notes for the current project to your clipboard.")
-            .wrap(Wrap{trim: true})
+        Paragraph::new("? for help")
+            .wrap(Wrap { trim: true })
             .centered()
             .render(area, buf);
     }

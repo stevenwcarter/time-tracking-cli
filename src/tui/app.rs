@@ -27,6 +27,7 @@ pub struct App {
     /// Is the application running?
     pub running: bool,
     pub config: Config,
+    pub show_help: bool,
     pub active_date: Date,
     pub formatter: Box<dyn DisplayFormatter>,
     /// Event handler.
@@ -41,6 +42,7 @@ impl Default for App {
     fn default() -> Self {
         Self {
             running: true,
+            show_help: false,
             active_date: OffsetDateTime::now_local().unwrap().date(),
             events: EventHandler::new(),
             formatter: Box::new(DefaultDisplayFormatter),
@@ -79,23 +81,26 @@ impl App {
                     _ => {}
                 },
                 Event::App(app_event) => match app_event {
+                    AppEvent::ReloadFromDisk => {
+                        self.load_data_for_active_date().await?;
+                    }
                     AppEvent::Edit => {
                         self.run_editor(&mut terminal)?;
-                        // Reload data after returning from editor
-                        self.load_data_for_active_date().await?;
+                        self.events.send(AppEvent::ReloadFromDisk);
                     }
                     AppEvent::Today => {
                         self.active_date = OffsetDateTime::now_local().unwrap().date();
-                        self.load_data_for_active_date().await?;
+                        self.events.send(AppEvent::ReloadFromDisk);
                     }
+                    AppEvent::ToggleHelp => self.show_help = !self.show_help,
                     AppEvent::NextDate => {
                         self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
-                        self.load_data_for_active_date().await?;
+                        self.events.send(AppEvent::ReloadFromDisk);
                     }
                     AppEvent::PreviousDate => {
                         self.active_date =
                             self.active_date.previous_day().unwrap_or(self.active_date);
-                        self.load_data_for_active_date().await?;
+                        self.events.send(AppEvent::ReloadFromDisk);
                     }
                     AppEvent::Quit => self.quit(),
                 },
@@ -197,24 +202,12 @@ impl App {
             KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
                 self.events.send(AppEvent::Quit)
             }
-            KeyCode::Char('e') => {
-                self.events.send(AppEvent::Edit);
-            }
-            KeyCode::Char('t' | 'T') => {
-                // For testing: reload data for the active date
-                self.events.send(AppEvent::Today);
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.events.send(AppEvent::NextDate);
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                // Only handle left arrow for date navigation if project list didn't handle it
-                self.events.send(AppEvent::PreviousDate);
-            }
-            // Remove these since they're now handled by the project list widget
-            // KeyCode::Char('j') | KeyCode::Down => self.events.send(AppEvent::NextItem),
-            // KeyCode::Char('k') | KeyCode::Up => self.events.send(AppEvent::PreviousItem),
-            // Other handlers you could add here.
+            KeyCode::Char('e') => self.events.send(AppEvent::Edit),
+            KeyCode::Char('r') => self.events.send(AppEvent::ReloadFromDisk),
+            KeyCode::Char('t' | 'T') => self.events.send(AppEvent::Today),
+            KeyCode::Char('l') | KeyCode::Right => self.events.send(AppEvent::NextDate),
+            KeyCode::Char('h') | KeyCode::Left => self.events.send(AppEvent::PreviousDate),
+            KeyCode::Char('?') => self.events.send(AppEvent::ToggleHelp),
             _ => {}
         }
         Ok(())
