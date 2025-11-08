@@ -80,13 +80,15 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut set = JoinSet::new();
 
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
     // Handle serve mode
     #[cfg(feature = "webapp")]
     if args.serve {
         println!("🚀 Starting Time Tracking Web Server...");
         let config = config.clone();
         set.spawn(async move {
-            if let Err(e) = time_tracking_cli::web::run_server(args.port, config).await {
+            if let Err(e) = time_tracking_cli::web::run_server(args.port, config, rx).await {
                 eprintln!("Error running web server: {}", e);
             }
         });
@@ -118,6 +120,7 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
             if let Err(e) = time_tracking_cli::tui::tui(&config, date, formatter).await {
                 error!("Error running TUI: {}", e);
             }
+            tx.send(()).unwrap();
         });
     }
 

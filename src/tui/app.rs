@@ -35,7 +35,7 @@ impl Default for App {
         Self {
             running: true,
             counter: 0,
-            active_date: OffsetDateTime::now_utc().date(),
+            active_date: OffsetDateTime::now_local().unwrap().date(),
             events: EventHandler::new(),
             formatter: Box::new(DefaultDisplayFormatter),
             config: Config::default(),
@@ -59,7 +59,7 @@ impl App {
 
     /// Run the application's main loop.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        self.load_data_for_active_date().await?;
+        let _ = self.load_data_for_active_date().await;
         while self.running {
             terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
             match self.events.next().await.context("couldn't read events")? {
@@ -73,6 +73,10 @@ impl App {
                     _ => {}
                 },
                 Event::App(app_event) => match app_event {
+                    AppEvent::Today => {
+                        self.active_date = OffsetDateTime::now_local().unwrap().date();
+                        self.load_data_for_active_date().await?;
+                    }
                     AppEvent::NextDate => {
                         self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
                         self.load_data_for_active_date().await?;
@@ -96,6 +100,7 @@ impl App {
             .await
             .context("could not read day")?;
         if let Some(content) = content {
+            eprintln!("---:{}:---\n", content);
             let data = time_tracking_parser::parse_time_tracking_data(
                 &content,
                 self.config.prefix.as_deref(),
@@ -103,14 +108,19 @@ impl App {
             );
 
             // Create project list widget with the data
-            self.project_list_widget = Some(ProjectListWidget::new(&data));
-            self.data = Some(data);
-            self.day_summary = Some(self.formatter.day_summary(
-                &content,
-                "",
-                self.config.prefix.as_deref(),
-                self.config.suffix.as_deref(),
-            ));
+            if !data.projects.is_empty() {
+                self.project_list_widget = Some(ProjectListWidget::new(&data));
+                self.data = Some(data);
+                self.day_summary = Some(self.formatter.day_summary(
+                    &content,
+                    "",
+                    self.config.prefix.as_deref(),
+                    self.config.suffix.as_deref(),
+                ));
+            } else {
+                self.data = None;
+                self.day_summary = None;
+            }
         } else {
             self.data = None;
             self.day_summary = None;
@@ -134,6 +144,10 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => self.events.send(AppEvent::Quit),
             KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
                 self.events.send(AppEvent::Quit)
+            }
+            KeyCode::Char('t' | 'T') => {
+                // For testing: reload data for the active date
+                self.events.send(AppEvent::Today);
             }
             KeyCode::Right => {
                 self.events.send(AppEvent::Increment);

@@ -18,6 +18,7 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use time::{Date, OffsetDateTime};
+use tokio::{select, sync::oneshot::Receiver};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 use tracing::debug;
@@ -92,7 +93,7 @@ pub struct WeekData {
     pub project_summaries: Vec<ProjectSummary>,
 }
 
-pub async fn run_server(port: u16, config: Config) -> anyhow::Result<()> {
+pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::Result<()> {
     let state = AppState { config };
     let context = GraphQLContext::new(state.clone());
     let qm_schema = create_schema();
@@ -146,16 +147,15 @@ pub async fn run_server(port: u16, config: Config) -> anyhow::Result<()> {
     println!("📊 Access your time tracking data via the web interface");
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(rx))
         .await?;
 
     Ok(())
 }
 
-async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install Ctrl+C handler");
+async fn shutdown_signal(rx: Receiver<()>) {
+    select!(
+        _ = tokio::signal::ctrl_c() => {}, _ = rx => {});
     debug!("Signal received, starting graceful shutdown");
 }
 

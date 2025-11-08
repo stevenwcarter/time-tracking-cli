@@ -14,7 +14,7 @@ use ratatui::{
         Widget, Wrap,
     },
 };
-use time_tracking_parser::{TimeTrackingData, format_time, format_time_option};
+use time_tracking_parser::{TimeTrackingData, format_time_option};
 const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
 const ALT_ROW_BG_COLOR: Color = SLATE.c900;
