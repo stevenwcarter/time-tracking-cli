@@ -1,9 +1,10 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use time::{Date, OffsetDateTime};
 use time_tracking_cli::{
     Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
-    PlainDisplayFormatter, parse_weekday, show_single_day, show_weekly_summary,
+    PlainDisplayFormatter, display::show_single_day_stdin, parse_weekday, show_single_day,
+    show_weekly_summary,
 };
 use tracing::error;
 
@@ -17,6 +18,10 @@ struct Args {
     /// Date in YYYY-MM-DD format (defaults to today)
     #[arg(short, long)]
     date: Option<String>,
+
+    /// Read from stdin and generate a report with the specified formatter
+    #[arg(long)]
+    stdin: bool,
 
     /// Date as a positional argument in YYYY-MM-DD format
     #[arg(value_name = "DATE")]
@@ -75,6 +80,15 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
         args.data_directory,
         args.template_file,
     );
+
+    if args.stdin {
+        let formatter = parse_formatter(&args.formatter);
+        show_single_day_stdin(formatter.as_ref(), &config)
+            .await
+            .context("generating report from stdin")?;
+
+        return Ok(());
+    }
 
     let week_start_weekday = parse_weekday(&config.get_week_start_day())?;
 

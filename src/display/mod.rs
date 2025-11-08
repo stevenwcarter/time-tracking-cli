@@ -1,6 +1,7 @@
-use std::clone::Clone;
 use std::fmt::Debug;
 use std::fs;
+use std::io::Read;
+use std::{clone::Clone, io};
 
 mod default;
 mod markdown;
@@ -186,6 +187,22 @@ pub async fn read_day(date: &Date, config: &Config) -> Result<Option<String>> {
     let content = fs::read_to_string(&file_path)?;
 
     Ok(Some(content))
+}
+pub async fn show_single_day_stdin(
+    formatter: &dyn DisplayFormatter,
+    config: &Config,
+) -> anyhow::Result<()> {
+    let mut buffer = String::new();
+    io::stdin().read_to_string(&mut buffer)?;
+
+    formatter.display_day_summary(
+        buffer.as_str(),
+        "",
+        config.get_prefix(),
+        config.get_suffix(),
+    );
+
+    Ok(())
 }
 pub async fn show_single_day(
     date: &Date,
