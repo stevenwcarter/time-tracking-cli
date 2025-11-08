@@ -15,6 +15,22 @@ A command-line utility for tracking and analyzing your work time with support fo
 - Create a "template file" and configure the data directory if you want to have a predefined structure for your daily time tracking files. Create a file named `template.md` in the `~/.time-tracking/` directory, and it will be used as the starting point for new daily files. For instance, you could store your time tracking data within the directory for another note system, provided it can read markdown formats. (Obsidian for example, where you could use the Daily Note feature).
 - Configure the interface with your configuration file. On Mac, this is typically located at `~/Library/Application Support/time-tracking-cli/config.toml`. On Linux, it's usually at `~/.config/time-tracking-cli/config.toml`. You can customize settings like the data directory, default editor, and more. If the file doesn't exist, it will be created with default settings when you first run `ttcli`.
 
+## Optional neovim configuration
+
+- You can set this up to get neovim previews by copying the files into your neovim setup like so:
+
+```
+mkdir -p ~/.config/nvim/lua/custom/timetracking
+cp neovim/init.lua ~/.config/nvim/lua/custom/timetracking/
+cp neovim/timetracking.lua ~/.config/nvim/lua/plugins/
+```
+
+Configure the folder in the timetracking.lua file to match where you store your time tracking files.
+
+When you edit a file through the command or the TUI, it will automatically render the live preview with this configuration.
+
+Note: I'm a n00b when it comes to lua and neovim plugins, so eventually I'll clean this up and make it an official neovim plugin.
+
 ### Example configuration
 
 ```toml
