@@ -26,14 +26,18 @@ use time_tracking_parser::TimeTrackingData;
 pub struct App {
     /// Is the application running?
     pub running: bool,
+    /// Current configuration
     pub config: Config,
+    /// Is help popup currently being shown
     pub show_help: bool,
+    /// Current active date
     pub active_date: Date,
+    /// Selected formatter (TODO: implement this)
     pub formatter: Box<dyn DisplayFormatter>,
     /// Event handler.
     pub events: EventHandler,
+    /// Time tracking data for current date
     pub data: Option<TimeTrackingData>,
-    pub day_summary: Option<String>,
     /// Project list widget
     pub project_list_widget: Option<ProjectListWidget>,
 }
@@ -47,7 +51,6 @@ impl Default for App {
             events: EventHandler::new(),
             formatter: Box::new(DefaultDisplayFormatter),
             config: Config::default(),
-            day_summary: None,
             data: None,
             project_list_widget: None,
         }
@@ -168,19 +171,11 @@ impl App {
             if !data.projects.is_empty() {
                 self.project_list_widget = Some(ProjectListWidget::new(&data));
                 self.data = Some(data);
-                self.day_summary = Some(self.formatter.day_summary(
-                    &content,
-                    "",
-                    self.config.prefix.as_deref(),
-                    self.config.suffix.as_deref(),
-                ));
             } else {
                 self.data = None;
-                self.day_summary = None;
             }
         } else {
             self.data = None;
-            self.day_summary = None;
             self.project_list_widget = None;
         }
         Ok(())

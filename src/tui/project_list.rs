@@ -94,10 +94,6 @@ impl ProjectListWidget {
                 self.copy_selected_notes_to_clipboard();
                 true
             }
-            // KeyCode::Left => {
-            //     self.unselect();
-            //     true
-            // }
             _ => false,
         }
     }
@@ -152,8 +148,6 @@ impl ProjectListWidget {
         if let Some(selected) = self.project_list.state.selected()
             && let Some(project) = self.project_list.items.get(selected)
         {
-            // Placeholder for clipboard functionality
-            // In a real implementation, you would use a crate like `copypasta` or `cli-clipboard`
             let notes_text = format!("- {}", project.tasks.join("\n- "));
 
             use copypasta::ClipboardProvider;

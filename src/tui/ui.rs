@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
     style::{Color, Style, Stylize},
     widgets::{
-        Block, BorderType, Clear, Padding, Paragraph, Widget,
+        Block, BorderType, Paragraph, Widget,
         calendar::{CalendarEventStore, Monthly},
     },
 };
@@ -15,12 +15,6 @@ use crate::tui::popup::Popup;
 use super::app::App;
 
 impl Widget for &mut App {
-    /// Renders the user interface widgets.
-    ///
-    // This is where you add new widgets.
-    // See the following resources:
-    // - https://docs.rs/ratatui/latest/ratatui/widgets/index.html
-    // - https://github.com/ratatui/ratatui/tree/master/examples
     fn render(self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -51,13 +45,6 @@ impl Widget for &mut App {
             .title(self.active_date.format(&datetime_format).unwrap())
             .title_alignment(Alignment::Center)
             .border_type(BorderType::Rounded);
-        // let time_tracking_data = format!(
-        //     "\nActive date: {}\n{}",
-        //     self.active_date.format(&datetime_format).unwrap(),
-        //     self.day_summary
-        //         .as_deref()
-        //         .unwrap_or("No data available for this date.")
-        // );
 
         if let Some(widget) = &mut self.project_list_widget {
             widget.render(chunks[1], buf);

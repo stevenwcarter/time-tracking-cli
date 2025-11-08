@@ -32,11 +32,17 @@ pub enum Event {
 /// You can extend this enum with your own custom events.
 #[derive(Clone, Debug)]
 pub enum AppEvent {
+    /// Toggle the help popup
     ToggleHelp,
+    /// Edit the current date in $EDITOR
     Edit,
+    /// Go to the next date
     NextDate,
+    /// Go to the previous date
     PreviousDate,
+    /// Reload the current date from disk
     ReloadFromDisk,
+    /// Go to today's date
     Today,
     /// Quit the application.
     Quit,
