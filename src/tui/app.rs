@@ -40,6 +40,8 @@ pub struct App {
     pub data: Option<TimeTrackingData>,
     /// Project list widget
     pub project_list_widget: Option<ProjectListWidget>,
+    /// Populated dates (have hours)
+    pub populated_dates: Vec<Date>,
 }
 
 impl Default for App {
@@ -53,6 +55,7 @@ impl Default for App {
             config: Config::default(),
             data: None,
             project_list_widget: None,
+            populated_dates: Vec::new(),
         }
     }
 }
@@ -178,6 +181,18 @@ impl App {
             self.data = None;
             self.project_list_widget = None;
         }
+
+        self.find_populated_dates()
+            .await
+            .context("Finding populated dates")?;
+
+        Ok(())
+    }
+
+    pub async fn find_populated_dates(&mut self) -> Result<()> {
+        // TODO: Populate dates with hours for this month and the previous/next month
+        // Load each date for the current month, previous month, and next month, then any that have
+        // more than 0 hours should be included in self.populated_dates (which is a Vec<time::Date>)
         Ok(())
     }
 

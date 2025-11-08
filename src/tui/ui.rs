@@ -2,9 +2,9 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
-    style::{Color, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize, palette::tailwind::SLATE},
     widgets::{
-        Block, BorderType, Paragraph, Widget,
+        Block, BorderType, Borders, Padding, Paragraph, Widget,
         calendar::{CalendarEventStore, Monthly},
     },
 };
@@ -14,36 +14,55 @@ use crate::tui::popup::Popup;
 
 use super::app::App;
 
+impl App {
+    fn draw_calendar(&self, area: Rect, buf: &mut Buffer) {
+        let calendar_block = Block::default()
+            .borders(Borders::RIGHT)
+            .padding(Padding {
+                left: 1,
+                top: 1,
+                ..Padding::default()
+            })
+            .border_type(BorderType::Rounded);
+
+        let mut es = CalendarEventStore::default();
+        self.populated_dates
+            .iter()
+            .for_each(|d| es.add(*d, Style::new().add_modifier(Modifier::UNDERLINED)));
+        es.add(self.active_date, Style::new().red().bold());
+        Monthly::new(self.active_date, es)
+            .block(calendar_block)
+            .show_surrounding(Style::new().fg(SLATE.c400).add_modifier(Modifier::ITALIC))
+            .show_month_header(Style::new().bold())
+            .show_weekdays_header(Style::new().italic())
+            .render(area, buf);
+    }
+}
+
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(10), Constraint::Min(5)].as_ref())
             .split(area);
-        let block = Block::bordered()
-            .title("tt-tui")
-            .title_alignment(Alignment::Center)
-            // TODO: Add week bar chart
-            // .padding(Padding::new(
-            //     (chunks[0].width / 2) - 12,
-            //     (chunks[0].width / 2) - 12,
-            //     0,
-            //     0,
-            // ))
-            .border_type(BorderType::Rounded);
-
-        let mut es = CalendarEventStore::default();
-        es.add(self.active_date, Style::new().red().bold());
-        Monthly::new(self.active_date, es)
-            .block(block)
-            .show_month_header(Style::new().bold())
-            .show_weekdays_header(Style::new().italic())
-            .render(chunks[0], buf);
+        let header_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(24), Constraint::Fill(1)])
+            .split(chunks[0]);
+        let calendar_area = header_area[0];
+        self.draw_calendar(calendar_area, buf);
+        if let Some(group_rect) = bounding_rect(&header_area) {
+            Block::default()
+                .title_alignment(Alignment::Center)
+                .borders(Borders::ALL)
+                .title("tt-tui")
+                .render(group_rect, buf);
+        }
 
         let datetime_format = format_description::parse("[year]-[month]-[day]").unwrap();
         let block = Block::bordered()
             .title(self.active_date.format(&datetime_format).unwrap())
-            .title_alignment(Alignment::Center)
+            // .title_alignment(Alignment::Center)
             .border_type(BorderType::Rounded);
 
         if let Some(widget) = &mut self.project_list_widget {
@@ -105,4 +124,22 @@ fn popup_area(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
     let [area] = vertical.areas(area);
     let [area] = horizontal.areas(area);
     area
+}
+
+fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
+    if chunks.is_empty() {
+        return None;
+    }
+
+    let x = chunks.iter().map(|r| r.x).min()?;
+    let y = chunks.iter().map(|r| r.y).min()?;
+    let right = chunks.iter().map(|r| r.x + r.width).max()?;
+    let bottom = chunks.iter().map(|r| r.y + r.height).max()?;
+
+    Some(Rect {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    })
 }
