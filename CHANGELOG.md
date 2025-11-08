@@ -1,4 +1,37 @@
 Here are some recent changes:
+## [0.6.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.4...v0.6.0) (2025-11-08)
+
+
+### Features
+
+* added help popup, popup widget, and reload event ([3cfe52c](https://github.com/stevenwcarter/time-tracking-cli/commits/3cfe52c933dfca0c49235b490c0e2419c01b602e))
+* added initial tui implementation ([6e9c687](https://github.com/stevenwcarter/time-tracking-cli/commits/6e9c6876a796dffa254896951b2f7a7875b5aee1))
+* added tui with selection and copy/paste on enter ([c59f99f](https://github.com/stevenwcarter/time-tracking-cli/commits/c59f99f361e02453758d323b1d2c9a1bdd987d95))
+* dates with data are now highlighted in the calendar view ([3ef7269](https://github.com/stevenwcarter/time-tracking-cli/commits/3ef72691281bc56ce7b04f17404723ba37ecf409))
+* enabled editing specific day notes from within tui ([360aa82](https://github.com/stevenwcarter/time-tracking-cli/commits/360aa824587d2362da5cad1598272cf9bc34a826))
+* server closes on tui quit ([029ae80](https://github.com/stevenwcarter/time-tracking-cli/commits/029ae80c61f955f960f4fb51c3df4b895b40efd3))
+* tui and server can run simultaneously ([fe598e5](https://github.com/stevenwcarter/time-tracking-cli/commits/fe598e5c7fbc8ac9d745ce1b269b2f01ac71d99e))
+
+
+### Bug Fixes
+
+* removed stderr output breaking tui ([0d3bf9a](https://github.com/stevenwcarter/time-tracking-cli/commits/0d3bf9abdae71dd49dbfd0d79bbb0b72774d2901))
+
+
+### Chore
+
+* updated justfile to include changelog generator ([96dc94c](https://github.com/stevenwcarter/time-tracking-cli/commits/96dc94cd1038dd572b16c118f872d993524a7baf))
+
+
+### Docs
+
+* adding documentation and removing unused code ([7a2a6db](https://github.com/stevenwcarter/time-tracking-cli/commits/7a2a6db2cd5b758c3936a115d0a00b0853b6b7a6))
+
+
+### Style
+
+* separated calendar into own widget, prepping for populated dates ([ae47307](https://github.com/stevenwcarter/time-tracking-cli/commits/ae47307aeaa834601c4c597fae9588f8164a5905))
+
 ### [0.5.4](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.3...v0.5.4) (2025-11-06)
 
 
