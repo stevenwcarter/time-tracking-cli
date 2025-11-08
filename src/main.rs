@@ -2,8 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use time::{Date, OffsetDateTime};
 use time_tracking_cli::{
-    Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
-    PlainDisplayFormatter, display::show_single_day_stdin, parse_weekday, show_single_day,
+    Config, DATE_FORMAT, display::show_single_day_stdin, parse_weekday, show_single_day,
     show_weekly_summary,
 };
 use tracing::error;
@@ -79,10 +78,11 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
         args.week_start_day,
         args.data_directory,
         args.template_file,
+        Some(args.formatter.clone()),
     );
 
     if args.stdin {
-        let formatter = parse_formatter(&args.formatter);
+        let formatter = config.get_formatter();
         show_single_day_stdin(formatter.as_ref(), &config)
             .await
             .context("generating report from stdin")?;
@@ -127,7 +127,7 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     if args.tui {
         use tracing::info;
 
-        let formatter = parse_formatter(&args.formatter);
+        let formatter = config.get_formatter();
         info!("🚀 Starting Time Tracking TUI...");
         let config = config.clone();
         set.spawn(async move {
@@ -149,7 +149,7 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     // Select the appropriate formatter
 
-    let formatter = parse_formatter(&args.formatter);
+    let formatter = config.get_formatter();
     if args.week {
         // Show weekly summary
         show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), &config).await?;
@@ -159,12 +159,4 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-fn parse_formatter(formatter: &str) -> Box<dyn DisplayFormatter> {
-    match formatter {
-        "plain" => Box::new(PlainDisplayFormatter),
-        "markdown" => Box::new(MarkdownDisplayFormatter),
-        _ => Box::new(DefaultDisplayFormatter),
-    }
 }

@@ -3,8 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::{
+    DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Formatter to use ("plain", "markdown", "default")
+    pub formatter: Option<String>,
     /// Day of the week to start the week (Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday)
     pub week_start_day: Option<String>,
     /// Directory where time tracking files are stored (defaults to ~/.time-tracking)
@@ -20,6 +26,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            formatter: Some("default".to_string()),
             week_start_day: Some("Saturday".to_string()),
             data_directory: None,
             template_file: None,
@@ -54,6 +61,7 @@ impl Config {
         week_start_day: Option<String>,
         data_directory: Option<String>,
         template_file: Option<String>,
+        formatter: Option<String>,
     ) -> Self {
         if let Some(week_start_day) = week_start_day {
             self.week_start_day = Some(week_start_day);
@@ -63,6 +71,9 @@ impl Config {
         }
         if let Some(template_file) = template_file {
             self.template_file = Some(template_file);
+        }
+        if let Some(formatter) = formatter {
+            self.formatter = Some(formatter);
         }
         self
     }
@@ -84,6 +95,10 @@ impl Config {
         self.template_file.as_deref()
     }
 
+    pub fn get_configured_formatter(&self) -> Option<&str> {
+        self.formatter.as_deref()
+    }
+
     /// Get the prefix as Option<&str>
     pub fn get_prefix(&self) -> Option<&str> {
         self.prefix.as_deref()
@@ -92,6 +107,13 @@ impl Config {
     /// Get the suffix as Option<&str>
     pub fn get_suffix(&self) -> Option<&str> {
         self.suffix.as_deref()
+    }
+    pub fn get_formatter(&self) -> Box<dyn DisplayFormatter> {
+        match self.get_configured_formatter() {
+            Some("plain") => Box::new(PlainDisplayFormatter),
+            Some("markdown") => Box::new(MarkdownDisplayFormatter),
+            _ => Box::new(DefaultDisplayFormatter),
+        }
     }
 }
 
@@ -116,6 +138,7 @@ mod tests {
 
     fn create_test_config() -> Config {
         Config {
+            formatter: Some("default".to_string()),
             week_start_day: Some("Monday".to_string()),
             data_directory: Some("/test/data".to_string()),
             template_file: Some("/test/template.md".to_string()),
@@ -126,6 +149,7 @@ mod tests {
 
     fn create_empty_config() -> Config {
         Config {
+            formatter: Some("default".to_string()),
             week_start_day: None,
             data_directory: None,
             template_file: None,
@@ -149,11 +173,13 @@ mod tests {
             Some("Sunday".to_string()),
             Some("/new/data".to_string()),
             Some("/new/template.md".to_string()),
+            Some("default".to_string()),
         );
 
         assert_eq!(updated.week_start_day, Some("Sunday".to_string()));
         assert_eq!(updated.data_directory, Some("/new/data".to_string()));
         assert_eq!(updated.template_file, Some("/new/template.md".to_string()));
+        assert_eq!(updated.formatter, Some("default".to_string()))
     }
 
     #[test]
@@ -163,21 +189,24 @@ mod tests {
             Some("Sunday".to_string()),
             None, // Don't override data_directory
             Some("/new/template.md".to_string()),
+            Some("default".to_string()),
         );
 
         assert_eq!(updated.week_start_day, Some("Sunday".to_string()));
         assert_eq!(updated.data_directory, Some("/test/data".to_string())); // Original value
         assert_eq!(updated.template_file, Some("/new/template.md".to_string()));
+        assert_eq!(updated.formatter, Some("default".to_string()))
     }
 
     #[test]
     fn test_with_args_applied_no_override() {
         let config = create_test_config();
-        let updated = config.with_args_applied(None, None, None);
+        let updated = config.with_args_applied(None, None, None, None);
 
         assert_eq!(updated.week_start_day, Some("Monday".to_string()));
         assert_eq!(updated.data_directory, Some("/test/data".to_string()));
         assert_eq!(updated.template_file, Some("/test/template.md".to_string()));
+        assert_eq!(updated.formatter, Some("default".to_string()))
     }
 
     #[test]
@@ -187,11 +216,13 @@ mod tests {
             Some("Friday".to_string()),
             Some("/args/data".to_string()),
             Some("/args/template.md".to_string()),
+            Some("markdown".to_string()),
         );
 
         assert_eq!(updated.week_start_day, Some("Friday".to_string()));
         assert_eq!(updated.data_directory, Some("/args/data".to_string()));
         assert_eq!(updated.template_file, Some("/args/template.md".to_string()));
+        assert_eq!(updated.formatter, Some("markdown".to_string()))
     }
 
     #[test]
@@ -303,13 +334,14 @@ mod tests {
     #[test]
     fn test_chaining_with_args_applied() {
         let config = Config::default()
-            .with_args_applied(Some("Monday".to_string()), None, None)
-            .with_args_applied(None, Some("/data".to_string()), None)
-            .with_args_applied(None, None, Some("/template.md".to_string()));
+            .with_args_applied(Some("Monday".to_string()), None, None, None)
+            .with_args_applied(None, Some("/data".to_string()), None, None)
+            .with_args_applied(None, None, Some("/template.md".to_string()), None);
 
         assert_eq!(config.get_week_start_day(), "Monday");
         assert_eq!(config.get_data_directory(), Some("/data"));
         assert_eq!(config.get_template_file(), Some("/template.md"));
+        assert_eq!(config.get_configured_formatter(), Some("default"));
     }
 
     // Integration test that creates actual config file
@@ -347,19 +379,20 @@ mod tests {
             None, // Keep default week start
             Some("/new/data".to_string()),
             None,
+            None,
         );
         assert_eq!(config.get_week_start_day(), "Saturday");
         assert_eq!(config.get_data_directory(), Some("/new/data"));
         assert_eq!(config.get_template_file(), None);
 
         // Override week start day but keep others
-        let config = config.with_args_applied(Some("Monday".to_string()), None, None);
+        let config = config.with_args_applied(Some("Monday".to_string()), None, None, None);
         assert_eq!(config.get_week_start_day(), "Monday");
         assert_eq!(config.get_data_directory(), Some("/new/data"));
         assert_eq!(config.get_template_file(), None);
 
         // Add template file
-        let config = config.with_args_applied(None, None, Some("/template.md".to_string()));
+        let config = config.with_args_applied(None, None, Some("/template.md".to_string()), None);
         assert_eq!(config.get_week_start_day(), "Monday");
         assert_eq!(config.get_data_directory(), Some("/new/data"));
         assert_eq!(config.get_template_file(), Some("/template.md"));
@@ -422,8 +455,7 @@ mod tests {
             week_start_day: None,
             data_directory: Some("/data".to_string()),
             template_file: Some("/template.md".to_string()),
-            prefix: None,
-            suffix: None,
+            ..Config::default()
         };
 
         assert_eq!(config.get_week_start_day(), "Saturday");
@@ -433,8 +465,7 @@ mod tests {
             week_start_day: Some("".to_string()),
             data_directory: None,
             template_file: None,
-            prefix: None,
-            suffix: None,
+            ..Config::default()
         };
 
         assert_eq!(config.get_week_start_day(), "");
@@ -447,18 +478,19 @@ mod tests {
             week_start_day: Some("Monday".to_string()),
             data_directory: None,
             template_file: None,
-            prefix: None,
-            suffix: None,
+            ..Config::default()
         }
         .with_args_applied(
             None, // Keep Monday
             Some("/builder/data".to_string()),
+            None,
             None,
         )
         .with_args_applied(
             Some("Friday".to_string()), // Override to Friday
             None,                       // Keep /builder/data
             Some("/builder/template.md".to_string()),
+            None,
         );
 
         assert_eq!(config.get_week_start_day(), "Friday");
