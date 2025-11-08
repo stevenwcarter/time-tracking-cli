@@ -38,8 +38,6 @@ pub enum AppEvent {
     Decrement,
     NextDate,
     PreviousDate,
-    NextItem,
-    PreviousItem,
     /// Quit the application.
     Quit,
 }

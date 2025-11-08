@@ -10,11 +10,11 @@ use ratatui::{
 };
 use time::format_description;
 
-use crate::tui::project_list::ProjectListWidget;
+
 
 use super::app::App;
 
-impl Widget for &App {
+impl Widget for &mut App {
     /// Renders the user interface widgets.
     ///
     // This is where you add new widgets.
@@ -59,8 +59,7 @@ impl Widget for &App {
         //         .unwrap_or("No data available for this date.")
         // );
 
-        if let Some(data) = self.data.clone() {
-            let mut widget = ProjectListWidget::new(&data);
+        if let Some(widget) = &mut self.project_list_widget {
             widget.render(chunks[1], buf);
         } else {
             let tt_par = Paragraph::new("No data found for date")

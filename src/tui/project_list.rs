@@ -1,7 +1,6 @@
 use ratatui::{
-    DefaultTerminal,
     buffer::Buffer,
-    crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::{
         Color, Modifier, Style, Stylize,
@@ -10,8 +9,8 @@ use ratatui::{
     symbols,
     text::Line,
     widgets::{
-        Block, Borders, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
-        StatefulWidget, Widget, Wrap,
+        Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, StatefulWidget,
+        Widget,
     },
 };
 use time_tracking_parser::TimeTrackingData;
@@ -22,13 +21,13 @@ const SELECTED_STYLE: Style = Style::new().bg(SLATE.c800).add_modifier(Modifier:
 const TEXT_FG_COLOR: Color = SLATE.c200;
 const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ProjectListWidget {
     data: TimeTrackingData,
     project_list: ProjectList,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct ProjectList {
     items: Vec<ProjectItem>,
     state: ListState,
@@ -56,13 +55,118 @@ impl ProjectListWidget {
             });
         }
 
+        let mut state = ListState::default();
+        if !items.is_empty() {
+            state.select(Some(0));
+        }
+
         Self {
             data: data.clone(),
-            project_list: ProjectList {
-                items,
-                state: ListState::default(),
-            },
+            project_list: ProjectList { items, state },
         }
+    }
+
+    /// Handle keyboard events for the project list
+    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> bool {
+        if self.project_list.items.is_empty() {
+            return false;
+        }
+
+        match key_event.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.next_item();
+                true
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.previous_item();
+                true
+            }
+            KeyCode::Char('g') => {
+                self.go_to_first();
+                true
+            }
+            KeyCode::Char('G') => {
+                self.go_to_last();
+                true
+            }
+            KeyCode::Enter => {
+                self.copy_selected_notes_to_clipboard();
+                true
+            }
+            KeyCode::Left => {
+                self.unselect();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn next_item(&mut self) {
+        let i = match self.project_list.state.selected() {
+            Some(i) => {
+                if i >= self.project_list.items.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.project_list.state.select(Some(i));
+    }
+
+    fn previous_item(&mut self) {
+        let i = match self.project_list.state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.project_list.items.len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.project_list.state.select(Some(i));
+    }
+
+    fn go_to_first(&mut self) {
+        if !self.project_list.items.is_empty() {
+            self.project_list.state.select(Some(0));
+        }
+    }
+
+    fn go_to_last(&mut self) {
+        if !self.project_list.items.is_empty() {
+            self.project_list
+                .state
+                .select(Some(self.project_list.items.len() - 1));
+        }
+    }
+
+    fn unselect(&mut self) {
+        self.project_list.state.select(None);
+    }
+
+    fn copy_selected_notes_to_clipboard(&self) {
+        if let Some(selected) = self.project_list.state.selected()
+            && let Some(project) = self.project_list.items.get(selected)
+        {
+            // Placeholder for clipboard functionality
+            // In a real implementation, you would use a crate like `copypasta` or `cli-clipboard`
+            let notes_text = format!("- {}", project.tasks.join("\n- "));
+
+            use copypasta::ClipboardProvider;
+            let mut ctx = copypasta::ClipboardContext::new().unwrap();
+            ctx.set_contents(notes_text).unwrap();
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<usize> {
+        self.project_list.state.selected()
+    }
+
+    pub fn has_items(&self) -> bool {
+        !self.project_list.items.is_empty()
     }
 }
 
@@ -129,7 +233,7 @@ impl ProjectListWidget {
 }
 
 const fn alternate_colors(i: usize) -> Color {
-    if i % 2 == 0 {
+    if i.is_multiple_of(2) {
         NORMAL_ROW_BG
     } else {
         ALT_ROW_BG_COLOR
