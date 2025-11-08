@@ -100,7 +100,6 @@ impl App {
             .await
             .context("could not read day")?;
         if let Some(content) = content {
-            eprintln!("---:{}:---\n", content);
             let data = time_tracking_parser::parse_time_tracking_data(
                 &content,
                 self.config.prefix.as_deref(),
