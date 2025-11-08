@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyEvent},
@@ -10,10 +11,10 @@ use ratatui::{
     text::Line,
     widgets::{
         Block, Borders, HighlightSpacing, List, ListItem, ListState, Paragraph, StatefulWidget,
-        Widget,
+        Widget, Wrap,
     },
 };
-use time_tracking_parser::TimeTrackingData;
+use time_tracking_parser::{TimeTrackingData, format_time, format_time_option};
 const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
 const ALT_ROW_BG_COLOR: Color = SLATE.c900;
@@ -93,10 +94,10 @@ impl ProjectListWidget {
                 self.copy_selected_notes_to_clipboard();
                 true
             }
-            KeyCode::Left => {
-                self.unselect();
-                true
-            }
+            // KeyCode::Left => {
+            //     self.unselect();
+            //     true
+            // }
             _ => false,
         }
     }
@@ -175,7 +176,7 @@ impl Widget for &mut ProjectListWidget {
         let [header_area, main_area, footer_area] = Layout::vertical([
             Constraint::Length(2),
             Constraint::Fill(1),
-            Constraint::Length(1),
+            Constraint::Length(3),
         ])
         .areas(area);
 
@@ -188,9 +189,9 @@ impl Widget for &mut ProjectListWidget {
 impl ProjectListWidget {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(format!(
-            "Start Time: {:?}\nEnd Time: {:?}\n\nWorking Time: {} hours",
-            self.data.start_time,
-            self.data.end_time,
+            "Start Time: {}\n  End Time: {}\n\nWorking Time: {} hours",
+            format_time_option(self.data.start_time.as_ref(), "N/A"),
+            format_time_option(self.data.end_time.as_ref(), "N/A"),
             self.data.total_minutes as f32 / 60.
         ))
         .bold()
@@ -198,7 +199,8 @@ impl ProjectListWidget {
         .render(area, buf);
     }
     fn render_footer(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new("Use ↓↑ to move, ← to unselect, → to change status, g/G to go top/bottom.")
+        Paragraph::new("Use ↓↑ or j/k to move, g/G to go to the top or bottom, Enter to copy the notes for the current project to your clipboard.")
+            .wrap(Wrap{trim: true})
             .centered()
             .render(area, buf);
     }
@@ -225,8 +227,10 @@ impl ProjectListWidget {
         let list = List::new(items)
             .block(block)
             .highlight_style(SELECTED_STYLE)
-            .highlight_symbol(">")
-            .highlight_spacing(HighlightSpacing::Always);
+            .highlight_symbol(">>")
+            .highlight_spacing(HighlightSpacing::Always)
+            .repeat_highlight_symbol(true)
+            .scroll_padding(1);
 
         StatefulWidget::render(list, area, buf, &mut self.project_list.state);
     }
@@ -243,12 +247,14 @@ const fn alternate_colors(i: usize) -> Color {
 impl From<&ProjectItem> for ListItem<'_> {
     fn from(value: &ProjectItem) -> Self {
         let mut text = String::new();
-        text.push_str(&format!(
-            "Project: {}\tTotal Hours: {}\n",
-            value.name, value.total_hours
-        ));
+        if value.total_hours == 1. {
+            text.push_str(&format!(" {:<25}{} hour\n", value.name, value.total_hours));
+        } else {
+            text.push_str(&format!(" {:<25}{} hours\n", value.name, value.total_hours));
+        }
+
         for task in &value.tasks {
-            text.push_str(&format!("{}\n", task));
+            text.push_str(&format!("   - {}\n", task));
         }
         ListItem::new(text)
     }

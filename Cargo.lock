@@ -2601,7 +2601,7 @@ dependencies = [
 [[package]]
 name = "time-tracking-parser"
 version = "0.2.0"
-source = "git+https://github.com/stevenwcarter/time-tracking-parser#e093a4791f4d10f0cef7d4daed4b95dfb586b0d4"
+source = "git+https://github.com/stevenwcarter/time-tracking-parser#4ec9e4cc1f2aea2fb9e1cf91a0cc49e8280dbe9e"
 dependencies = [
  "regex",
  "serde",

@@ -20,6 +20,7 @@ use std::{collections::HashMap, sync::Arc};
 use time::{Date, OffsetDateTime};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
+use tracing::debug;
 
 use crate::{get_time_tracking_dir_with_override, get_week_dates, parse_weekday};
 
@@ -91,7 +92,7 @@ pub struct WeekData {
     pub project_summaries: Vec<ProjectSummary>,
 }
 
-pub async fn run_server(port: u16, config: Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_server(port: u16, config: Config) -> anyhow::Result<()> {
     let state = AppState { config };
     let context = GraphQLContext::new(state.clone());
     let qm_schema = create_schema();
@@ -144,9 +145,18 @@ pub async fn run_server(port: u16, config: Config) -> Result<(), Box<dyn std::er
     );
     println!("📊 Access your time tracking data via the web interface");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to install Ctrl+C handler");
+    debug!("Signal received, starting graceful shutdown");
 }
 
 async fn custom_graphql(

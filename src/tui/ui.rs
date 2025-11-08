@@ -10,8 +10,6 @@ use ratatui::{
 };
 use time::format_description;
 
-
-
 use super::app::App;
 
 impl Widget for &mut App {
@@ -24,14 +22,7 @@ impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(
-                [
-                    Constraint::Length(10),
-                    Constraint::Min(5),
-                    Constraint::Length(3),
-                ]
-                .as_ref(),
-            )
+            .constraints([Constraint::Length(10), Constraint::Min(5)].as_ref())
             .split(area);
         let block = Block::bordered()
             .title("tt-tui")

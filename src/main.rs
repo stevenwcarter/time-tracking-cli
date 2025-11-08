@@ -5,9 +5,10 @@ use time_tracking_cli::{
     Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
     PlainDisplayFormatter, parse_weekday, show_single_day, show_weekly_summary,
 };
+use tracing::error;
 
 #[cfg(feature = "webapp")]
-use time_tracking_cli::run_server;
+use tokio::task::JoinSet;
 
 /// Time tracking CLI utility
 #[derive(Parser)]
@@ -77,11 +78,18 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
 
     let week_start_weekday = parse_weekday(&config.get_week_start_day())?;
 
+    let mut set = JoinSet::new();
+
     // Handle serve mode
     #[cfg(feature = "webapp")]
     if args.serve {
         println!("🚀 Starting Time Tracking Web Server...");
-        return run_server(args.port, config).await;
+        let config = config.clone();
+        set.spawn(async move {
+            if let Err(e) = time_tracking_cli::web::run_server(args.port, config).await {
+                eprintln!("Error running web server: {}", e);
+            }
+        });
     }
 
     // Determine the date to use - prioritize flag over positional, then default to today
@@ -99,19 +107,32 @@ async fn main_impl() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let formatter = parse_formatter(&args.formatter);
-
     #[cfg(feature = "tui")]
     if args.tui {
         use tracing::info;
 
+        let formatter = parse_formatter(&args.formatter);
         info!("🚀 Starting Time Tracking TUI...");
-        let _ = time_tracking_cli::tui::tui(&config, date, formatter).await;
+        let config = config.clone();
+        set.spawn(async move {
+            if let Err(e) = time_tracking_cli::tui::tui(&config, date, formatter).await {
+                error!("Error running TUI: {}", e);
+            }
+        });
+    }
+
+    if !set.is_empty() {
+        while let Some(res) = set.join_next().await {
+            if let Err(e) = res {
+                error!("Task failed: {}", e);
+            }
+        }
         return Ok(());
     }
 
     // Select the appropriate formatter
 
+    let formatter = parse_formatter(&args.formatter);
     if args.week {
         // Show weekly summary
         show_weekly_summary(&date, week_start_weekday, formatter.as_ref(), &config).await?;

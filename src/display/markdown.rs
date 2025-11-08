@@ -67,7 +67,7 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
 
     fn weekly_header(&self, week_start: &str, week_end: &str) -> String {
         let mut msg = String::new();
-        msg.push_str(&format!("# Weekly Summary\n"));
+        msg.push_str("# Weekly Summary\n");
         msg.push_str(&format!("**Period:** {} to {}\n\n", week_start, week_end));
         msg
     }
@@ -77,7 +77,7 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
 
     fn weekly_totals(&self, total_minutes: u32, dead_minutes: u32) -> String {
         let mut msg = String::new();
-        msg.push_str(&format!("## Summary\n"));
+        msg.push_str("## Summary\n");
         msg.push_str(&format!(
             "- **Total Time:** {} hours\n",
             Time::format_duration_decimal(total_minutes),
@@ -98,7 +98,7 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
     fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String {
         let mut msg = String::new();
         if !projects.is_empty() {
-            msg.push_str(&format!("## Projects\n"));
+            msg.push_str("## Projects\n");
             for (project_name, (total_minutes, notes)) in projects {
                 msg.push_str(&format!("### {}\n", project_name));
                 msg.push_str(&format!(
@@ -107,7 +107,7 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
                 ));
 
                 if !notes.is_empty() {
-                    msg.push_str(&format!("**Notes:**\n"));
+                    msg.push_str("**Notes:**\n");
                     for note in notes {
                         msg.push_str(&format!("- {}\n", note));
                     }

@@ -2,3 +2,4 @@
 - [x] Pass configuration through to webapp, including weekday start
 - [x] Recreate first naive site with React
 - [ ] Include parser via wasm for site, for instant preview
+- [ ] Poll for changes in the file and update TUI for live preview

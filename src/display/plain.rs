@@ -1,4 +1,4 @@
-use time_tracking_parser::Time;
+use time_tracking_parser::{Time, format_time_option};
 
 use super::DisplayFormatter;
 
@@ -23,12 +23,12 @@ impl DisplayFormatter for PlainDisplayFormatter {
         msg.push_str(&format!(
             "{}Start Time: {}\n",
             indent,
-            data.formatted_start_time()
+            format_time_option(data.start_time.as_ref(), "N/A")
         ));
         msg.push_str(&format!(
             "{}End Time:   {}\n",
             indent,
-            data.formatted_end_time()
+            format_time_option(data.end_time.as_ref(), "N/A")
         ));
 
         // Display total working time
