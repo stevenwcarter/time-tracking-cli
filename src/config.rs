@@ -335,7 +335,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.week_start_day, Some("Saturday".to_string()));
-        assert_eq!(config.data_directory, None);
+        assert!(config.data_directory.unwrap().ends_with("/.time-tracking"));
         assert_eq!(config.template_file, None);
     }
 

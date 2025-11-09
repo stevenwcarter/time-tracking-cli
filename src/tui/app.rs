@@ -1,14 +1,13 @@
 use std::{
     collections::HashMap,
-    fs,
     io::stdout,
     path::{Path, PathBuf},
     time::SystemTime,
 };
 
 use crate::{
-    Config, DefaultDisplayFormatter, DisplayFormatter, display::read_day, editor::open_in_editor,
-    file_utils::get_time_tracking_dir_with_override,
+    Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, display::read_day,
+    editor::open_in_editor, file_utils::get_time_tracking_dir_with_override,
 };
 
 use super::{
@@ -26,6 +25,7 @@ use ratatui::{
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
+use tokio::fs;
 
 /// Application.
 #[derive(Debug)]
@@ -162,10 +162,7 @@ impl App {
         let suffix = self.config.get_suffix().unwrap_or("");
 
         // Format the date as YYYY-MM-DD
-        let date_str = self
-            .active_date
-            .format(&time::format_description::parse("[year]-[month]-[day]").unwrap())
-            .unwrap();
+        let date_str = self.active_date.format(DATE_FORMAT).unwrap();
         let filename = format!("{}{}{}.md", prefix, date_str, suffix);
 
         Ok(time_tracking_dir.join(filename))
@@ -273,9 +270,7 @@ impl App {
         time_tracking_dir: &Path,
         mod_times: &mut HashMap<Date, SystemTime>,
     ) -> Result<bool> {
-        let date_str = date
-            .format(&time::format_description::parse("[year]-[month]-[day]").unwrap())
-            .unwrap();
+        let date_str = date.format(DATE_FORMAT).context("could not format date")?;
         let filename = format!("{}.md", date_str);
         let file_path = time_tracking_dir.join(filename);
 
@@ -284,7 +279,7 @@ impl App {
         }
 
         // Check file modification time for caching
-        let metadata = fs::metadata(&file_path)?;
+        let metadata = fs::metadata(&file_path).await?;
         let mod_time = metadata.modified()?;
 
         // If we have a cached modification time and it hasn't changed, use cached result
@@ -299,7 +294,7 @@ impl App {
         mod_times.insert(*date, mod_time);
 
         // Read and parse the file to check for data
-        let content = fs::read_to_string(&file_path)?;
+        let content = fs::read_to_string(&file_path).await?;
         let data = time_tracking_parser::parse_time_tracking_data(
             &content,
             self.config.get_prefix(),

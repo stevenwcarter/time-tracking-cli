@@ -216,10 +216,7 @@ pub async fn show_single_day(
     fs::create_dir_all(&time_tracking_dir)?;
 
     // Create the filename for the date
-    let filename = format!(
-        "{}.md",
-        date.format(&format_description!("[year]-[month]-[day]"))?
-    );
+    let filename = format!("{}.md", date.format(DATE_FORMAT)?);
     let file_path = time_tracking_dir.join(&filename);
 
     // Create the file if it doesn't exist

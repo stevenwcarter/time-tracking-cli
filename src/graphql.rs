@@ -1,6 +1,6 @@
 use juniper::{EmptySubscription, FieldResult, RootNode};
-use std::fs;
 use time::Date;
+use tokio::fs;
 
 use crate::{
     DATE_FORMAT,
@@ -47,11 +47,14 @@ impl Query {
                 create_template_content(&date, state.config.template_file.as_deref())
                     .map_err(|e| format!("Failed to create template content: {}", e))?;
             fs::write(&file_path, &template_content)
+                .await
                 .map_err(|e| format!("Failed to create file: {}", e))?;
             return Ok(template_content);
         }
 
-        fs::read_to_string(&file_path).map_err(|e| format!("Failed to read file: {}", e).into())
+        fs::read_to_string(&file_path)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e).into())
     }
 
     #[graphql(name = "weekDataForDate")]
@@ -140,11 +143,14 @@ impl Mutation {
 
         // Create directory if it doesn't exist
         fs::create_dir_all(&time_tracking_dir)
+            .await
             .map_err(|e| format!("Failed to create directory: {}", e))?;
 
         let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
 
-        fs::write(&file_path, &content).map_err(|e| format!("Failed to write file: {}", e))?;
+        fs::write(&file_path, &content)
+            .await
+            .map_err(|e| format!("Failed to write file: {}", e))?;
 
         Ok(format!(
             "Successfully updated file for date {}",
