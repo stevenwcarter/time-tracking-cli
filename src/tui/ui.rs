@@ -1,21 +1,12 @@
 #![allow(dead_code)]
-use ratatui::{
-    buffer::Buffer,
-    layout::{Alignment, Constraint, Direction, Flex, Layout, Rect},
-    style::{
-        Color, Modifier, Style, Stylize,
-        palette::tailwind::{BLUE, SLATE},
-    },
-    widgets::{
-        Block, BorderType, Borders, Padding, Paragraph, Widget,
-        calendar::{CalendarEventStore, Monthly},
-    },
-};
+use ratatui::layout::Flex;
+use ratatui::widgets::calendar::*;
+use ratatui::widgets::*;
+use ratatui::{prelude::*, style::palette::tailwind::*};
 use time::format_description;
 
-use crate::tui::popup::Popup;
-
 use super::app::App;
+use super::popup::Popup;
 
 impl App {
     fn draw_calendar(&self, area: Rect, buf: &mut Buffer) {
