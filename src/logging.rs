@@ -14,8 +14,10 @@ pub fn init_tracing() -> Result<()> {
     let file_appender = tracing_appender::rolling::never(&log_path, "log.txt");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    let _ = tracing_subscriber::fmt().with_writer(non_blocking);
-    //.with_ansi(false).init();
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(true)
+        .init();
 
     std::mem::forget(_guard);
 

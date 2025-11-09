@@ -14,6 +14,7 @@ pub use plain::PlainDisplayFormatter;
 use anyhow::Result;
 use time::{Date, Weekday, macros::format_description};
 use time_tracking_parser::parse_time_tracking_data;
+use tracing::info;
 
 use crate::{
     Config, DATE_FORMAT, create_template_content, format_day_with_date,
@@ -229,7 +230,7 @@ pub async fn show_single_day(
             println!("Created new time tracking file: {}", file_path.display());
         }
     } else if !noedit {
-        println!(
+        info!(
             "Opening existing time tracking file: {}",
             file_path.display()
         );
