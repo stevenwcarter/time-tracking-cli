@@ -21,15 +21,12 @@ pub fn get_time_tracking_dir_with_override(override_dir: Option<&str>) -> Result
     Ok(home.join(".time-tracking"))
 }
 
-pub fn create_template_content(
-    date: &Date,
-    template_file: Option<&str>,
-) -> Result<String, Box<dyn std::error::Error>> {
+pub fn create_template_content(date: &Date, template_file: Option<&str>) -> Result<String> {
     match template_file {
         Some(file_path) => {
             // Read the template file
             let template_content = fs::read_to_string(file_path)
-                .map_err(|e| format!("Failed to read template file '{}': {}", file_path, e))?;
+                .with_context(|| format!("could not read template file: {file_path}"))?;
 
             // Replace {date} placeholder with the formatted date
             let formatted_date = date.format(&DATE_FORMAT).unwrap().to_string();
@@ -185,7 +182,7 @@ mod tests {
 
         assert!(result.is_err());
         let error = result.unwrap_err();
-        assert!(error.to_string().contains("Failed to read template file"));
+        assert!(error.to_string().contains("could not read template file"));
         assert!(error.to_string().contains(non_existent_path));
     }
 

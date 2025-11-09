@@ -74,9 +74,9 @@ impl Default for App {
 
 impl App {
     /// Constructs a new instance of [`App`].
-    pub fn new(config: &Config, date: Date, formatter: Box<dyn DisplayFormatter>) -> Self {
+    pub fn new(config: &Config, formatter: Box<dyn DisplayFormatter>) -> Self {
         Self {
-            active_date: date,
+            active_date: config.date,
             config: config.clone(),
             formatter,
             ..Self::default()

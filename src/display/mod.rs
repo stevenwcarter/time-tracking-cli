@@ -209,7 +209,7 @@ pub async fn show_single_day(
     formatter: &dyn DisplayFormatter,
     config: &Config,
     noedit: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
     // Create the time tracking directory
     let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
     fs::create_dir_all(&time_tracking_dir)?;

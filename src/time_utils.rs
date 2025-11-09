@@ -1,8 +1,9 @@
+use anyhow::{Result, bail};
 use time::{Date, Duration, Weekday};
 
 use crate::DATE_FORMAT;
 
-pub fn parse_weekday(day_str: &str) -> Result<Weekday, Box<dyn std::error::Error>> {
+pub fn parse_weekday(day_str: &str) -> Result<Weekday> {
     match day_str.to_lowercase().as_str() {
         "monday" | "mon" => Ok(Weekday::Monday),
         "tuesday" | "tue" => Ok(Weekday::Tuesday),
@@ -11,7 +12,10 @@ pub fn parse_weekday(day_str: &str) -> Result<Weekday, Box<dyn std::error::Error
         "friday" | "fri" => Ok(Weekday::Friday),
         "saturday" | "sat" => Ok(Weekday::Saturday),
         "sunday" | "sun" => Ok(Weekday::Sunday),
-        _ => Err(format!("Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday", day_str).into()),
+        _ => bail!(
+            "Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday",
+            day_str
+        ),
     }
 }
 

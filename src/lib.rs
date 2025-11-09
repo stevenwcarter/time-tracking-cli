@@ -2,6 +2,7 @@ pub mod config;
 pub mod display;
 pub mod editor;
 pub mod file_utils;
+pub mod logging;
 pub mod time_utils;
 
 #[cfg(feature = "webapp")]
