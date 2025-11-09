@@ -97,6 +97,7 @@ async fn main_impl() -> Result<()> {
     }
 
     if !set.is_empty() {
+        println!("Other jobs are running (webserver or tui), press ctrl-c to quit (webserver)");
         while let Some(res) = set.join_next().await {
             if let Err(e) = res {
                 error!("Task failed: {}", e);
