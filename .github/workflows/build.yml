@@ -94,7 +94,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build Rust binary
-        run: cargo build --release --target ${{ matrix.target }} --features webapp,tui
+        run: cargo build --release --target ${{ matrix.target }} -p cli
 
       - name: Get branch name
         id: branch

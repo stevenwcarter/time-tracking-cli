@@ -1,11 +1,19 @@
+[workspace]
+members = [".", "cli"]
+resolver = "2"
+
 [package]
 name = "time-tracking-cli"
 version = "0.7.0"
 edition = "2024"
 publish = false
 
+[lib]
+name = "time_tracking_cli"
+path = "src/lib.rs"
+
 [features]
-default = []
+default = ["webapp", "tui"]
 webapp = [
     "axum",
     "tower",
@@ -18,10 +26,6 @@ webapp = [
     "axum-embed",
 ]
 tui = ["crossterm", "ratatui", "copypasta", "derive_setters"]
-
-[[bin]]
-name = "ttcli"
-path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }

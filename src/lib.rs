@@ -22,7 +22,7 @@ pub use config::Config;
 pub use data_svc::DataService;
 pub use display::{
     DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
-    show_single_day, show_weekly_summary,
+    show_single_day, show_single_day_stdin, show_weekly_summary,
 };
 pub use editor::open_in_editor;
 pub use file_utils::{create_template_content, get_time_tracking_dir};

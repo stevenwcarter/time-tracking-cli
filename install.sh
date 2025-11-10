@@ -13,7 +13,7 @@ yarn build
 
 cd ..
 
-cargo install --path .
+cargo install --path cli
 
 
 # Get the cargo bin directory
@@ -22,7 +22,7 @@ CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 # Check if ttcli exists
 if [ ! -f "$CARGO_BIN_DIR/ttcli" ]; then
     echo "Error: ttcli not found in $CARGO_BIN_DIR"
-    echo "Please install the crate first with: cargo install --path ."
+    echo "Please install the crate first with: cargo install --path cli"
     exit 1
 fi
 
