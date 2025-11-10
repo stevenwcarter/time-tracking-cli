@@ -194,8 +194,7 @@ impl ProjectListWidget {
             .title(Line::raw("Project Summaries").centered())
             .borders(Borders::TOP)
             .border_set(symbols::border::EMPTY)
-            .border_style(TODO_HEADER_STYLE)
-            .bg(NORMAL_ROW_BG);
+            .border_style(TODO_HEADER_STYLE);
 
         let items: Vec<ListItem> = self
             .project_list

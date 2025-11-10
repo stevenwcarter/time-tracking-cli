@@ -59,7 +59,6 @@ impl Widget for &mut App {
             let tt_par = Paragraph::new("No data found for date")
                 .block(block)
                 .fg(Color::Yellow)
-                .bg(Color::Black)
                 .alignment(Alignment::Left);
             tt_par.render(chunks[1], buf);
         }
