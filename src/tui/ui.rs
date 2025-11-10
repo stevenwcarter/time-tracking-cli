@@ -3,24 +3,42 @@ use ratatui::widgets::*;
 
 use crate::DATE_FORMAT;
 
-use super::widgets::Calendar;
+use super::widgets::{Calendar, WeeklyBarChart};
 
 use super::app::App;
 use super::widgets::HelpPopup;
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.zoom_bar {
+            let mut bar_chart = WeeklyBarChart::new(self.active_date, &self.config);
+            // Pre-populate with loaded data if available
+            if !self.weekly_data.is_empty() {
+                bar_chart.set_weekly_data(self.weekly_data.clone());
+            }
+            bar_chart.render(area, buf);
+            return;
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(10), Constraint::Min(5)].as_ref())
+            .constraints([Constraint::Length(12), Constraint::Min(9)].as_ref())
             .split(area);
         let header_area = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(24), Constraint::Fill(1)])
             .split(chunks[0]);
         let calendar_area = header_area[0];
+        let bar_chart_area = header_area[1];
 
         Calendar::new(self).render(calendar_area, buf);
+
+        // Create and render the weekly bar chart
+        let mut bar_chart = WeeklyBarChart::new(self.active_date, &self.config);
+        // Pre-populate with loaded data if available
+        if !self.weekly_data.is_empty() {
+            bar_chart.set_weekly_data(self.weekly_data.clone());
+        }
+        bar_chart.render(bar_chart_area, buf);
 
         if let Some(group_rect) = bounding_rect(&header_area) {
             Block::default()

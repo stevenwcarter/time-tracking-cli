@@ -32,6 +32,8 @@ use tokio::fs;
 pub struct App {
     /// Is the application running?
     pub running: bool,
+    /// Is the application zoomed into the bar chart
+    pub zoom_bar: bool,
     /// Current configuration
     pub config: Config,
     /// Is help popup currently being shown
@@ -48,6 +50,8 @@ pub struct App {
     pub project_list_widget: Option<ProjectListWidget>,
     /// Populated dates (have hours)
     pub populated_dates: Vec<Date>,
+    /// Weekly time tracking data (Date -> minutes)
+    pub weekly_data: HashMap<Date, u32>,
     /// Cache of file modification times for performance
     file_mod_times: HashMap<Date, SystemTime>,
     /// Last time populated dates were checked
@@ -58,6 +62,7 @@ impl Default for App {
     fn default() -> Self {
         Self {
             running: true,
+            zoom_bar: false,
             show_help: false,
             active_date: OffsetDateTime::now_local().unwrap().date(),
             events: EventHandler::new(),
@@ -66,6 +71,7 @@ impl Default for App {
             data: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
+            weekly_data: HashMap::new(),
             file_mod_times: HashMap::new(),
             last_populated_check: None,
         }
@@ -102,6 +108,9 @@ impl App {
                     AppEvent::ReloadFromDisk => {
                         self.load_data_for_active_date().await?;
                     }
+                    AppEvent::ToggleZoomBar => {
+                        self.toggle_zoom_bar();
+                    }
                     AppEvent::Edit => {
                         self.run_editor(&mut terminal)?;
                         self.events.send(AppEvent::ReloadFromDisk);
@@ -125,6 +134,10 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    pub fn toggle_zoom_bar(&mut self) {
+        self.zoom_bar = !self.zoom_bar;
     }
 
     pub fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -194,6 +207,45 @@ impl App {
         self.find_populated_dates()
             .await
             .context("Finding populated dates")?;
+
+        self.load_weekly_data()
+            .await
+            .context("Loading weekly data")?;
+
+        Ok(())
+    }
+
+    pub async fn load_weekly_data(&mut self) -> Result<()> {
+        use crate::time_utils::{get_week_dates, parse_weekday};
+
+        let week_start_day = parse_weekday(self.config.get_week_start_day())
+            .context("Could not parse week start day")?;
+        let week_dates = get_week_dates(&self.active_date, week_start_day);
+        let time_tracking_dir =
+            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
+
+        self.weekly_data.clear();
+
+        for date in week_dates {
+            let filename = format!("{}.md", date.format(&DATE_FORMAT)?);
+            let file_path = time_tracking_dir.join(&filename);
+
+            let total_minutes = if file_path.exists() {
+                let content = fs::read_to_string(&file_path)
+                    .await
+                    .context("Reading file")?;
+                let data = time_tracking_parser::parse_time_tracking_data(
+                    &content,
+                    self.config.get_prefix(),
+                    self.config.get_suffix(),
+                );
+                data.total_minutes
+            } else {
+                0
+            };
+
+            self.weekly_data.insert(date, total_minutes);
+        }
 
         Ok(())
     }
@@ -322,6 +374,7 @@ impl App {
                 self.events.send(AppEvent::Quit)
             }
             KeyCode::Char('e') => self.events.send(AppEvent::Edit),
+            KeyCode::Char('f') => self.events.send(AppEvent::ToggleZoomBar),
             KeyCode::Char('r') => self.events.send(AppEvent::ReloadFromDisk),
             KeyCode::Char('t' | 'T') => self.events.send(AppEvent::Today),
             KeyCode::Char('l') | KeyCode::Right => self.events.send(AppEvent::NextDate),

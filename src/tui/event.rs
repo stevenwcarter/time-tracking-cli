@@ -34,6 +34,8 @@ pub enum Event {
 pub enum AppEvent {
     /// Toggle the help popup
     ToggleHelp,
+    /// Toggle whether the bar chart is zoomed
+    ToggleZoomBar,
     /// Edit the current date in $EDITOR
     Edit,
     /// Go to the next date

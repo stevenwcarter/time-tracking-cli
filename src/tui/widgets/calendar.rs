@@ -4,6 +4,7 @@ use ratatui::widgets::calendar::*;
 use ratatui::widgets::*;
 
 use crate::tui::app::App;
+use super::colors::WidgetColors;
 
 pub struct Calendar<'a>(&'a App);
 
@@ -16,8 +17,8 @@ impl<'a> Calendar<'a> {
         self.0
             .populated_dates
             .iter()
-            .for_each(|d| es.add(*d, Style::new().fg(BLUE.c300).add_modifier(Modifier::BOLD)));
-        es.add(self.0.active_date, Style::new().red().bold());
+            .for_each(|d| es.add(*d, WidgetColors::populated_style()));
+        es.add(self.0.active_date, WidgetColors::active_style());
 
         es
     }
