@@ -6,12 +6,15 @@ permissions:
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build (e.g., v1.0.0)"
+      branch:
+        description: "Branch to build (e.g., main)"
         required: true
         type: string
 
@@ -23,7 +26,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.branch || github.ref }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -76,7 +79,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.branch || github.ref }}
 
       - name: Download frontend build
         uses: actions/download-artifact@v4
@@ -93,14 +96,14 @@ jobs:
       - name: Build Rust binary
         run: cargo build --release --target ${{ matrix.target }} --features webapp,tui
 
-      - name: Get tag name
-        id: tag
+      - name: Get branch name
+        id: branch
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG_NAME=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+            echo "BRANCH_NAME=${{ github.event.inputs.branch }}" >> $GITHUB_OUTPUT
           else
-            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
           fi
 
       - name: Create archive
@@ -109,52 +112,14 @@ jobs:
           cd target/${{ matrix.target }}/release
           if [ "${{ matrix.archive_format }}" = "zip" ]; then
             # Windows: Create zip file with .exe extension
-            7z a ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.zip ttcli.exe
+            7z a ../../../time-tracking-cli-${{ steps.branch.outputs.BRANCH_NAME }}-${{ matrix.name }}.zip ttcli.exe
           else
             # Unix: Create tar.gz file
-            tar -czf ../../../time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.tar.gz ttcli
+            tar -czf ../../../time-tracking-cli-${{ steps.branch.outputs.BRANCH_NAME }}-${{ matrix.name }}.tar.gz ttcli
           fi
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}
-          path: time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-${{ matrix.name }}.${{ matrix.archive_format }}
-
-  release:
-    name: Create GitHub Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Get tag name
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG_NAME=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.tag.outputs.TAG_NAME }}
-          name: Release ${{ steps.tag.outputs.TAG_NAME }}
-          draft: false
-          prerelease: false
-          files: |
-            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-intel-mac.tar.gz
-            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-silicon-mac.tar.gz
-            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-linux-x64.tar.gz
-            time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-windows-x64/time-tracking-cli-${{ steps.tag.outputs.TAG_NAME }}-windows-x64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: time-tracking-cli-${{ steps.branch.outputs.BRANCH_NAME }}-${{ matrix.name }}
+          path: time-tracking-cli-${{ steps.branch.outputs.BRANCH_NAME }}-${{ matrix.name }}.${{ matrix.archive_format }}
