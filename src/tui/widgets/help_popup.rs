@@ -15,6 +15,7 @@ impl Widget for &mut HelpPopup {
                     g/G: to go to the top or bottom
                     r: to reload data from disk
                     e: edit the current date's notes in $EDITOR
+                    f: toggle zooming into the weekly bar chart
                     Enter: copy the notes for the current project to your clipboard.",
             )
             .style(Style::new().yellow())
