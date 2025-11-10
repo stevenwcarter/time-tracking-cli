@@ -167,17 +167,46 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn get() -> &'static Config {
+    pub fn get_no_args() -> &'static Config {
         LOADED.get_or_init(|| {
-            let config = Config::load().expect("Could not load configuration");
+            let config = Config::load(false).expect("Could not load configuration");
             CONFIG.get_or_init(|| config);
 
             true
         });
         CONFIG.get().unwrap()
     }
-    fn load() -> Result<Config> {
-        let args = Args::parse();
+    pub fn get() -> &'static Config {
+        LOADED.get_or_init(|| {
+            let config = Config::load(true).expect("Could not load configuration");
+            CONFIG.get_or_init(|| config);
+
+            true
+        });
+        CONFIG.get().unwrap()
+    }
+    fn load(use_args: bool) -> Result<Config> {
+        let args = if use_args {
+            Args::parse()
+        } else {
+            Args {
+                date: None,
+                stdin: false,
+                positional_date: None,
+                week: false,
+                week_start_day: None,
+                data_directory: None,
+                template_file: None,
+                formatter: None,
+                noedit: false,
+                #[cfg(feature = "webapp")]
+                serve: false,
+                #[cfg(feature = "tui")]
+                tui: false,
+                #[cfg(feature = "webapp")]
+                port: None,
+            }
+        };
 
         let config_path = get_config_path()?;
 
