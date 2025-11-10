@@ -1,4 +1,28 @@
 Here are some recent changes:
+## [0.7.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.6.0...v0.7.0) (2025-11-10)
+
+
+### Features
+
+* add CLI option to accept input from stdin and just generate the report ([b312df5](https://github.com/stevenwcarter/time-tracking-cli/commits/b312df57636a266498327cc541712e7c8c28ae39))
+* added bar chart for week hours and ability to zoom ([f49ee65](https://github.com/stevenwcarter/time-tracking-cli/commits/f49ee656963370949848ec546d55701e6268b493))
+* added neovim live preview plugin and configuration ([4684f16](https://github.com/stevenwcarter/time-tracking-cli/commits/4684f16bd03e7dd60080de7830550f5eecb6b9c5))
+* formatter can be configured in config file now ([ed83361](https://github.com/stevenwcarter/time-tracking-cli/commits/ed83361b1d14613978e5d4ede9d1150b6d82f148))
+
+
+### Bug Fixes
+
+* fixed file logging implementation ([7f04a60](https://github.com/stevenwcarter/time-tracking-cli/commits/7f04a609add09b47d5ec7ad439b77109fd05c400))
+
+
+### Chore
+
+* added output to inform user that other jobs are still running ([75329ab](https://github.com/stevenwcarter/time-tracking-cli/commits/75329abbcef5652f07bf648b830bf834371914b2))
+* added the new key to the help popup ([cdea99b](https://github.com/stevenwcarter/time-tracking-cli/commits/cdea99be0ad9a9dd679c4ba7c8ba42ba4c97d93d))
+* cleaned up imports ([3a036f4](https://github.com/stevenwcarter/time-tracking-cli/commits/3a036f49b71f86c343467ab67580d21648baade6))
+* passing args to config for cohesive internal usage ([79fdab3](https://github.com/stevenwcarter/time-tracking-cli/commits/79fdab308891797736db55d2b383306dbec4b02a))
+* restructured widgets into their own module ([ffff596](https://github.com/stevenwcarter/time-tracking-cli/commits/ffff5963dd27af1c8bd3b61d7d767f6baa007265))
+
 ## [0.6.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.5.4...v0.6.0) (2025-11-08)
 
 
