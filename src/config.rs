@@ -5,13 +5,18 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
 use tracing::error;
 
+use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::{
     DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
-    PlainDisplayFormatter, get_time_tracking_dir_with_override,
+    PlainDisplayFormatter,
 };
+
+static LOADED: OnceLock<bool> = OnceLock::new();
+static CONFIG: OnceLock<Config> = OnceLock::new();
 
 #[derive(ValueEnum, Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -129,6 +134,7 @@ pub struct Config {
     pub week: bool,
 }
 
+#[cfg(feature = "webapp")]
 const fn default_port() -> Option<u16> {
     Some(3000)
 }
@@ -161,7 +167,16 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load() -> Result<Config> {
+    pub fn get() -> &'static Config {
+        LOADED.get_or_init(|| {
+            let config = Config::load().expect("Could not load configuration");
+            CONFIG.get_or_init(|| config);
+
+            true
+        });
+        CONFIG.get().unwrap()
+    }
+    fn load() -> Result<Config> {
         let args = Args::parse();
 
         let config_path = get_config_path()?;

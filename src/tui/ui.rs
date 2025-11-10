@@ -11,7 +11,7 @@ use super::widgets::HelpPopup;
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if self.zoom_bar {
-            let mut bar_chart = WeeklyBarChart::new(self.active_date, &self.config);
+            let mut bar_chart = WeeklyBarChart::new(self.active_date);
             // Pre-populate with loaded data if available
             if !self.weekly_data.is_empty() {
                 bar_chart.set_weekly_data(self.weekly_data.clone());
@@ -33,7 +33,7 @@ impl Widget for &mut App {
         Calendar::new(self).render(calendar_area, buf);
 
         // Create and render the weekly bar chart
-        let mut bar_chart = WeeklyBarChart::new(self.active_date, &self.config);
+        let mut bar_chart = WeeklyBarChart::new(self.active_date);
         // Pre-populate with loaded data if available
         if !self.weekly_data.is_empty() {
             bar_chart.set_weekly_data(self.weekly_data.clone());

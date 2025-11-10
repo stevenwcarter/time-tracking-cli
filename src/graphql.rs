@@ -5,7 +5,7 @@ use tokio::fs;
 use crate::{
     DATE_FORMAT,
     context::GraphQLContext,
-    create_template_content, get_time_tracking_dir_with_override, get_week_dates, parse_weekday,
+    create_template_content, get_time_tracking_dir, get_week_dates, parse_weekday,
     web::{DayData, ProjectSummary, WeekData, get_day_data_impl},
 };
 
@@ -36,9 +36,8 @@ impl Query {
         let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
-                .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
+        let time_tracking_dir = get_time_tracking_dir()
+            .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
         let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
 
         if !file_path.exists() {
@@ -129,17 +128,15 @@ impl Mutation {
 
     #[graphql(name = "updateFileContent")]
     pub async fn update_file_content(
-        context: &GraphQLContext,
+        _context: &GraphQLContext,
         date: String,
         content: String,
     ) -> FieldResult<String> {
-        let state = &context.app_state;
         let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
 
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
-                .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
+        let time_tracking_dir = get_time_tracking_dir()
+            .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
 
         // Create directory if it doesn't exist
         fs::create_dir_all(&time_tracking_dir)

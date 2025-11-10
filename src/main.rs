@@ -14,11 +14,11 @@ async fn main() -> Result<()> {
 async fn main_impl() -> Result<()> {
     // Load configuration and apply CLI argument overrides
     init_tracing().context("Coult not initialize tracing")?;
-    let config = Config::load()?;
+    let config = Config::get();
 
     if config.stdin {
         let formatter = config.get_formatter();
-        show_single_day_stdin(formatter.as_ref(), &config)
+        show_single_day_stdin(formatter.as_ref())
             .await
             .context("generating report from stdin")?;
 
@@ -30,6 +30,7 @@ async fn main_impl() -> Result<()> {
 
     let mut set: JoinSet<()> = JoinSet::new();
 
+    #[cfg(feature = "webapp")]
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     // Handle serve mode
@@ -51,30 +52,23 @@ async fn main_impl() -> Result<()> {
     if let Some(true) = config.tui {
         use tracing::info;
 
-        let formatter = config.get_formatter();
         info!("🚀 Starting Time Tracking TUI...");
-        let config = config.clone();
         set.spawn(async move {
-            if let Err(e) = time_tracking_cli::tui::tui(&config, formatter).await {
+            if let Err(e) = time_tracking_cli::tui::tui().await {
                 error!("Error running TUI: {}", e);
                 eprintln!("Error running TUI: {}", e);
             }
+            #[cfg(feature = "webapp")]
             tx.send(()).unwrap();
         });
     } else {
         let formatter = config.get_formatter();
         if config.week {
             // Show weekly summary
-            show_weekly_summary(
-                &config.date,
-                week_start_weekday,
-                formatter.as_ref(),
-                &config,
-            )
-            .await?;
+            show_weekly_summary(&config.date, week_start_weekday, formatter.as_ref()).await?;
         } else {
             // Show single day (existing functionality)
-            show_single_day(&config.date, formatter.as_ref(), &config, config.noedit).await?;
+            show_single_day(&config.date, formatter.as_ref(), config.noedit).await?;
         }
     }
 
@@ -83,16 +77,10 @@ async fn main_impl() -> Result<()> {
         let formatter = config.get_formatter();
         if config.week {
             // Show weekly summary
-            show_weekly_summary(
-                &config.date,
-                week_start_weekday,
-                formatter.as_ref(),
-                &config,
-            )
-            .await?;
+            show_weekly_summary(&config.date, week_start_weekday, formatter.as_ref()).await?;
         } else {
             // Show single day (existing functionality)
-            show_single_day(&config.date, formatter.as_ref(), &config, config.noedit).await?;
+            show_single_day(&config.date, formatter.as_ref(), config.noedit).await?;
         }
     }
 

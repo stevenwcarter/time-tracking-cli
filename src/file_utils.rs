@@ -4,13 +4,13 @@ use std::fs;
 use std::path::PathBuf;
 use time::Date;
 
-use crate::DATE_FORMAT;
+use crate::{Config, DATE_FORMAT};
 
 pub fn get_time_tracking_dir() -> Result<PathBuf> {
-    get_time_tracking_dir_with_override(None)
+    get_time_tracking_dir_with_override(Config::get().get_data_directory())
 }
 
-pub fn get_time_tracking_dir_with_override(override_dir: Option<&str>) -> Result<PathBuf> {
+pub(crate) fn get_time_tracking_dir_with_override(override_dir: Option<&str>) -> Result<PathBuf> {
     if let Some(dir) = override_dir {
         // If an override directory is provided, use it
         return Ok(PathBuf::from(dir));
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn test_get_time_tracking_dir_no_override() {
-        let result = get_time_tracking_dir();
+        let result = get_time_tracking_dir_with_override(None);
         assert!(result.is_ok());
 
         let path = result.unwrap();

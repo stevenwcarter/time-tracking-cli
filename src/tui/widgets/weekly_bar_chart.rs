@@ -8,21 +8,19 @@ use time_tracking_parser::parse_time_tracking_data;
 
 use super::colors::WidgetColors;
 use crate::{
-    Config, DATE_FORMAT, get_time_tracking_dir_with_override,
+    Config, DATE_FORMAT, get_time_tracking_dir,
     time_utils::{get_week_dates, parse_weekday},
 };
 
-pub struct WeeklyBarChart<'a> {
+pub struct WeeklyBarChart {
     active_date: Date,
-    config: &'a Config,
     week_data: Option<HashMap<Date, u32>>, // Date -> total minutes
 }
 
-impl<'a> WeeklyBarChart<'a> {
-    pub fn new(active_date: Date, config: &'a Config) -> Self {
+impl WeeklyBarChart {
+    pub fn new(active_date: Date) -> Self {
         Self {
             active_date,
-            config,
             week_data: None,
         }
     }
@@ -43,10 +41,10 @@ impl<'a> WeeklyBarChart<'a> {
 
     /// Load weekly data asynchronously (should be called before rendering)
     pub async fn load_data(&mut self) -> Result<()> {
-        let week_start_day = parse_weekday(self.config.get_week_start_day())?;
+        let config = Config::get();
+        let week_start_day = parse_weekday(config.get_week_start_day())?;
         let week_dates = get_week_dates(&self.active_date, week_start_day);
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
+        let time_tracking_dir = get_time_tracking_dir()?;
 
         let mut week_data = HashMap::new();
 
@@ -56,11 +54,8 @@ impl<'a> WeeklyBarChart<'a> {
 
             let total_minutes = if file_path.exists() {
                 let content = fs::read_to_string(&file_path)?;
-                let data = parse_time_tracking_data(
-                    &content,
-                    self.config.get_prefix(),
-                    self.config.get_suffix(),
-                );
+                let data =
+                    parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
                 data.total_minutes
             } else {
                 0
@@ -79,7 +74,7 @@ impl<'a> WeeklyBarChart<'a> {
         };
 
         let week_start_day =
-            parse_weekday(self.config.get_week_start_day()).unwrap_or(Weekday::Saturday);
+            parse_weekday(Config::get().get_week_start_day()).unwrap_or(Weekday::Saturday);
         let week_dates = get_week_dates(&self.active_date, week_start_day);
 
         week_dates
@@ -136,9 +131,6 @@ impl<'a> WeeklyBarChart<'a> {
             })
             .collect()
     }
-}
-
-impl<'a> WeeklyBarChart<'a> {
     /// Calculate dynamic bar dimensions based on available area
     fn calculate_bar_dimensions(&self, area: Rect) -> (u16, u16, u64) {
         // Account for borders and padding
@@ -177,7 +169,7 @@ impl<'a> WeeklyBarChart<'a> {
     }
 }
 
-impl<'a> Widget for &mut WeeklyBarChart<'a> {
+impl Widget for &mut WeeklyBarChart {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,

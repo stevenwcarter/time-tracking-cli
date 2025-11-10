@@ -1,6 +1,6 @@
 use std::fmt::Debug;
-use std::fs;
 use std::io::Read;
+use std::path::PathBuf;
 use std::{clone::Clone, io};
 
 mod default;
@@ -12,14 +12,11 @@ pub use markdown::MarkdownDisplayFormatter;
 pub use plain::PlainDisplayFormatter;
 
 use anyhow::Result;
-use time::{Date, Weekday, macros::format_description};
-use time_tracking_parser::parse_time_tracking_data;
+use time::{Date, Weekday};
+use time_tracking_parser::{TimeTrackingData, parse_time_tracking_data};
 use tracing::info;
 
-use crate::{
-    Config, DATE_FORMAT, create_template_content, format_day_with_date,
-    get_time_tracking_dir_with_override, get_week_dates, open_in_editor,
-};
+use crate::{Config, DataService, format_day_with_date, get_week_dates, open_in_editor};
 
 /// Trait for formatting and displaying time tracking data
 pub trait DisplayFormatter: Debug + Send + Sync {
@@ -70,10 +67,9 @@ pub async fn show_weekly_summary(
     date: &Date,
     week_start_day: Weekday,
     formatter: &dyn DisplayFormatter,
-    config: &Config,
 ) -> Result<()> {
+    let data_service = DataService::get();
     let week_dates = get_week_dates(date, week_start_day);
-    let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
 
     formatter.display_weekly_header(
         &format_day_with_date(&week_dates[0]),
@@ -89,11 +85,8 @@ pub async fn show_weekly_summary(
 
     // First pass: collect all data
     for day_date in &week_dates {
-        let filename = format!("{}.md", day_date.format(DATE_FORMAT).unwrap());
-        let file_path = time_tracking_dir.join(&filename);
-
-        if file_path.exists() {
-            let content = fs::read_to_string(&file_path)?;
+        if let Some(content) = data_service.read_day(day_date).await? {
+            let config = Config::get();
             let data = parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
 
             // Add to weekly totals
@@ -146,6 +139,7 @@ pub async fn show_weekly_summary(
     // Now display detailed daily summaries
     formatter.display_daily_breakdowns_header();
 
+    let config = Config::get();
     for (day_date, content, data_opt) in daily_data {
         formatter.display_day_header(&format_day_with_date(&day_date));
 
@@ -170,31 +164,22 @@ pub async fn show_weekly_summary(
     Ok(())
 }
 
-pub async fn read_day(date: &Date, config: &Config) -> Result<Option<String>> {
-    // Create the time tracking directory
-    let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
-    fs::create_dir_all(&time_tracking_dir)?;
-
-    let custom_format = format_description!("[year]-[month]-[day]");
-    // Create the filename for the date
-    let filename = format!("{}.md", date.format(&custom_format)?);
-    let file_path = time_tracking_dir.join(&filename);
-
-    // Create the file if it doesn't exist
-    if !file_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&file_path)?;
-
-    Ok(Some(content))
+pub async fn get_file_path(date: Date) -> Result<PathBuf> {
+    DataService::get().get_file_path(date).await
 }
-pub async fn show_single_day_stdin(
-    formatter: &dyn DisplayFormatter,
-    config: &Config,
-) -> anyhow::Result<()> {
+
+pub async fn read_day(date: &Date) -> Result<Option<String>> {
+    DataService::get().read_day(date).await
+}
+
+pub async fn parse_day(date: &Date) -> Result<Option<TimeTrackingData>> {
+    DataService::get().parse_day(date).await
+}
+pub async fn show_single_day_stdin(formatter: &dyn DisplayFormatter) -> anyhow::Result<()> {
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
+
+    let config = Config::get();
 
     formatter.display_day_summary(
         buffer.as_str(),
@@ -208,38 +193,33 @@ pub async fn show_single_day_stdin(
 pub async fn show_single_day(
     date: &Date,
     formatter: &dyn DisplayFormatter,
-    config: &Config,
     noedit: bool,
 ) -> Result<()> {
-    // Create the time tracking directory
-    let time_tracking_dir = get_time_tracking_dir_with_override(config.get_data_directory())?;
-    fs::create_dir_all(&time_tracking_dir)?;
-
-    // Create the filename for the date
-    let filename = format!("{}.md", date.format(DATE_FORMAT)?);
-    let file_path = time_tracking_dir.join(&filename);
+    let data_service = DataService::get();
 
     // Create the file if it doesn't exist
-    if !file_path.exists() {
-        let template_content = create_template_content(date, config.get_template_file())?;
-        fs::write(&file_path, template_content)?;
-        if !noedit {
+    let file_path = data_service.create_day_file_if_not_exists(date).await?;
+
+    if !noedit {
+        if file_path.exists() {
+            info!(
+                "Opening existing time tracking file: {}",
+                file_path.display()
+            );
+        } else {
             println!("Created new time tracking file: {}", file_path.display());
         }
-    } else if !noedit {
-        info!(
-            "Opening existing time tracking file: {}",
-            file_path.display()
-        );
-    }
 
-    // Open the file in the default editor only if noedit is false
-    if !noedit {
+        // Open the file in the default editor
         open_in_editor(&file_path)?;
+
+        // Invalidate cache since we just edited the file
+        data_service.invalidate_date(date).await;
     }
 
     // Parse and display the results
-    let content = read_day(date, config).await?;
+    let content = data_service.read_day(date).await?;
+    let config = Config::get();
     if let Some(content) = content {
         formatter.display_day_summary(&content, "", config.get_prefix(), config.get_suffix());
     }

@@ -1,6 +1,7 @@
 use crate::{
     Config, DATE_FORMAT,
     context::GraphQLContext,
+    get_time_tracking_dir,
     graphql::{Schema, create_schema},
 };
 use axum::{
@@ -23,7 +24,7 @@ use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 use tracing::debug;
 
-use crate::{get_time_tracking_dir_with_override, get_week_dates, parse_weekday};
+use crate::{get_week_dates, parse_weekday};
 
 #[derive(RustEmbed, Clone)]
 #[folder = "site/build/"]
@@ -196,8 +197,7 @@ async fn get_day_data_by_date(
 
 pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
     let time_tracking_dir =
-        get_time_tracking_dir_with_override(state.config.data_directory.as_deref())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        get_time_tracking_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let file_path = time_tracking_dir.join(format!("{}.md", date.format(&DATE_FORMAT).unwrap()));
 
     if !file_path.exists() {

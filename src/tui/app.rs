@@ -1,14 +1,6 @@
-use std::{
-    collections::HashMap,
-    io::stdout,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{collections::HashMap, io::stdout};
 
-use crate::{
-    Config, DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, display::read_day,
-    editor::open_in_editor, file_utils::get_time_tracking_dir_with_override,
-};
+use crate::{Config, DataService, editor::open_in_editor};
 
 use super::{
     event::{AppEvent, Event, EventHandler},
@@ -25,7 +17,6 @@ use ratatui::{
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
-use tokio::fs;
 
 /// Application.
 #[derive(Debug)]
@@ -34,14 +25,10 @@ pub struct App {
     pub running: bool,
     /// Is the application zoomed into the bar chart
     pub zoom_bar: bool,
-    /// Current configuration
-    pub config: Config,
     /// Is help popup currently being shown
     pub show_help: bool,
     /// Current active date
     pub active_date: Date,
-    /// Selected formatter (TODO: implement this)
-    pub formatter: Box<dyn DisplayFormatter>,
     /// Event handler.
     pub events: EventHandler,
     /// Time tracking data for current date
@@ -52,10 +39,6 @@ pub struct App {
     pub populated_dates: Vec<Date>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
-    /// Cache of file modification times for performance
-    file_mod_times: HashMap<Date, SystemTime>,
-    /// Last time populated dates were checked
-    last_populated_check: Option<SystemTime>,
 }
 
 impl Default for App {
@@ -66,25 +49,19 @@ impl Default for App {
             show_help: false,
             active_date: OffsetDateTime::now_local().unwrap().date(),
             events: EventHandler::new(),
-            formatter: Box::new(DefaultDisplayFormatter),
-            config: Config::default(),
             data: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
             weekly_data: HashMap::new(),
-            file_mod_times: HashMap::new(),
-            last_populated_check: None,
         }
     }
 }
 
 impl App {
     /// Constructs a new instance of [`App`].
-    pub fn new(config: &Config, formatter: Box<dyn DisplayFormatter>) -> Self {
+    pub fn new() -> Self {
         Self {
-            active_date: config.date,
-            config: config.clone(),
-            formatter,
+            active_date: Config::get().date,
             ..Self::default()
         }
     }
@@ -112,7 +89,7 @@ impl App {
                         self.toggle_zoom_bar();
                     }
                     AppEvent::Edit => {
-                        self.run_editor(&mut terminal)?;
+                        self.run_editor(&mut terminal).await?;
                         self.events.send(AppEvent::ReloadFromDisk);
                     }
                     AppEvent::Today => {
@@ -140,7 +117,7 @@ impl App {
         self.zoom_bar = !self.zoom_bar;
     }
 
-    pub fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub async fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         // Pause event polling to prevent interference with editor
         self.events.pause();
 
@@ -148,13 +125,18 @@ impl App {
         stdout().execute(LeaveAlternateScreen)?;
         disable_raw_mode()?;
 
-        // Build the file path for the current date using config
-        let file_path = self.get_file_path_for_active_date()?;
+        // Create the file if it doesn't exist and get the path
+        let file_path = DataService::get()
+            .create_day_file_if_not_exists(&self.active_date)
+            .await?;
 
         // Open the file in the user's editor
         if let Err(e) = open_in_editor(&file_path) {
             eprintln!("Failed to open editor: {}", e);
         }
+
+        // Invalidate cache since we just edited the file
+        DataService::get().invalidate_date(&self.active_date).await;
 
         // Restore the TUI after editor exits
         stdout().execute(EnterAlternateScreen)?;
@@ -166,38 +148,15 @@ impl App {
         Ok(())
     }
 
-    fn get_file_path_for_active_date(&self) -> Result<PathBuf> {
-        // Get the time tracking directory using config data_directory
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
-
-        let prefix = self.config.get_prefix().unwrap_or("");
-        let suffix = self.config.get_suffix().unwrap_or("");
-
-        // Format the date as YYYY-MM-DD
-        let date_str = self.active_date.format(DATE_FORMAT).unwrap();
-        let filename = format!("{}{}{}.md", prefix, date_str, suffix);
-
-        Ok(time_tracking_dir.join(filename))
-    }
-
     pub async fn load_data_for_active_date(&mut self) -> Result<()> {
-        let content = read_day(&self.active_date, &self.config)
-            .await
-            .context("could not read day")?;
-        if let Some(content) = content {
-            let data = time_tracking_parser::parse_time_tracking_data(
-                &content,
-                self.config.prefix.as_deref(),
-                self.config.suffix.as_deref(),
-            );
-
+        if let Some(data) = DataService::get().parse_day(&self.active_date).await? {
             // Create project list widget with the data
             if !data.projects.is_empty() {
                 self.project_list_widget = Some(ProjectListWidget::new(&data));
                 self.data = Some(data);
             } else {
                 self.data = None;
+                self.project_list_widget = None;
             }
         } else {
             self.data = None;
@@ -218,60 +177,16 @@ impl App {
     pub async fn load_weekly_data(&mut self) -> Result<()> {
         use crate::time_utils::{get_week_dates, parse_weekday};
 
-        let week_start_day = parse_weekday(self.config.get_week_start_day())
+        let week_start_day = parse_weekday(Config::get().get_week_start_day())
             .context("Could not parse week start day")?;
         let week_dates = get_week_dates(&self.active_date, week_start_day);
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
 
-        self.weekly_data.clear();
-
-        for date in week_dates {
-            let filename = format!("{}.md", date.format(&DATE_FORMAT)?);
-            let file_path = time_tracking_dir.join(&filename);
-
-            let total_minutes = if file_path.exists() {
-                let content = fs::read_to_string(&file_path)
-                    .await
-                    .context("Reading file")?;
-                let data = time_tracking_parser::parse_time_tracking_data(
-                    &content,
-                    self.config.get_prefix(),
-                    self.config.get_suffix(),
-                );
-                data.total_minutes
-            } else {
-                0
-            };
-
-            self.weekly_data.insert(date, total_minutes);
-        }
+        self.weekly_data = DataService::get().get_weekly_data(&week_dates).await?;
 
         Ok(())
     }
 
     pub async fn find_populated_dates(&mut self) -> Result<()> {
-        let now = SystemTime::now();
-
-        // Skip if we checked recently and no files have been modified
-        // if let Some(last_check) = self.last_populated_check {
-        //     if now.duration_since(last_check).unwrap_or_default().as_secs() < 5 {
-        //         // Only re-scan if it's been more than 30 seconds
-        //         return Ok(());
-        //     }
-        // }
-
-        let time_tracking_dir =
-            get_time_tracking_dir_with_override(self.config.get_data_directory())?;
-
-        // Create directory if it doesn't exist
-        if !time_tracking_dir.exists() {
-            return Ok(());
-        }
-
-        let mut new_populated_dates = Vec::new();
-        let mut new_mod_times = HashMap::new();
-
         // Get current month, previous month, and next month
         let current_month = self.active_date.replace_day(1).unwrap();
         let prev_month = current_month
@@ -293,68 +208,17 @@ impl App {
                     .unwrap()
             });
 
-        // Check all dates in the three months
-        for month_start in [prev_month, current_month, next_month] {
-            let days_in_month = month_start.month().length(month_start.year());
+        // Calculate start and end dates
+        let start_date = prev_month;
+        let end_date = next_month
+            .replace_day(next_month.month().length(next_month.year()))
+            .unwrap_or(next_month);
 
-            for day in 1..=days_in_month {
-                if let Ok(date) = month_start.replace_day(day)
-                    && let Ok(has_data) = self
-                        .check_date_has_data(&date, &time_tracking_dir, &mut new_mod_times)
-                        .await
-                    && has_data
-                {
-                    new_populated_dates.push(date);
-                }
-            }
-        }
-
-        self.populated_dates = new_populated_dates;
-        self.file_mod_times = new_mod_times;
-        self.last_populated_check = Some(now);
+        self.populated_dates = DataService::get()
+            .find_populated_dates(start_date, end_date)
+            .await?;
 
         Ok(())
-    }
-
-    async fn check_date_has_data(
-        &self,
-        date: &Date,
-        time_tracking_dir: &Path,
-        mod_times: &mut HashMap<Date, SystemTime>,
-    ) -> Result<bool> {
-        let date_str = date.format(DATE_FORMAT).context("could not format date")?;
-        let filename = format!("{}.md", date_str);
-        let file_path = time_tracking_dir.join(filename);
-
-        if !file_path.exists() {
-            return Ok(false);
-        }
-
-        // Check file modification time for caching
-        let metadata = fs::metadata(&file_path).await?;
-        let mod_time = metadata.modified()?;
-
-        // If we have a cached modification time and it hasn't changed, use cached result
-        if let Some(cached_mod_time) = self.file_mod_times.get(date)
-            && *cached_mod_time == mod_time
-        {
-            // File hasn't changed, check if we already know it has data
-            return Ok(self.populated_dates.contains(date));
-        }
-
-        // Store the modification time
-        mod_times.insert(*date, mod_time);
-
-        // Read and parse the file to check for data
-        let content = fs::read_to_string(&file_path).await?;
-        let data = time_tracking_parser::parse_time_tracking_data(
-            &content,
-            self.config.get_prefix(),
-            self.config.get_suffix(),
-        );
-
-        // Consider a date populated if it has projects with time > 0
-        Ok(!data.projects.is_empty() && data.total_minutes > 0)
     }
 
     /// Handles the key events and updates the state of [`App`].
