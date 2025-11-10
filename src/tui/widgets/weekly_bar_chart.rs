@@ -129,7 +129,7 @@ impl<'a> WeeklyBarChart<'a> {
 
                 Bar::default()
                     .value(value)
-                    .label(Line::from(label)) // Day abbreviation and day of month below the bar
+                    .label(Line::from(label).style(style)) // Day abbreviation and day of month below the bar
                     .text_value(text_value) // Hours at bottom of bar
                     .style(style)
                     .value_style(style)
