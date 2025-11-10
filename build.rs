@@ -2,6 +2,10 @@ use std::env;
 use std::process::Command;
 
 fn main() {
+    if env::var("CARGO_FEATURE_WEBAPP").is_err() {
+        println!("cargo:warning=Skipping build.rs because `webapp` feature is not enabled");
+        return;
+    }
     // Watch specific files
     println!("cargo:rerun-if-changed=site/index.html");
     println!("cargo:rerun-if-changed=site/package.json");
