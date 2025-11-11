@@ -13,7 +13,7 @@ name = "time_tracking_cli"
 path = "src/lib.rs"
 
 [features]
-default = ["webapp", "tui"]
+default = ["webapp", "tui", "cli"]
 webapp = [
     "axum",
     "tower",
@@ -24,11 +24,12 @@ webapp = [
     "juniper_graphql_ws",
     "rust-embed",
     "axum-embed",
+    "cli",
 ]
-tui = ["crossterm", "ratatui", "copypasta", "derive_setters"]
+tui = ["crossterm", "ratatui", "copypasta", "derive_setters", "cli"]
+cli = ["clap"]
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
 dirs = "5.0"
 time-tracking-parser = { git = "https://github.com/stevenwcarter/time-tracking-parser" }
 serde = { version = "1.0", features = ["derive"] }
@@ -75,6 +76,9 @@ rust-embed = { version = "8.7.2", features = [
     "tokio",
 ], optional = true }
 axum-embed = { version = "0.1.0", optional = true }
+
+# CLI dependencies
+clap = { version = "4.4", features = ["derive"], optional = true }
 
 # TUI dependencies
 crossterm = { version = "0.28.1", features = ["event-stream"], optional = true }

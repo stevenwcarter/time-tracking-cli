@@ -1,5 +1,7 @@
-use anyhow::{Context, Result};
+#[cfg(feature = "cli")]
 use clap::{Parser, ValueEnum};
+
+use anyhow::{Context, Result};
 use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
@@ -7,18 +9,30 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
-use tracing::error;
 
 use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::{
-    DATE_FORMAT, DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter,
-    PlainDisplayFormatter,
+    DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
 };
+
+#[allow(unused_imports)]
+use crate::DATE_FORMAT;
+#[allow(unused_imports)]
+use tracing::error;
 
 static LOADED: OnceLock<bool> = OnceLock::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
+#[cfg(feature = "cli")]
 #[derive(ValueEnum, Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Formatter {
+    Default,
+    Markdown,
+    Plain,
+}
+#[cfg(not(feature = "cli"))]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Formatter {
     Default,
@@ -38,6 +52,7 @@ impl From<Formatter> for String {
 }
 
 /// Time tracking CLI utility
+#[cfg(feature = "cli")]
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -185,6 +200,8 @@ impl Config {
         });
         CONFIG.get().unwrap()
     }
+
+    #[cfg(feature = "cli")]
     fn load(use_args: bool) -> Result<Config> {
         let args = if use_args {
             Args::parse()
@@ -293,6 +310,35 @@ impl Config {
         }
 
         Ok(config)
+    }
+    #[cfg(not(feature = "cli"))]
+    fn load(_use_args: bool) -> Result<Config> {
+        let config_path = get_config_path()?;
+
+        if config_path.exists() {
+            let content = fs::read_to_string(&config_path)?;
+            let config: Config = toml::from_str(&content)?;
+            Ok(config)
+        } else {
+            // Create default config file
+            let default_config = Config::default();
+            fs::create_dir_all(config_path.parent().unwrap())?;
+            let toml_content = toml::to_string_pretty(&default_config)?;
+            fs::write(&config_path, toml_content)?;
+            let mut file = OpenOptions::new().append(true).open(&config_path)?;
+            file.write_all(
+                b"\n# Optional template file which will be used to create each new day note\n",
+            )?;
+            file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
+            file.write_all(
+                b"\n# Optional prefix to look for in a file before starting to parse time notes\n",
+            )?;
+            file.write_all(b"\n# Useful if you want to keep other notes in the same file\n")?;
+            file.write_all(b"#prefix = \"```timetracking\"\n")?;
+            file.write_all(b"\n# Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too\n")?;
+            file.write_all(b"#suffix = \"```\"\n")?;
+            Ok(default_config)
+        }
     }
 
     /// Get the week start day with fallback to default
