@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use dirs::home_dir;
-use std::fs;
 use std::path::PathBuf;
 use time::Date;
+use tokio::fs;
 
 use crate::{Config, DATE_FORMAT};
 
@@ -21,11 +21,12 @@ pub(crate) fn get_time_tracking_dir_with_override(override_dir: Option<&str>) ->
     Ok(home.join(".time-tracking"))
 }
 
-pub fn create_template_content(date: &Date, template_file: Option<&str>) -> Result<String> {
+pub async fn create_template_content(date: &Date, template_file: Option<&str>) -> Result<String> {
     match template_file {
         Some(file_path) => {
             // Read the template file
             let template_content = fs::read_to_string(file_path)
+                .await
                 .with_context(|| format!("could not read template file: {file_path}"))?;
 
             // Replace {date} placeholder with the formatted date
@@ -93,17 +94,17 @@ mod tests {
         assert_eq!(path, PathBuf::from(""));
     }
 
-    #[test]
-    fn test_create_template_content_no_template() {
+    #[tokio::test]
+    async fn test_create_template_content_no_template() {
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, None);
+        let result = create_template_content(&date, None).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "");
     }
 
-    #[test]
-    fn test_create_template_content_with_template_file() {
+    #[tokio::test]
+    async fn test_create_template_content_with_template_file() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("template.md");
 
@@ -112,7 +113,7 @@ mod tests {
         fs::write(&template_path, template_content).unwrap();
 
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap())).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -122,8 +123,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_template_content_multiple_date_placeholders() {
+    #[tokio::test]
+    async fn test_create_template_content_multiple_date_placeholders() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("template.md");
 
@@ -131,7 +132,7 @@ mod tests {
         fs::write(&template_path, template_content).unwrap();
 
         let date = date!(2023 - 12 - 25);
-        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap())).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -141,8 +142,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_template_content_no_date_placeholders() {
+    #[tokio::test]
+    async fn test_create_template_content_no_date_placeholders() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("template.md");
 
@@ -150,7 +151,7 @@ mod tests {
         fs::write(&template_path, template_content).unwrap();
 
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap())).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();
@@ -160,25 +161,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_template_content_empty_template_file() {
+    #[tokio::test]
+    async fn test_create_template_content_empty_template_file() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("empty_template.md");
 
         fs::write(&template_path, "").unwrap();
 
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap())).await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "");
     }
 
-    #[test]
-    fn test_create_template_content_file_not_found() {
+    #[tokio::test]
+    async fn test_create_template_content_file_not_found() {
         let non_existent_path = "/path/that/does/not/exist/template.md";
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, Some(non_existent_path));
+        let result = create_template_content(&date, Some(non_existent_path)).await;
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -186,8 +187,8 @@ mod tests {
         assert!(error.to_string().contains(non_existent_path));
     }
 
-    #[test]
-    fn test_create_template_content_date_formatting() {
+    #[tokio::test]
+    async fn test_create_template_content_date_formatting() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("template.md");
 
@@ -203,15 +204,16 @@ mod tests {
         ];
 
         for (date, expected_date_str) in dates_and_expected {
-            let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+            let result =
+                create_template_content(&date, Some(template_path.to_str().unwrap())).await;
             assert!(result.is_ok());
             let content = result.unwrap();
             assert_eq!(content, format!("Date: {}", expected_date_str));
         }
     }
 
-    #[test]
-    fn test_create_template_content_complex_template() {
+    #[tokio::test]
+    async fn test_create_template_content_complex_template() {
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("complex_template.md");
 
@@ -234,7 +236,7 @@ Report generated for {date}
         fs::write(&template_path, template_content).unwrap();
 
         let date = date!(2023 - 10 - 15);
-        let result = create_template_content(&date, Some(template_path.to_str().unwrap()));
+        let result = create_template_content(&date, Some(template_path.to_str().unwrap())).await;
 
         assert!(result.is_ok());
         let content = result.unwrap();

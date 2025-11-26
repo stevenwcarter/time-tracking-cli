@@ -1,4 +1,5 @@
 use juniper::{EmptySubscription, FieldResult, RootNode};
+use std::collections::HashMap;
 use time::Date;
 use tokio::fs;
 
@@ -44,6 +45,7 @@ impl Query {
             // Create file with template content if it doesn't exist
             let template_content =
                 create_template_content(&date, state.config.template_file.as_deref())
+                    .await
                     .map_err(|e| format!("Failed to create template content: {}", e))?;
             fs::write(&file_path, &template_content)
                 .await
@@ -77,8 +79,7 @@ impl Query {
 
         let mut total_week_hours = 0.0;
         let mut total_dead_hours = 0.0;
-        let mut week_projects: std::collections::HashMap<String, f64> =
-            std::collections::HashMap::new();
+        let mut week_projects: HashMap<String, f64> = HashMap::new();
         let mut days = Vec::new();
 
         for day_date in &week_dates {

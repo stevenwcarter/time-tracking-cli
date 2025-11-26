@@ -121,7 +121,8 @@ impl DataService {
         let file_path = self.get_file_path(*date).await?;
 
         if !file_path.exists() {
-            let template_content = create_template_content(date, config.get_template_file())?;
+            let template_content =
+                create_template_content(date, config.get_template_file()).await?;
             fs::write(&file_path, template_content).await?;
 
             // Invalidate cache since we just created the file
@@ -335,4 +336,3 @@ mod tests {
         assert!(content.is_some());
     }
 }
-

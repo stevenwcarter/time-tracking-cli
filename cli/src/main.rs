@@ -13,7 +13,9 @@ async fn main() -> Result<()> {
 
 async fn main_impl() -> Result<()> {
     // Load configuration and apply CLI argument overrides
-    init_tracing().context("Coult not initialize tracing")?;
+    init_tracing()
+        .await
+        .context("Coult not initialize tracing")?;
     let config = Config::get();
 
     if config.stdin {

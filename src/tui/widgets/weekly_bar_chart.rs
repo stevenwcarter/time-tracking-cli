@@ -2,9 +2,9 @@ use anyhow::Result;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
-use std::fs;
 use time::{Date, Weekday};
 use time_tracking_parser::parse_time_tracking_data;
+use tokio::fs;
 
 use super::colors::WidgetColors;
 use crate::{
@@ -53,7 +53,7 @@ impl WeeklyBarChart {
             let file_path = time_tracking_dir.join(&filename);
 
             let total_minutes = if file_path.exists() {
-                let content = fs::read_to_string(&file_path)?;
+                let content = fs::read_to_string(&file_path).await?;
                 let data =
                     parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
                 data.total_minutes
@@ -239,4 +239,3 @@ impl Widget for &mut WeeklyBarChart {
         chart.render(inner_area, buf);
     }
 }
-

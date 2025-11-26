@@ -212,8 +212,9 @@ pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, 
         });
     }
 
-    let content =
-        std::fs::read_to_string(&file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let content = tokio::fs::read_to_string(&file_path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let data = time_tracking_parser::parse_time_tracking_data(
         &content,
