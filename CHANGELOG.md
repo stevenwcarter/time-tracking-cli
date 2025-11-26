@@ -1,4 +1,37 @@
 Here are some recent changes:
+## [0.8.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.7.0...v0.8.0) (2025-11-26)
+
+
+### Features
+
+* added lib capability to not parse args, such as when used from another library ([8d16033](https://github.com/stevenwcarter/time-tracking-cli/commits/8d160333f3d7fc51c28206c45418617ba2189f44))
+
+
+### Style
+
+* highlighted labels on bar charts ([1fcb04d](https://github.com/stevenwcarter/time-tracking-cli/commits/1fcb04da2f96ba810c4ab173c8ad5893bda7b24c))
+* removing some backgrounds for better use of terminal transparency ([e057b0d](https://github.com/stevenwcarter/time-tracking-cli/commits/e057b0db57f776a1f8db74a39c05ecd25e5b9966))
+
+
+### Docs
+
+* updated README to add more details around TUI ([ee9d4d8](https://github.com/stevenwcarter/time-tracking-cli/commits/ee9d4d8fca76ac179e3405817eb90cd715e9e8ea))
+
+
+### Performance
+
+* enabled central DataService with caching, more ergonomic to use now ([e4ed8be](https://github.com/stevenwcarter/time-tracking-cli/commits/e4ed8bea6bd4e4c22f5541be8f719484a776d832))
+* increased async await points to limit blocking ([5e7df7e](https://github.com/stevenwcarter/time-tracking-cli/commits/5e7df7e00aab82228f02ca65334e19fd9ee85fe4))
+
+
+### Chore
+
+* remove clap dep from non-cli builds as library usage ([9f0f6bf](https://github.com/stevenwcarter/time-tracking-cli/commits/9f0f6bfb015cafa64ae8011961ec952b5e3af7a5))
+* removing default dependencies and adding build for intermediate commits and PRs ([d6af942](https://github.com/stevenwcarter/time-tracking-cli/commits/d6af94270b6939c37273314f089078984aa6ce0f))
+* separating crate into lib/bin crates (cli) ([4f89608](https://github.com/stevenwcarter/time-tracking-cli/commits/4f89608fd4253de485506b6ce1789b3e0a2fccec))
+* skip build.rs steps if webapp feature is not enabled [skip ci] ([518785b](https://github.com/stevenwcarter/time-tracking-cli/commits/518785bda9e7fb14d437dd0cfd601f89f35c46a4))
+* v0.8.0 release ([96643da](https://github.com/stevenwcarter/time-tracking-cli/commits/96643da866dad0cadd627548ad236b3569448fb5))
+
 ## [0.7.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.6.0...v0.7.0) (2025-11-10)
 
 
