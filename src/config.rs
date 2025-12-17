@@ -282,10 +282,20 @@ impl Config {
             let date = match date_str {
                 Some(date_str) => {
                     // Parse the provided date
-                    Date::parse(&date_str, DATE_FORMAT).unwrap_or_else(|_| {
-                        error!("Could not parse {date_str} into 'YYYY-MM-DD'");
-                        today_date()
-                    })
+
+                    use interim::{Dialect, parse_date_string};
+                    let date_time = parse_date_string(
+                        &date_str,
+                        OffsetDateTime::now_local().unwrap(),
+                        Dialect::Us,
+                    );
+                    match date_time {
+                        Ok(date_time) => date_time.date(),
+                        Err(e) => {
+                            eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
+                            today_date()
+                        }
+                    }
                 }
                 None => {
                     // Use today's date
