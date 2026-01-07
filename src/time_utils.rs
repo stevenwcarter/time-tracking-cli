@@ -48,6 +48,24 @@ pub fn format_day_with_date(date: &Date) -> String {
     format!("{} {}", day_name, date.format(&DATE_FORMAT).unwrap())
 }
 
+pub trait WeekdayExt {
+    fn short_name(&self) -> &'static str;
+}
+
+impl WeekdayExt for Weekday {
+    fn short_name(&self) -> &'static str {
+        match self {
+            Weekday::Monday => "Mon",
+            Weekday::Tuesday => "Tue",
+            Weekday::Wednesday => "Wed",
+            Weekday::Thursday => "Thu",
+            Weekday::Friday => "Fri",
+            Weekday::Saturday => "Sat",
+            Weekday::Sunday => "Sun",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use time::macros::date;

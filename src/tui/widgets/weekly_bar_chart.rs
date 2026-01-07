@@ -7,6 +7,7 @@ use time_tracking_parser::parse_time_tracking_data;
 use tokio::fs;
 
 use super::colors::WidgetColors;
+use crate::time_utils::WeekdayExt;
 use crate::{
     Config, DATE_FORMAT, get_time_tracking_dir,
     time_utils::{get_week_dates, parse_weekday},
@@ -80,15 +81,7 @@ impl WeeklyBarChart {
         week_dates
             .iter()
             .map(|date| {
-                let day_name = match date.weekday() {
-                    Weekday::Monday => "Mon",
-                    Weekday::Tuesday => "Tue",
-                    Weekday::Wednesday => "Wed",
-                    Weekday::Thursday => "Thu",
-                    Weekday::Friday => "Fri",
-                    Weekday::Saturday => "Sat",
-                    Weekday::Sunday => "Sun",
-                };
+                let day_name = date.weekday().short_name();
 
                 // Create label with day name and day of month
                 let day_of_month = date.day();

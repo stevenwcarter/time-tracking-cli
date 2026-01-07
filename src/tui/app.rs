@@ -1,3 +1,4 @@
+use crate::time_utils::{get_week_dates, parse_weekday};
 use std::{collections::HashMap, io::stdout};
 
 use crate::{Config, DataService, editor::open_in_editor};
@@ -62,7 +63,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             active_date: Config::get().date,
-            ..Self::default()
+            ..Default::default()
         }
     }
 
@@ -81,35 +82,46 @@ impl App {
                     }
                     _ => {}
                 },
-                Event::App(app_event) => match app_event {
-                    AppEvent::ReloadFromDisk => {
-                        self.load_data_for_active_date().await?;
-                    }
-                    AppEvent::ToggleZoomBar => {
-                        self.toggle_zoom_bar();
-                    }
-                    AppEvent::Edit => {
-                        self.run_editor(&mut terminal).await?;
-                        self.events.send(AppEvent::ReloadFromDisk);
-                    }
-                    AppEvent::Today => {
-                        self.active_date = OffsetDateTime::now_local().unwrap().date();
-                        self.events.send(AppEvent::ReloadFromDisk);
-                    }
-                    AppEvent::ToggleHelp => self.show_help = !self.show_help,
-                    AppEvent::NextDate => {
-                        self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
-                        self.events.send(AppEvent::ReloadFromDisk);
-                    }
-                    AppEvent::PreviousDate => {
-                        self.active_date =
-                            self.active_date.previous_day().unwrap_or(self.active_date);
-                        self.events.send(AppEvent::ReloadFromDisk);
-                    }
-                    AppEvent::Quit => self.quit(),
-                },
+                Event::App(app_event) => {
+                    let _ = self.handle_app_event(app_event, &mut terminal).await;
+                }
             }
         }
+        Ok(())
+    }
+
+    pub async fn handle_app_event(
+        &mut self,
+        app_event: AppEvent,
+        terminal: &mut DefaultTerminal,
+    ) -> Result<()> {
+        match app_event {
+            AppEvent::ReloadFromDisk => {
+                self.load_data_for_active_date().await?;
+            }
+            AppEvent::ToggleZoomBar => {
+                self.toggle_zoom_bar();
+            }
+            AppEvent::Edit => {
+                self.run_editor(terminal).await?;
+                self.events.send(AppEvent::ReloadFromDisk);
+            }
+            AppEvent::Today => {
+                self.active_date = OffsetDateTime::now_local().unwrap().date();
+                self.events.send(AppEvent::ReloadFromDisk);
+            }
+            AppEvent::ToggleHelp => self.show_help = !self.show_help,
+            AppEvent::NextDate => {
+                self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
+                self.events.send(AppEvent::ReloadFromDisk);
+            }
+            AppEvent::PreviousDate => {
+                self.active_date = self.active_date.previous_day().unwrap_or(self.active_date);
+                self.events.send(AppEvent::ReloadFromDisk);
+            }
+            AppEvent::Quit => self.quit(),
+        }
+
         Ok(())
     }
 
@@ -175,8 +187,6 @@ impl App {
     }
 
     pub async fn load_weekly_data(&mut self) -> Result<()> {
-        use crate::time_utils::{get_week_dates, parse_weekday};
-
         let week_start_day = parse_weekday(Config::get().get_week_start_day())
             .context("Could not parse week start day")?;
         let week_dates = get_week_dates(&self.active_date, week_start_day);
