@@ -1,5 +1,4 @@
 use juniper::{EmptySubscription, FieldResult, RootNode};
-use std::collections::HashMap;
 use time::Date;
 use tokio::fs;
 
@@ -7,7 +6,7 @@ use crate::{
     DATE_FORMAT,
     context::GraphQLContext,
     create_template_content, get_time_tracking_dir, get_week_dates, parse_weekday,
-    web::{DayData, ProjectSummary, WeekData, get_day_data_impl},
+    web::{DayData, WeekData, aggregate_week_days, get_day_data_impl},
 };
 
 pub struct Query;
@@ -77,35 +76,8 @@ impl Query {
 
         let week_dates = get_week_dates(&date, week_start_weekday);
 
-        let mut total_week_hours = 0.0;
-        let mut total_dead_hours = 0.0;
-        let mut week_projects: HashMap<String, f64> = HashMap::new();
-        let mut days = Vec::new();
-
-        for day_date in &week_dates {
-            match get_day_data_impl(*day_date, state).await {
-                Ok(day_data) => {
-                    total_week_hours += day_data.total_hours;
-                    total_dead_hours += day_data.dead_time_hours;
-
-                    for project in &day_data.projects {
-                        *week_projects.entry(project.name.clone()).or_insert(0.0) +=
-                            project.total_hours;
-                    }
-
-                    days.push(day_data);
-                }
-                Err(_) => {
-                    // If we can't get day data, add an empty day
-                    days.push(DayData::empty(*day_date));
-                }
-            }
-        }
-
-        let project_summaries: Vec<ProjectSummary> = week_projects
-            .into_iter()
-            .map(|(name, total_hours)| ProjectSummary { name, total_hours })
-            .collect();
+        let (days, project_summaries, total_week_hours, total_dead_hours) =
+            aggregate_week_days(&week_dates, state).await;
 
         let start_date = week_dates
             .first()

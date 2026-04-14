@@ -57,7 +57,7 @@ impl WeeklyBarChart {
 
                 let minutes = week_data.get(date).unwrap_or(&0);
                 let hours = (*minutes as f64) / 60.0;
-                let value = (hours * 10.0) as u64; // Scale by 10 for better precision while keeping reasonable max
+                let value = u64::from(*minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
 
                 // Format text to fit within bar width dynamically
                 let text_value = if bar_width >= 5 {

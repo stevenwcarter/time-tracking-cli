@@ -1,6 +1,22 @@
-use time_tracking_parser::{Time, format_time_option};
+use time_tracking_parser::Time;
 
-use super::DisplayFormatter;
+use super::{DaySummaryStyle, DisplayFormatter, format_day_summary_impl};
+
+const DEFAULT_STYLE: DaySummaryStyle = DaySummaryStyle {
+    overview_header: "📅 TIME OVERVIEW",
+    working_header: "⏱️  WORKING TIME",
+    dead_header: "⏸️  DEAD TIME",
+    no_dead_msg: "✅ No dead time (gaps) found",
+    dead_warn: "⚠️",
+    dead_error: "❌",
+    dead_sep: " ",
+    warnings_header: "⚠️  WARNINGS",
+    warning_bullet: "  ⚠ ",
+    projects_header: "📋 PROJECTS",
+    project_bullet: "  📌 ",
+    note_bullet: "     • ",
+    extra_spacing: true,
+};
 
 /// Default emoji-based display formatter
 #[derive(Debug, Clone)]
@@ -14,91 +30,7 @@ impl DisplayFormatter for DefaultDisplayFormatter {
         prefix: Option<&str>,
         suffix: Option<&str>,
     ) -> String {
-        let data = time_tracking_parser::parse_time_tracking_data(content, prefix, suffix);
-
-        let mut msg = String::new();
-
-        // Display overview
-        msg.push_str(&format!("{}📅 TIME OVERVIEW\n", indent));
-        msg.push_str(&format!(
-            "{}Start Time: {}\n",
-            indent,
-            format_time_option(data.start_time.as_ref(), "N/A")
-        ));
-        msg.push_str(&format!(
-            "{}End Time:   {}\n\n",
-            indent,
-            format_time_option(data.end_time.as_ref(), "N/A")
-        ));
-
-        // Display total working time
-        msg.push_str(&format!("{}⏱️  WORKING TIME\n", indent));
-        msg.push_str(&format!(
-            "{}Total: {} ({} hours)\n\n",
-            indent,
-            data.formatted_total_minutes(),
-            data.formatted_total_decimal(),
-        ));
-
-        // Display dead time
-        msg.push_str(&format!("{}⏸️  DEAD TIME\n", indent));
-        if data.dead_time_minutes == 0 {
-            msg.push_str(&format!("{}✅ No dead time (gaps) found\n\n", indent));
-        } else {
-            let status_icon = if data.dead_time_minutes < 90 {
-                "⚠️"
-            } else {
-                "❌"
-            };
-            msg.push_str(&format!(
-                "{}{} {} ({} hours)\n\n",
-                indent,
-                status_icon,
-                data.formatted_dead_time_minutes(),
-                data.formatted_dead_decimal(),
-            ));
-        }
-        msg.push('\n');
-
-        // Display warnings
-        if !data.warnings.is_empty() {
-            msg.push_str(&format!("{}⚠️  WARNINGS\n", indent));
-            for warning in &data.warnings {
-                msg.push_str(&format!("{}  ⚠ {}\n", indent, warning));
-            }
-            msg.push('\n');
-        }
-
-        // Display projects
-        if !data.projects.is_empty() {
-            msg.push_str(&format!("{}📋 PROJECTS\n", indent));
-            for project in &data.projects {
-                msg.push_str(&format!(
-                    "{}  📌 {} - {} ({} hrs)\n",
-                    indent,
-                    project.name,
-                    Time::format_duration_minutes(project.total_minutes),
-                    Time::format_duration_decimal(project.total_minutes),
-                ));
-
-                if !project.notes.is_empty() {
-                    for note in &project.notes {
-                        msg.push_str(&format!("{}     • {}\n", indent, note));
-                    }
-                }
-            }
-        } else {
-            msg.push_str(&format!("{}📋 PROJECTS\n", indent));
-            msg.push_str(&format!(
-                "{}  No projects found. Make sure to enter time tracking data in the format:\n",
-                indent,
-            ));
-            msg.push_str(&format!("{}  11:45-12:15 project_code\n", indent));
-            msg.push_str(&format!("{}  - Comment explaining what you did\n", indent));
-        }
-        msg.push('\n');
-
-        msg
+        format_day_summary_impl(content, indent, prefix, suffix, &DEFAULT_STYLE)
     }
     fn display_day_summary(
         &self,

@@ -230,7 +230,11 @@ impl Config {
         } else {
             // Create default config file
             let default_config = Config::default();
-            fs::create_dir_all(config_path.parent().unwrap())?;
+            fs::create_dir_all(
+                config_path
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
+            )?;
             let toml_content = toml::to_string_pretty(&default_config)?;
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;
@@ -316,7 +320,11 @@ impl Config {
         } else {
             // Create default config file
             let default_config = Config::default();
-            fs::create_dir_all(config_path.parent().unwrap())?;
+            fs::create_dir_all(
+                config_path
+                    .parent()
+                    .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
+            )?;
             let toml_content = toml::to_string_pretty(&default_config)?;
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;

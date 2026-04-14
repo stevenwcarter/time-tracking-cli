@@ -169,8 +169,33 @@ impl App {
     }
 
     pub async fn load_data_for_active_date(&mut self) -> Result<()> {
-        if let Some(data) = DataService::get().parse_day(&self.active_date).await? {
-            // Create project list widget with the data
+        let active_date = self.active_date;
+        let data_svc = DataService::get();
+
+        // Compute date ranges for the populated-dates scan (prev, current, next month)
+        let current_month = active_date
+            .replace_day(1)
+            .context("could not set day to 1")?;
+        let prev_month = month_offset(current_month, -1).context("could not compute previous month")?;
+        let next_month = month_offset(current_month, 1).context("could not compute next month")?;
+        let start_date = prev_month;
+        let end_date = next_month
+            .replace_day(next_month.month().length(next_month.year()))
+            .unwrap_or(next_month);
+
+        let week_start_day = parse_weekday(Config::get().get_week_start_day())
+            .context("Could not parse week start day")?;
+        let week_dates = get_week_dates(&active_date, week_start_day);
+
+        // Run all three data loads concurrently
+        let (day_result, populated_result, weekly_result) = tokio::join!(
+            data_svc.parse_day(&active_date),
+            data_svc.find_populated_dates(start_date, end_date),
+            data_svc.get_weekly_data(&week_dates),
+        );
+
+        // Apply results
+        if let Some(data) = day_result? {
             if !data.projects.is_empty() {
                 self.project_list_widget = Some(ProjectListWidget::new(&data));
                 self.data = Some(data);
@@ -182,59 +207,8 @@ impl App {
             self.data = None;
             self.project_list_widget = None;
         }
-
-        self.find_populated_dates()
-            .await
-            .context("Finding populated dates")?;
-
-        self.load_weekly_data()
-            .await
-            .context("Loading weekly data")?;
-
-        Ok(())
-    }
-
-    pub async fn load_weekly_data(&mut self) -> Result<()> {
-        let week_start_day = parse_weekday(Config::get().get_week_start_day())
-            .context("Could not parse week start day")?;
-        let week_dates = get_week_dates(&self.active_date, week_start_day);
-
-        self.weekly_data = DataService::get().get_weekly_data(&week_dates).await?;
-
-        Ok(())
-    }
-
-    pub async fn find_populated_dates(&mut self) -> Result<()> {
-        // Get current month, previous month, and next month
-        let current_month = self.active_date.replace_day(1).unwrap();
-        let prev_month = current_month
-            .replace_month(current_month.month().previous())
-            .unwrap_or_else(|_| {
-                current_month
-                    .replace_year(current_month.year() - 1)
-                    .unwrap()
-                    .replace_month(time::Month::December)
-                    .unwrap()
-            });
-        let next_month = current_month
-            .replace_month(current_month.month().next())
-            .unwrap_or_else(|_| {
-                current_month
-                    .replace_year(current_month.year() + 1)
-                    .unwrap()
-                    .replace_month(time::Month::January)
-                    .unwrap()
-            });
-
-        // Calculate start and end dates
-        let start_date = prev_month;
-        let end_date = next_month
-            .replace_day(next_month.month().length(next_month.year()))
-            .unwrap_or(next_month);
-
-        self.populated_dates = DataService::get()
-            .find_populated_dates(start_date, end_date)
-            .await?;
+        self.populated_dates = populated_result.context("Finding populated dates")?;
+        self.weekly_data = weekly_result.context("Loading weekly data")?;
 
         Ok(())
     }
@@ -276,5 +250,39 @@ impl App {
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
         self.running = false;
+    }
+}
+
+/// Return the first day of the month `offset` months from `date` (negative = previous).
+fn month_offset(date: Date, offset: i32) -> Result<Date> {
+    if offset == 0 {
+        return Ok(date);
+    }
+    // Try the simple replace_month path first (works when the month cycle doesn't cross a year)
+    let next_month = if offset > 0 {
+        date.month().next()
+    } else {
+        date.month().previous()
+    };
+    match date.replace_month(next_month) {
+        Ok(d) => Ok(d),
+        Err(_) => {
+            // Month wrapped around the year boundary; adjust the year too
+            let new_year = if offset > 0 {
+                date.year().checked_add(1)
+            } else {
+                date.year().checked_sub(1)
+            }
+            .context("year out of range computing adjacent month")?;
+            let boundary_month = if offset > 0 {
+                time::Month::January
+            } else {
+                time::Month::December
+            };
+            date.replace_year(new_year)
+                .context("replace_year")?
+                .replace_month(boundary_month)
+                .context("replace_month at year boundary")
+        }
     }
 }

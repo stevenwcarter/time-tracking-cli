@@ -1,7 +1,6 @@
 use crate::{
-    Config, DATE_FORMAT,
+    Config, DataService, DATE_FORMAT,
     context::GraphQLContext,
-    get_time_tracking_dir,
     graphql::{Schema, create_schema},
 };
 use axum::{
@@ -196,16 +195,19 @@ async fn get_day_data_by_date(
 }
 
 pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
-    let time_tracking_dir =
-        get_time_tracking_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     let date_str = date
         .format(&DATE_FORMAT)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let file_path = time_tracking_dir.join(format!("{}.md", date_str));
 
-    if !file_path.exists() {
+    // Use DataService so concurrent requests share the 30-second in-memory cache
+    let content = DataService::get()
+        .read_day(&date)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let Some(content) = content else {
         return Ok(DayData {
-            date: date_str.clone(),
+            date: date_str,
             total_hours: 0.0,
             dead_time_hours: 0.0,
             projects: vec![],
@@ -213,11 +215,7 @@ pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, 
             start_time: None,
             end_time: None,
         });
-    }
-
-    let content = tokio::fs::read_to_string(&file_path)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    };
 
     let data = time_tracking_parser::parse_time_tracking_data(
         &content,
@@ -280,21 +278,16 @@ async fn get_week_data_by_date(
     get_week_data_impl(date, "Saturday".to_string(), &state).await
 }
 
-async fn get_week_data_impl(
-    date: Date,
-    week_start_day: String,
+pub async fn aggregate_week_days(
+    week_dates: &[Date],
     state: &AppState,
-) -> Result<Json<WeekData>, StatusCode> {
-    let week_start_weekday = parse_weekday(&week_start_day).map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let week_dates = get_week_dates(&date, week_start_weekday);
-
+) -> (Vec<DayData>, Vec<ProjectSummary>, f64, f64) {
     let mut total_week_hours = 0.0;
     let mut total_dead_hours = 0.0;
     let mut week_projects: HashMap<String, f64> = HashMap::new();
     let mut days = Vec::new();
 
-    for day_date in &week_dates {
+    for day_date in week_dates {
         match get_day_data_impl(*day_date, state).await {
             Ok(day_data) => {
                 total_week_hours += day_data.total_hours;
@@ -318,6 +311,21 @@ async fn get_week_data_impl(
         .into_iter()
         .map(|(name, total_hours)| ProjectSummary { name, total_hours })
         .collect();
+
+    (days, project_summaries, total_week_hours, total_dead_hours)
+}
+
+async fn get_week_data_impl(
+    date: Date,
+    week_start_day: String,
+    state: &AppState,
+) -> Result<Json<WeekData>, StatusCode> {
+    let week_start_weekday = parse_weekday(&week_start_day).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let week_dates = get_week_dates(&date, week_start_weekday);
+
+    let (days, project_summaries, total_week_hours, total_dead_hours) =
+        aggregate_week_days(&week_dates, state).await;
 
     Ok(Json(WeekData {
         start_date: week_dates[0]

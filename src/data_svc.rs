@@ -141,37 +141,58 @@ impl DataService {
         start_date: Date,
         end_date: Date,
     ) -> Result<Vec<Date>> {
-        let mut populated_dates = Vec::new();
+        // Collect all dates in range first
+        let mut dates = Vec::new();
         let mut current_date = start_date;
-
         while current_date <= end_date {
-            if self.check_date_has_data(&current_date).await? {
-                populated_dates.push(current_date);
-            }
-
-            // Move to next day; None means we've reached Date::MAX
+            dates.push(current_date);
             match current_date.next_day() {
                 Some(next) => current_date = next,
                 None => break,
             }
         }
 
+        // Check all dates in parallel
+        let mut set = tokio::task::JoinSet::new();
+        for date in dates {
+            let svc = self.clone();
+            set.spawn(async move {
+                let has_data = svc.check_date_has_data(&date).await?;
+                Ok::<(Date, bool), anyhow::Error>((date, has_data))
+            });
+        }
+
+        let mut populated_dates = Vec::new();
+        while let Some(result) = set.join_next().await {
+            let (date, has_data) = result??;
+            if has_data {
+                populated_dates.push(date);
+            }
+        }
+        populated_dates.sort();
         Ok(populated_dates)
     }
 
     /// Get weekly data for a range of dates
     pub async fn get_weekly_data(&self, dates: &[Date]) -> Result<HashMap<Date, u32>> {
-        let mut weekly_data = HashMap::new();
-
+        let mut set = tokio::task::JoinSet::new();
         for &date in dates {
-            let total_minutes = if let Some(data) = self.parse_day(&date).await? {
-                data.total_minutes
-            } else {
-                0
-            };
-            weekly_data.insert(date, total_minutes);
+            let svc = self.clone();
+            set.spawn(async move {
+                let total_minutes = if let Some(data) = svc.parse_day(&date).await? {
+                    data.total_minutes
+                } else {
+                    0
+                };
+                Ok::<(Date, u32), anyhow::Error>((date, total_minutes))
+            });
         }
 
+        let mut weekly_data = HashMap::new();
+        while let Some(result) = set.join_next().await {
+            let (date, total_minutes) = result??;
+            weekly_data.insert(date, total_minutes);
+        }
         Ok(weekly_data)
     }
 

@@ -12,8 +12,9 @@ async fn main() -> Result<()> {
 }
 
 async fn main_impl() -> Result<()> {
-    // Load configuration and apply CLI argument overrides
-    init_tracing()
+    // Load configuration and apply CLI argument overrides.
+    // The guard must be held for the process lifetime to ensure logs flush on shutdown.
+    let _tracing_guard = init_tracing()
         .await
         .context("Coult not initialize tracing")?;
     let config = Config::get();
@@ -61,7 +62,7 @@ async fn main_impl() -> Result<()> {
                 eprintln!("Error running TUI: {}", e);
             }
             #[cfg(feature = "webapp")]
-            tx.send(()).unwrap();
+            let _ = tx.send(());
         });
     } else {
         let formatter = config.get_formatter();

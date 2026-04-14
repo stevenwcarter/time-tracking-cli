@@ -13,7 +13,7 @@ pub use plain::PlainDisplayFormatter;
 
 use anyhow::Result;
 use time::{Date, Weekday};
-use time_tracking_parser::{TimeTrackingData, parse_time_tracking_data};
+use time_tracking_parser::{Time, TimeTrackingData, format_time_option, parse_time_tracking_data};
 use tracing::info;
 
 use crate::{Config, DataService, format_day_with_date, get_week_dates, open_in_editor};
@@ -61,6 +61,129 @@ pub trait DisplayFormatter: Debug + Send + Sync {
 
     /// Display message for no data
     fn display_no_data_found(&self, indent: &str);
+}
+
+pub(super) struct DaySummaryStyle {
+    pub overview_header: &'static str,
+    pub working_header: &'static str,
+    pub dead_header: &'static str,
+    pub no_dead_msg: &'static str,
+    pub dead_warn: &'static str,
+    pub dead_error: &'static str,
+    /// Separator between the status label and the dead-time content (" " vs ": ")
+    pub dead_sep: &'static str,
+    pub warnings_header: &'static str,
+    pub warning_bullet: &'static str,
+    pub projects_header: &'static str,
+    pub project_bullet: &'static str,
+    pub note_bullet: &'static str,
+    /// When true, insert extra blank lines between sections (emoji/default style)
+    pub extra_spacing: bool,
+}
+
+pub(super) fn format_day_summary_impl(
+    content: &str,
+    indent: &str,
+    prefix: Option<&str>,
+    suffix: Option<&str>,
+    style: &DaySummaryStyle,
+) -> String {
+    let data = parse_time_tracking_data(content, prefix, suffix);
+    let mut msg = String::new();
+
+    // Overview section
+    msg.push_str(&format!("{}{}\n", indent, style.overview_header));
+    msg.push_str(&format!(
+        "{}Start Time: {}\n",
+        indent,
+        format_time_option(data.start_time.as_ref(), "N/A")
+    ));
+    msg.push_str(&format!(
+        "{}End Time:   {}\n",
+        indent,
+        format_time_option(data.end_time.as_ref(), "N/A")
+    ));
+    if style.extra_spacing {
+        msg.push('\n');
+    }
+
+    // Working time section
+    msg.push_str(&format!("{}{}\n", indent, style.working_header));
+    msg.push_str(&format!(
+        "{}Total: {} ({} hours)\n",
+        indent,
+        data.formatted_total_minutes(),
+        data.formatted_total_decimal(),
+    ));
+    if style.extra_spacing {
+        msg.push('\n');
+    }
+
+    // Dead time section
+    msg.push_str(&format!("{}{}\n", indent, style.dead_header));
+    if data.dead_time_minutes == 0 {
+        msg.push_str(&format!("{}{}\n", indent, style.no_dead_msg));
+    } else {
+        let status = if data.dead_time_minutes < 90 {
+            style.dead_warn
+        } else {
+            style.dead_error
+        };
+        msg.push_str(&format!(
+            "{}{}{}{} ({} hours)\n",
+            indent,
+            status,
+            style.dead_sep,
+            data.formatted_dead_time_minutes(),
+            data.formatted_dead_decimal(),
+        ));
+    }
+    if style.extra_spacing {
+        msg.push('\n');
+        msg.push('\n');
+    }
+
+    // Warnings section
+    if !data.warnings.is_empty() {
+        msg.push_str(&format!("{}{}\n", indent, style.warnings_header));
+        for warning in &data.warnings {
+            msg.push_str(&format!("{}{}{}\n", indent, style.warning_bullet, warning));
+        }
+        if style.extra_spacing {
+            msg.push('\n');
+        }
+    }
+
+    // Projects section
+    if !data.projects.is_empty() {
+        msg.push_str(&format!("{}{}\n", indent, style.projects_header));
+        for project in &data.projects {
+            msg.push_str(&format!(
+                "{}{}{} - {} ({} hrs)\n",
+                indent,
+                style.project_bullet,
+                project.name,
+                Time::format_duration_minutes(project.total_minutes),
+                Time::format_duration_decimal(project.total_minutes),
+            ));
+            for note in &project.notes {
+                msg.push_str(&format!("{}{}{}\n", indent, style.note_bullet, note));
+            }
+        }
+    } else {
+        msg.push_str(&format!("{}{}\n", indent, style.projects_header));
+        msg.push_str(&format!(
+            "{}  No projects found. Make sure to enter time tracking data in the format:\n",
+            indent,
+        ));
+        msg.push_str(&format!("{}  11:45-12:15 project_code\n", indent));
+        msg.push_str(&format!("{}  - Comment explaining what you did\n", indent));
+    }
+    if style.extra_spacing {
+        msg.push('\n');
+    }
+
+    msg
 }
 
 pub async fn show_weekly_summary(
