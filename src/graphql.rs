@@ -9,6 +9,8 @@ use crate::{
     web::{DayData, WeekData, aggregate_week_days, get_day_data_impl},
 };
 
+const INVALID_DATE_MSG: &str = "Invalid date format, expected YYYY-MM-DD";
+
 pub struct Query;
 
 #[juniper::graphql_object(Context = GraphQLContext)]
@@ -22,7 +24,7 @@ impl Query {
     pub async fn data_for_date(context: &GraphQLContext, date: String) -> FieldResult<DayData> {
         let state = &context.app_state;
         let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
+            .map_err(|_| INVALID_DATE_MSG)?;
 
         get_day_data_impl(date, state).await.map_err(|e| e.into())
     }
@@ -34,7 +36,7 @@ impl Query {
     ) -> FieldResult<String> {
         let state = &context.app_state;
         let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
+            .map_err(|_| INVALID_DATE_MSG)?;
 
         let time_tracking_dir = get_time_tracking_dir()
             .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
@@ -65,7 +67,7 @@ impl Query {
     ) -> FieldResult<WeekData> {
         let state = &context.app_state;
         let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
+            .map_err(|_| INVALID_DATE_MSG)?;
 
         let week_start_day = week_start_day
             .or_else(|| state.config.week_start_day.clone())
@@ -117,7 +119,7 @@ impl Mutation {
         content: String,
     ) -> FieldResult<String> {
         let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| "Invalid date format, expected YYYY-MM-DD")?;
+            .map_err(|_| INVALID_DATE_MSG)?;
 
         let time_tracking_dir = get_time_tracking_dir()
             .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;

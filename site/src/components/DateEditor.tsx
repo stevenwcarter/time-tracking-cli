@@ -57,28 +57,12 @@ export const DateEditor = (props: DateEditorProps) => {
     // - Component is still mounted and initialized
     // - Debounced data is different from what we last sent
     // - We're still on the same date that we started debouncing for
-    console.log('Debounce effect triggered:', {
-      isMounted: isMountedRef.current,
-      hasInitialized,
-      debouncedDataLength: debouncedData?.length,
-      lastSentDataLength: lastSentData.current?.length,
-      contentLength: content?.length || 0,
-      dateMatch: currentDateRef.current.getTime() === date.getTime(),
-      dataMatch: debouncedData === lastSentData.current,
-      willUpdate:
-        isMountedRef.current &&
-        hasInitialized &&
-        debouncedData !== lastSentData.current &&
-        currentDateRef.current.getTime() === date.getTime(),
-    });
-
     if (
       isMountedRef.current &&
       hasInitialized &&
       debouncedData !== lastSentData.current &&
       currentDateRef.current.getTime() === date.getTime()
     ) {
-      console.log('Calling updater with length:', debouncedData?.length);
       lastSentData.current = debouncedData;
       updater(debouncedData);
     }

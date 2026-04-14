@@ -1,26 +1,5 @@
 import { toast } from 'react-toastify';
 
-// export const testdata = {
-//   date: '2025-10-04',
-//   totalHours: 3,
-//   deadTimeHours: 0,
-//   projects: [
-//     {
-//       name: 'admin',
-//       totalHours: 1,
-//       notes: ['this is a test'],
-//     },
-//     {
-//       name: 'project2',
-//       totalHours: 2,
-//       notes: ['another test', 'yet another test task'],
-//     },
-//   ],
-//   warnings: [],
-//   startTime: '12:00',
-//   endTime: '3:00',
-// };
-
 export const DateSummary = (props: { parsedData: any }) => {
   const { parsedData } = props;
 

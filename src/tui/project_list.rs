@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::*;
 use ratatui::{prelude::*, style::palette::tailwind::*};
@@ -9,8 +8,6 @@ const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
 const ALT_ROW_BG_COLOR: Color = SLATE.c900;
 const SELECTED_STYLE: Style = Style::new().bg(BLUE.c950).add_modifier(Modifier::BOLD);
-const TEXT_FG_COLOR: Color = SLATE.c200;
-const COMPLETED_TEXT_FG_COLOR: Color = GREEN.c500;
 
 #[derive(Default, Debug)]
 pub struct ProjectListWidget {
@@ -128,10 +125,6 @@ impl ProjectListWidget {
                 .state
                 .select(Some(self.project_list.items.len() - 1));
         }
-    }
-
-    fn unselect(&mut self) {
-        self.project_list.state.select(None);
     }
 
     fn copy_selected_notes_to_clipboard(&self) {
