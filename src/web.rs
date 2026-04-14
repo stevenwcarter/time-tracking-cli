@@ -138,7 +138,7 @@ pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::
         .layer(middleware)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
     println!(
         "🌐 Time Tracking Web Server running on http://localhost:{}",
@@ -257,7 +257,6 @@ async fn get_week_data(
     let date = match params.date {
         Some(date_str) => {
             Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?
-            //
         }
         None => OffsetDateTime::now_local()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
@@ -284,29 +283,36 @@ pub async fn aggregate_week_days(
     week_dates: &[Date],
     state: &AppState,
 ) -> (Vec<DayData>, Vec<ProjectSummary>, f64, f64) {
+    let mut set = tokio::task::JoinSet::new();
+    for (idx, &day_date) in week_dates.iter().enumerate() {
+        let state = state.clone();
+        set.spawn(async move { (idx, get_day_data_impl(day_date, &state).await) });
+    }
+
+    let mut results: Vec<(usize, DayData)> = Vec::with_capacity(week_dates.len());
+    while let Some(outcome) = set.join_next().await {
+        match outcome {
+            Ok((idx, Ok(day_data))) => results.push((idx, day_data)),
+            Ok((_, Err(e))) => tracing::warn!("Failed to load day data: {}", e),
+            Err(e) => tracing::warn!("Task panicked loading day data: {}", e),
+        }
+    }
+    // Restore original date order
+    results.sort_unstable_by_key(|(idx, _)| *idx);
+
     let mut total_week_hours = 0.0;
     let mut total_dead_hours = 0.0;
     let mut week_projects: HashMap<String, f64> = HashMap::new();
-    let mut days = Vec::new();
 
-    for day_date in week_dates {
-        match get_day_data_impl(*day_date, state).await {
-            Ok(day_data) => {
-                total_week_hours += day_data.total_hours;
-                total_dead_hours += day_data.dead_time_hours;
-
-                for project in &day_data.projects {
-                    *week_projects.entry(project.name.clone()).or_insert(0.0) +=
-                        project.total_hours;
-                }
-
-                days.push(day_data);
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load day data for {}: {}", day_date, e);
-                days.push(DayData::empty(*day_date));
-            }
+    // Build a complete days vec (including empties for missing dates)
+    let mut days: Vec<DayData> = week_dates.iter().map(|&d| DayData::empty(d)).collect();
+    for (idx, day_data) in results {
+        total_week_hours += day_data.total_hours;
+        total_dead_hours += day_data.dead_time_hours;
+        for project in &day_data.projects {
+            *week_projects.entry(project.name.clone()).or_insert(0.0) += project.total_hours;
         }
+        days[idx] = day_data;
     }
 
     let project_summaries: Vec<ProjectSummary> = week_projects

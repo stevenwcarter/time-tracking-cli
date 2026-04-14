@@ -50,7 +50,6 @@ impl Widget for &mut App {
 
         let block = Block::bordered()
             .title(self.active_date.format(DATE_FORMAT).unwrap())
-            // .title_alignment(Alignment::Center)
             .border_type(BorderType::Rounded);
 
         if let Some(widget) = &mut self.project_list_widget {

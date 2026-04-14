@@ -92,15 +92,27 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
     };
   }, [weekData]);
 
+  // Pre-computed O(1) lookup map from date string to Day
+  const daysByDate = useMemo(() => {
+    const map = new Map<string, Day>();
+    weekData?.days?.forEach((day) => map.set(day.date, day));
+    return map;
+  }, [weekData]);
+
+  // Pre-computed O(1) lookup: notesByDate[date][projectName] = notes[]
+  const notesByDate = useMemo(() => {
+    const outer = new Map<string, Map<string, string[]>>();
+    weekData?.days?.forEach((day) => {
+      const inner = new Map<string, string[]>();
+      day.projects?.forEach((p) => inner.set(p.name, p.notes));
+      outer.set(day.date, inner);
+    });
+    return outer;
+  }, [weekData]);
+
   // Helper function to get notes for a specific project on a specific date
   const getNotesForProjectDate = (projectName: string, date: string): string[] => {
-    if (!weekData?.days) return [];
-
-    const day = weekData.days.find((d) => d.date === date);
-    if (!day) return [];
-
-    const project = day.projects?.find((p) => p.name === projectName);
-    return project?.notes || [];
+    return notesByDate.get(date)?.get(projectName) ?? [];
   };
 
   // Helper function to format notes as tooltip text
@@ -224,7 +236,7 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
             <tr className="bg-gray-700 font-semibold">
               <td className="border border-gray-600 p-3">Daily Totals</td>
               {tableData.dates.map(({ date }) => {
-                const dayData = weekData.days?.find((day) => day.date === date);
+                const dayData = daysByDate.get(date);
                 return (
                   <td key={date} className="border border-gray-600 p-3 text-center">
                     {dayData ? dayData.totalHours.toFixed(2) : '-'}

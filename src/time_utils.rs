@@ -34,18 +34,7 @@ pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {
 }
 
 pub fn format_day_with_date(date: &Date) -> String {
-    let day_name = match date.weekday().number_from_monday() {
-        1 => "Monday",
-        2 => "Tuesday",
-        3 => "Wednesday",
-        4 => "Thursday",
-        5 => "Friday",
-        6 => "Saturday",
-        7 => "Sunday",
-        _ => unreachable!(),
-    };
-
-    format!("{} {}", day_name, date.format(&DATE_FORMAT).unwrap())
+    format!("{} {}", date.weekday(), date.format(&DATE_FORMAT).unwrap())
 }
 
 pub trait WeekdayExt {

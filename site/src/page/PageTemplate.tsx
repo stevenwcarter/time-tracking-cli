@@ -1,4 +1,3 @@
-import Footer from 'components/Footer';
 import NavItem from 'components/NavItem';
 import { Outlet } from 'react-router-dom';
 
@@ -11,7 +10,6 @@ export const PageTemplate = () => (
     <div className="flex flex-col p-4 md:p-10">
       <Outlet />
     </div>
-    <Footer />
   </div>
 );
 

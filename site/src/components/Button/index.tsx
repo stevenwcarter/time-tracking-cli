@@ -7,7 +7,7 @@ export interface ButtonProps {
   type?: ButtonTypes;
   disabled?: boolean;
   nomargin?: boolean;
-  children: any;
+  children: React.ReactNode;
   size?: 'sm' | 'lg';
   onClick?: (e: React.MouseEvent<HTMLElement>) => void;
   block?: boolean;
