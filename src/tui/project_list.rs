@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::*;
 use ratatui::{prelude::*, style::palette::tailwind::*};
 
-use time_tracking_parser::{TimeTrackingData, format_time_option};
+use time_tracking_parser::TimeTrackingData;
 
 const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
 const NORMAL_ROW_BG: Color = SLATE.c950;
@@ -11,7 +11,9 @@ const SELECTED_STYLE: Style = Style::new().bg(BLUE.c950).add_modifier(Modifier::
 
 #[derive(Default, Debug)]
 pub struct ProjectListWidget {
-    data: TimeTrackingData,
+    start_time: String,
+    end_time: String,
+    total_minutes: u32,
     project_list: ProjectList,
 }
 
@@ -49,7 +51,9 @@ impl ProjectListWidget {
         }
 
         Self {
-            data: data.clone(),
+            start_time: data.formatted_start_time(),
+            end_time: data.formatted_end_time(),
+            total_minutes: data.total_minutes,
             project_list: ProjectList { items, state },
         }
     }
@@ -173,9 +177,9 @@ impl ProjectListWidget {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(format!(
             "Start Time: {}\n  End Time: {}\n\nWorking Time: {} hours",
-            format_time_option(self.data.start_time.as_ref(), "N/A"),
-            format_time_option(self.data.end_time.as_ref(), "N/A"),
-            self.data.total_minutes as f32 / 60.
+            self.start_time,
+            self.end_time,
+            self.total_minutes as f32 / 60.
         ))
         .bold()
         .centered()

@@ -10,12 +10,12 @@ use crate::{
     time_utils::{get_week_dates, parse_weekday},
 };
 
-pub struct WeeklyBarChart {
+pub struct WeeklyBarChart<'a> {
     active_date: Date,
-    week_data: Option<HashMap<Date, u32>>, // Date -> total minutes
+    week_data: Option<&'a HashMap<Date, u32>>, // Date -> total minutes
 }
 
-impl WeeklyBarChart {
+impl<'a> WeeklyBarChart<'a> {
     pub fn new(active_date: Date) -> Self {
         Self {
             active_date,
@@ -23,7 +23,7 @@ impl WeeklyBarChart {
         }
     }
 
-    pub fn set_weekly_data(&mut self, data: HashMap<Date, u32>) {
+    pub fn set_weekly_data(&mut self, data: &'a HashMap<Date, u32>) {
         self.week_data = Some(data);
     }
 
@@ -130,28 +130,12 @@ impl WeeklyBarChart {
     }
 }
 
-impl Widget for &mut WeeklyBarChart {
+impl Widget for &mut WeeklyBarChart<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
     {
-        // Use the month of the active date for the title
-        let month_name = match self.active_date.month() {
-            time::Month::January => "January",
-            time::Month::February => "February",
-            time::Month::March => "March",
-            time::Month::April => "April",
-            time::Month::May => "May",
-            time::Month::June => "June",
-            time::Month::July => "July",
-            time::Month::August => "August",
-            time::Month::September => "September",
-            time::Month::October => "October",
-            time::Month::November => "November",
-            time::Month::December => "December",
-        };
-
-        let title = format!("{} {}", month_name, self.active_date.year());
+        let title = format!("{} {}", self.active_date.month(), self.active_date.year());
 
         // Calculate dynamic dimensions
         let (bar_width, bar_gap, max_value) = self.calculate_bar_dimensions(area);

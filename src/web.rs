@@ -223,24 +223,26 @@ pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, 
         state.config.get_suffix(),
     );
 
+    let start_time = data.formatted_start_time();
+    let end_time = data.formatted_end_time();
+    let total_hours = data.total_minutes as f64 / 60.0;
+    let dead_time_hours = data.dead_time_minutes as f64 / 60.0;
+    let warnings = data.warnings;
+
     let projects: Vec<ProjectData> = data
         .projects
-        .iter()
+        .into_iter()
         .map(|p| ProjectData {
-            name: p.name.clone(),
+            name: p.name,
             total_hours: p.total_minutes as f64 / 60.0,
-            notes: p.notes.clone(),
+            notes: p.notes,
         })
         .collect();
 
-    let start_time = data.formatted_start_time();
-    let end_time = data.formatted_end_time();
-    let warnings = data.warnings.clone();
-
     Ok(DayData {
         date: date_str,
-        total_hours: data.total_minutes as f64 / 60.0,
-        dead_time_hours: data.dead_time_minutes as f64 / 60.0,
+        total_hours,
+        dead_time_hours,
         projects,
         warnings,
         start_time: Some(start_time),
@@ -300,8 +302,8 @@ pub async fn aggregate_week_days(
 
                 days.push(day_data);
             }
-            Err(_) => {
-                // If we can't get day data, add an empty day
+            Err(e) => {
+                tracing::warn!("Failed to load day data for {}: {}", day_date, e);
                 days.push(DayData::empty(*day_date));
             }
         }

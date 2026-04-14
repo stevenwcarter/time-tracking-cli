@@ -14,7 +14,7 @@ impl Widget for &mut App {
             let mut bar_chart = WeeklyBarChart::new(self.active_date);
             // Pre-populate with loaded data if available
             if !self.weekly_data.is_empty() {
-                bar_chart.set_weekly_data(self.weekly_data.clone());
+                bar_chart.set_weekly_data(&self.weekly_data);
             }
             bar_chart.render(area, buf);
             return;
@@ -36,7 +36,7 @@ impl Widget for &mut App {
         let mut bar_chart = WeeklyBarChart::new(self.active_date);
         // Pre-populate with loaded data if available
         if !self.weekly_data.is_empty() {
-            bar_chart.set_weekly_data(self.weekly_data.clone());
+            bar_chart.set_weekly_data(&self.weekly_data);
         }
         bar_chart.render(bar_chart_area, buf);
 

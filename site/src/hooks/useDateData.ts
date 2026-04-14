@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from '@apollo/client';
+import { toast } from 'react-toastify';
 import {
   FILE_CONTENT_FOR_DATE_QUERY,
   GET_DAY_DATA_FOR_DATE_QUERY,
@@ -28,7 +29,10 @@ export const useDateData = (date: Date) => {
         // Refetch weekly query for the week containing this date
         { query: GET_WEEK_DATA_FOR_DATE_QUERY, variables: { date: dateString } },
       ],
-    }).catch(console.error);
+    }).catch((err) => {
+      console.error('Failed to save time tracking data:', err);
+      toast.error('Failed to save changes. Please try again.');
+    });
   };
 
   return {

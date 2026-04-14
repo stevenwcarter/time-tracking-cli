@@ -58,14 +58,14 @@ tower-http = { version = "0.6", features = [
     "full",
 ], optional = true }
 serde_json = { version = "1.0", optional = true }
-juniper_graphql_ws = { git = "https://github.com/graphql-rust/juniper", features = [
+juniper_graphql_ws = { git = "https://github.com/graphql-rust/juniper", rev = "0e14736ad1acbb8a25f142ec426203c8797c4755", features = [
     "graphql-transport-ws",
 ], optional = true }
-juniper = { git = "https://github.com/graphql-rust/juniper", features = [
+juniper = { git = "https://github.com/graphql-rust/juniper", rev = "0e14736ad1acbb8a25f142ec426203c8797c4755", features = [
     "chrono",
     "bson",
 ], default-features = false, optional = true }
-juniper_axum = { git = "https://github.com/graphql-rust/juniper", features = [
+juniper_axum = { git = "https://github.com/graphql-rust/juniper", rev = "0e14736ad1acbb8a25f142ec426203c8797c4755", features = [
     "subscriptions",
 ], optional = true }
 rust-embed = { version = "8.7.2", features = [
