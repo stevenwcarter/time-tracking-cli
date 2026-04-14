@@ -4,19 +4,19 @@ use time::{Date, Duration, Weekday};
 use crate::DATE_FORMAT;
 
 pub fn parse_weekday(day_str: &str) -> Result<Weekday> {
-    match day_str.to_lowercase().as_str() {
-        "monday" | "mon" => Ok(Weekday::Monday),
-        "tuesday" | "tue" => Ok(Weekday::Tuesday),
-        "wednesday" | "wed" => Ok(Weekday::Wednesday),
-        "thursday" | "thu" => Ok(Weekday::Thursday),
-        "friday" | "fri" => Ok(Weekday::Friday),
-        "saturday" | "sat" => Ok(Weekday::Saturday),
-        "sunday" | "sun" => Ok(Weekday::Sunday),
-        _ => bail!(
-            "Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday",
-            day_str
-        ),
-    }
+    // eq_ignore_ascii_case avoids the to_lowercase() heap allocation
+    let eq = |s: &str| day_str.eq_ignore_ascii_case(s);
+    if eq("monday") || eq("mon") { return Ok(Weekday::Monday); }
+    if eq("tuesday") || eq("tue") { return Ok(Weekday::Tuesday); }
+    if eq("wednesday") || eq("wed") { return Ok(Weekday::Wednesday); }
+    if eq("thursday") || eq("thu") { return Ok(Weekday::Thursday); }
+    if eq("friday") || eq("fri") { return Ok(Weekday::Friday); }
+    if eq("saturday") || eq("sat") { return Ok(Weekday::Saturday); }
+    if eq("sunday") || eq("sun") { return Ok(Weekday::Sunday); }
+    bail!(
+        "Invalid weekday: '{}'. Valid options are: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday",
+        day_str
+    )
 }
 
 pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {

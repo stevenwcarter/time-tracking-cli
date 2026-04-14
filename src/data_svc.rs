@@ -87,9 +87,11 @@ impl DataService {
             return Ok(Some(content));
         }
 
-        // Read from file and cache
+        // Stat and read in one step so cache_content doesn't need to re-stat
+        let metadata = tokio::fs::metadata(&file_path).await.ok();
+        let file_mod_time = metadata.and_then(|m| m.modified().ok());
         let content = fs::read_to_string(&file_path).await?;
-        self.cache_content(*date, &file_path, &content).await?;
+        self.cache_content(*date, file_mod_time, &content).await;
 
         Ok(Some(content))
     }
@@ -224,14 +226,7 @@ impl DataService {
     }
 
     /// Cache content for a date
-    async fn cache_content(&self, date: Date, file_path: &Path, content: &str) -> Result<()> {
-        // Get metadata before acquiring the lock to avoid holding it across I/O
-        let file_mod_time = if let Ok(metadata) = tokio::fs::metadata(file_path).await {
-            metadata.modified().ok()
-        } else {
-            None
-        };
-
+    async fn cache_content(&self, date: Date, file_mod_time: Option<SystemTime>, content: &str) {
         let mut cache = self.cache.lock().await;
 
         let entry = CacheEntry {
@@ -241,7 +236,6 @@ impl DataService {
         };
 
         cache.insert(date, entry);
-        Ok(())
     }
 }
 
