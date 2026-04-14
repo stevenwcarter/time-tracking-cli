@@ -60,7 +60,7 @@ pub struct DayData {
 impl DayData {
     pub fn empty(date: Date) -> Self {
         DayData {
-            date: date.format(&DATE_FORMAT).unwrap(),
+            date: date.format(&DATE_FORMAT).unwrap_or_default(),
             total_hours: 0.0,
             dead_time_hours: 0.0,
             projects: vec![],
@@ -177,7 +177,7 @@ async fn get_day_data(
             Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?
         }
         None => OffsetDateTime::now_local()
-            .expect("Failed to get local time")
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
             .date(),
     };
 
@@ -198,11 +198,14 @@ async fn get_day_data_by_date(
 pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
     let time_tracking_dir =
         get_time_tracking_dir().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let file_path = time_tracking_dir.join(format!("{}.md", date.format(&DATE_FORMAT).unwrap()));
+    let date_str = date
+        .format(&DATE_FORMAT)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let file_path = time_tracking_dir.join(format!("{}.md", date_str));
 
     if !file_path.exists() {
         return Ok(DayData {
-            date: date.format(&DATE_FORMAT).unwrap().to_string(),
+            date: date_str.clone(),
             total_hours: 0.0,
             dead_time_hours: 0.0,
             projects: vec![],
@@ -237,7 +240,7 @@ pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, 
     let warnings = data.warnings.clone();
 
     Ok(DayData {
-        date: date.format(&DATE_FORMAT).unwrap().to_string(),
+        date: date_str,
         total_hours: data.total_minutes as f64 / 60.0,
         dead_time_hours: data.dead_time_minutes as f64 / 60.0,
         projects,
@@ -256,7 +259,9 @@ async fn get_week_data(
             Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?
             //
         }
-        None => OffsetDateTime::now_local().unwrap().date(),
+        None => OffsetDateTime::now_local()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .date(),
     };
 
     let week_start_day = params
@@ -317,10 +322,10 @@ async fn get_week_data_impl(
     Ok(Json(WeekData {
         start_date: week_dates[0]
             .format(DATE_FORMAT)
-            .expect("could not parse date"),
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         end_date: week_dates[6]
             .format(DATE_FORMAT)
-            .expect("could not parse date"),
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         total_hours: total_week_hours,
         dead_time_hours: total_dead_hours,
         days,

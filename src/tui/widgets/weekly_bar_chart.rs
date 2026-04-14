@@ -1,15 +1,12 @@
-use anyhow::Result;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
 use time::{Date, Weekday};
-use time_tracking_parser::parse_time_tracking_data;
-use tokio::fs;
 
 use super::colors::WidgetColors;
 use crate::time_utils::WeekdayExt;
 use crate::{
-    Config, DATE_FORMAT, get_time_tracking_dir,
+    Config,
     time_utils::{get_week_dates, parse_weekday},
 };
 
@@ -38,35 +35,6 @@ impl WeeklyBarChart {
         } else {
             0.0
         }
-    }
-
-    /// Load weekly data asynchronously (should be called before rendering)
-    pub async fn load_data(&mut self) -> Result<()> {
-        let config = Config::get();
-        let week_start_day = parse_weekday(config.get_week_start_day())?;
-        let week_dates = get_week_dates(&self.active_date, week_start_day);
-        let time_tracking_dir = get_time_tracking_dir()?;
-
-        let mut week_data = HashMap::new();
-
-        for date in week_dates {
-            let filename = format!("{}.md", date.format(&DATE_FORMAT)?);
-            let file_path = time_tracking_dir.join(&filename);
-
-            let total_minutes = if file_path.exists() {
-                let content = fs::read_to_string(&file_path).await?;
-                let data =
-                    parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
-                data.total_minutes
-            } else {
-                0
-            };
-
-            week_data.insert(date, total_minutes);
-        }
-
-        self.week_data = Some(week_data);
-        Ok(())
     }
 
     fn prepare_bars(&self, bar_width: u16) -> Vec<Bar<'_>> {

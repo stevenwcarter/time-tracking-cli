@@ -2,3 +2,5 @@
 /node_modules
 /.cargo
 /site/.yarn
+.claude/code-health.md
+.claude/code-health-archive-*.md

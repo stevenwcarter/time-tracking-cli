@@ -12,7 +12,6 @@ use tokio::{fs, sync::Mutex};
 
 use crate::{Config, DATE_FORMAT, file_utils::create_template_content, get_time_tracking_dir};
 
-static LOADED: OnceLock<bool> = OnceLock::new();
 static DATA_SVC: OnceLock<DataService> = OnceLock::new();
 
 /// Cache entry for a date's data
@@ -37,12 +36,7 @@ pub struct DataService {
 
 impl DataService {
     pub fn get() -> &'static Self {
-        LOADED.get_or_init(|| {
-            DATA_SVC.get_or_init(|| Self::new(30));
-            true
-        });
-
-        DATA_SVC.get().unwrap()
+        DATA_SVC.get_or_init(|| Self::new(30))
     }
     /// Create a new data service with specified cache timeout
     fn new(cache_timeout_seconds: u64) -> Self {
@@ -155,11 +149,10 @@ impl DataService {
                 populated_dates.push(current_date);
             }
 
-            // Move to next day
-            current_date = current_date.next_day().unwrap_or(current_date);
-            if current_date == start_date {
-                // Prevent infinite loop in case of date arithmetic issues
-                break;
+            // Move to next day; None means we've reached Date::MAX
+            match current_date.next_day() {
+                Some(next) => current_date = next,
+                None => break,
             }
         }
 
@@ -184,9 +177,13 @@ impl DataService {
 
     /// Get cached content if valid, None otherwise
     async fn get_cached_content(&self, date: &Date, file_path: &Path) -> Result<Option<String>> {
-        let cache = self.cache.lock().await;
+        // Clone the entry so we can release the lock before doing I/O
+        let cached_entry = {
+            let cache = self.cache.lock().await;
+            cache.get(date).cloned()
+        };
 
-        if let Some(entry) = cache.get(date) {
+        if let Some(entry) = cached_entry {
             let now = SystemTime::now();
 
             // Check if cache entry is still valid (within timeout)
@@ -207,13 +204,14 @@ impl DataService {
 
     /// Cache content for a date
     async fn cache_content(&self, date: Date, file_path: &Path, content: &str) -> Result<()> {
-        let mut cache = self.cache.lock().await;
-
+        // Get metadata before acquiring the lock to avoid holding it across I/O
         let file_mod_time = if let Ok(metadata) = tokio::fs::metadata(file_path).await {
             metadata.modified().ok()
         } else {
             None
         };
+
+        let mut cache = self.cache.lock().await;
 
         let entry = CacheEntry {
             data: Some(content.to_string()),

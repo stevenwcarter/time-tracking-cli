@@ -20,7 +20,6 @@ use crate::DATE_FORMAT;
 #[allow(unused_imports)]
 use tracing::error;
 
-static LOADED: OnceLock<bool> = OnceLock::new();
 static CONFIG: OnceLock<Config> = OnceLock::new();
 
 #[cfg(feature = "cli")]
@@ -108,7 +107,9 @@ struct Args {
 }
 
 fn today_date() -> Date {
-    OffsetDateTime::now_local().unwrap().date()
+    OffsetDateTime::now_local()
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+        .date()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +171,7 @@ impl Default for Config {
             suffix: None,
             stdin: false,
             serve: Some(false),
-            date: OffsetDateTime::now_local().unwrap().date(),
+            date: today_date(),
             #[cfg(feature = "tui")]
             tui: None,
             #[cfg(feature = "webapp")]
@@ -182,23 +183,18 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn get_no_args() -> &'static Config {
-        LOADED.get_or_init(|| {
-            let config = Config::load(false).expect("Could not load configuration");
-            CONFIG.get_or_init(|| config);
-
-            true
-        });
-        CONFIG.get().unwrap()
+    fn init(use_args: bool) -> &'static Config {
+        CONFIG.get_or_init(|| {
+            Config::load(use_args).expect("Could not load configuration")
+        })
     }
-    pub fn get() -> &'static Config {
-        LOADED.get_or_init(|| {
-            let config = Config::load(true).expect("Could not load configuration");
-            CONFIG.get_or_init(|| config);
 
-            true
-        });
-        CONFIG.get().unwrap()
+    pub fn get_no_args() -> &'static Config {
+        Self::init(false)
+    }
+
+    pub fn get() -> &'static Config {
+        Self::init(true)
     }
 
     #[cfg(feature = "cli")]
@@ -238,17 +234,7 @@ impl Config {
             let toml_content = toml::to_string_pretty(&default_config)?;
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;
-            file.write_all(
-                b"\n# Optional template file which will be used to create each new day note\n",
-            )?;
-            file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
-            file.write_all(
-                b"\n# Optional prefix to look for in a file before starting to parse time notes\n",
-            )?;
-            file.write_all(b"\n# Useful if you want to keep other notes in the same file\n")?;
-            file.write_all(b"#prefix = \"```timetracking\"\n")?;
-            file.write_all(b"\n# Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too\n")?;
-            file.write_all(b"#suffix = \"```\"\n")?;
+            write_config_comments(&mut file)?;
             default_config
         };
 
@@ -284,11 +270,9 @@ impl Config {
                     // Parse the provided date
 
                     use interim::{Dialect, parse_date_string};
-                    let date_time = parse_date_string(
-                        &date_str,
-                        OffsetDateTime::now_local().unwrap(),
-                        Dialect::Us,
-                    );
+                    let now = OffsetDateTime::now_local()
+                        .unwrap_or_else(|_| OffsetDateTime::now_utc());
+                    let date_time = parse_date_string(&date_str, now, Dialect::Us);
                     match date_time {
                         Ok(date_time) => date_time.date(),
                         Err(e) => {
@@ -336,17 +320,7 @@ impl Config {
             let toml_content = toml::to_string_pretty(&default_config)?;
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;
-            file.write_all(
-                b"\n# Optional template file which will be used to create each new day note\n",
-            )?;
-            file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
-            file.write_all(
-                b"\n# Optional prefix to look for in a file before starting to parse time notes\n",
-            )?;
-            file.write_all(b"\n# Useful if you want to keep other notes in the same file\n")?;
-            file.write_all(b"#prefix = \"```timetracking\"\n")?;
-            file.write_all(b"\n# Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too\n")?;
-            file.write_all(b"#suffix = \"```\"\n")?;
+            write_config_comments(&mut file)?;
             Ok(default_config)
         }
     }
@@ -386,6 +360,21 @@ impl Config {
             _ => Box::new(DefaultDisplayFormatter),
         }
     }
+}
+
+fn write_config_comments(file: &mut impl Write) -> Result<()> {
+    file.write_all(
+        b"\n# Optional template file which will be used to create each new day note\n",
+    )?;
+    file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
+    file.write_all(
+        b"\n# Optional prefix to look for in a file before starting to parse time notes\n",
+    )?;
+    file.write_all(b"\n# Useful if you want to keep other notes in the same file\n")?;
+    file.write_all(b"#prefix = \"```timetracking\"\n")?;
+    file.write_all(b"\n# Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too\n")?;
+    file.write_all(b"#suffix = \"```\"\n")?;
+    Ok(())
 }
 
 fn get_config_path() -> Result<PathBuf> {

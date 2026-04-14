@@ -48,7 +48,9 @@ impl Default for App {
             running: true,
             zoom_bar: false,
             show_help: false,
-            active_date: OffsetDateTime::now_local().unwrap().date(),
+            active_date: OffsetDateTime::now_local()
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
+                    .date(),
             events: EventHandler::new(),
             data: None,
             project_list_widget: None,
@@ -69,7 +71,9 @@ impl App {
 
     /// Run the application's main loop.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
-        let _ = self.load_data_for_active_date().await;
+        if let Err(e) = self.load_data_for_active_date().await {
+            tracing::warn!("Failed to load data on startup: {e}");
+        }
         while self.running {
             terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
             match self.events.next().await.context("couldn't read events")? {
@@ -83,7 +87,9 @@ impl App {
                     _ => {}
                 },
                 Event::App(app_event) => {
-                    let _ = self.handle_app_event(app_event, &mut terminal).await;
+                    if let Err(e) = self.handle_app_event(app_event, &mut terminal).await {
+                        tracing::warn!("Failed to handle app event: {e}");
+                    }
                 }
             }
         }
@@ -107,7 +113,9 @@ impl App {
                 self.events.send(AppEvent::ReloadFromDisk);
             }
             AppEvent::Today => {
-                self.active_date = OffsetDateTime::now_local().unwrap().date();
+                self.active_date = OffsetDateTime::now_local()
+                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
+                    .date();
                 self.events.send(AppEvent::ReloadFromDisk);
             }
             AppEvent::ToggleHelp => self.show_help = !self.show_help,

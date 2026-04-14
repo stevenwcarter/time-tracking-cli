@@ -1,0 +1,20 @@
+{
+  "files": {
+    "exclude": [
+      "target",
+      ".git",
+      "cli",
+      "docs",
+      "neovim",
+      "site",
+      "static",
+      "node_modules"
+    ]
+  },
+  "settings": {
+    "checkOnSave": {
+      "command": "clippy"
+    },
+    "procMacroServer": true
+  }
+}

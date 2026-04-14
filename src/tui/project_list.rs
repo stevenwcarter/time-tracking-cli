@@ -141,8 +141,14 @@ impl ProjectListWidget {
             let notes_text = format!("- {}", project.tasks.join("\n- "));
 
             use copypasta::ClipboardProvider;
-            let mut ctx = copypasta::ClipboardContext::new().unwrap();
-            ctx.set_contents(notes_text).unwrap();
+            match copypasta::ClipboardContext::new() {
+                Ok(mut ctx) => {
+                    if let Err(e) = ctx.set_contents(notes_text) {
+                        tracing::warn!("Failed to copy notes to clipboard: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to access clipboard: {e}"),
+            }
         }
     }
 

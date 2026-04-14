@@ -107,9 +107,20 @@ impl Query {
             .map(|(name, total_hours)| ProjectSummary { name, total_hours })
             .collect();
 
+        let start_date = week_dates
+            .first()
+            .ok_or("week_dates is empty")?
+            .format(DATE_FORMAT)
+            .map_err(|e| format!("Failed to format start date: {e}"))?;
+        let end_date = week_dates
+            .last()
+            .ok_or("week_dates is empty")?
+            .format(DATE_FORMAT)
+            .map_err(|e| format!("Failed to format end date: {e}"))?;
+
         Ok(WeekData {
-            start_date: week_dates[0].format(DATE_FORMAT).unwrap(),
-            end_date: week_dates[6].format(DATE_FORMAT).unwrap(),
+            start_date,
+            end_date,
             total_hours: total_week_hours,
             dead_time_hours: total_dead_hours,
             days,
@@ -144,16 +155,16 @@ impl Mutation {
             .await
             .map_err(|e| format!("Failed to create directory: {}", e))?;
 
-        let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
+        let date_str = date
+            .format(DATE_FORMAT)
+            .map_err(|e| format!("Failed to format date: {e}"))?;
+        let file_path = time_tracking_dir.join(format!("{}.md", date_str));
 
         fs::write(&file_path, &content)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
-        Ok(format!(
-            "Successfully updated file for date {}",
-            date.format(DATE_FORMAT).unwrap()
-        ))
+        Ok(format!("Successfully updated file for date {}", date_str))
     }
 }
 
