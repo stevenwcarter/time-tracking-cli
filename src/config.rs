@@ -21,6 +21,7 @@ use crate::DATE_FORMAT;
 use tracing::error;
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
+static CONFIG_LOAD_ERR: OnceLock<String> = OnceLock::new();
 
 #[cfg(feature = "cli")]
 #[derive(ValueEnum, Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -183,6 +184,26 @@ impl Default for Config {
 }
 
 impl Config {
+    fn try_init(use_args: bool) -> anyhow::Result<&'static Config> {
+        if let Some(config) = CONFIG.get() {
+            return Ok(config);
+        }
+        if let Some(err) = CONFIG_LOAD_ERR.get() {
+            return Err(anyhow::anyhow!("{}", err));
+        }
+        match Config::load(use_args) {
+            Ok(config) => {
+                let _ = CONFIG.set(config);
+                Ok(CONFIG.get().unwrap())
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                let _ = CONFIG_LOAD_ERR.set(err_str);
+                Err(e)
+            }
+        }
+    }
+
     fn init(use_args: bool) -> &'static Config {
         CONFIG.get_or_init(|| {
             Config::load(use_args).expect("Could not load configuration")
@@ -191,6 +212,10 @@ impl Config {
 
     pub fn get_no_args() -> &'static Config {
         Self::init(false)
+    }
+
+    pub fn try_get_no_args() -> anyhow::Result<&'static Config> {
+        Self::try_init(false)
     }
 
     pub fn get() -> &'static Config {
