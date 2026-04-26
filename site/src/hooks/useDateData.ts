@@ -11,11 +11,11 @@ export const useDateData = (date: Date) => {
   const dateString = date.toISOString().split('T')[0];
   const { data } = useQuery(FILE_CONTENT_FOR_DATE_QUERY, {
     variables: { date: dateString },
-    skip: !date,
+    skip: !dateString,
   });
   const { data: parsedData } = useQuery(GET_DAY_DATA_FOR_DATE_QUERY, {
     variables: { date: dateString },
-    skip: !date,
+    skip: !dateString,
   });
   const [updateDateData] = useMutation(UPDATE_FILE_CONTENT_FOR_DATE_MUTATION);
 
