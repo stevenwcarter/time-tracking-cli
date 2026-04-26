@@ -33,14 +33,12 @@ const router = createBrowserRouter([
 
 export const App = () => {
   return (
-    <React.StrictMode>
-      <ApolloProvider client={apolloClient}>
-        <Suspense fallback={<LoadingSpinner />}>
-          <ToastContainer />
-          <RouterProvider router={router} />
-        </Suspense>
-      </ApolloProvider>
-    </React.StrictMode>
+    <ApolloProvider client={apolloClient}>
+      <Suspense fallback={<LoadingSpinner />}>
+        <ToastContainer />
+        <RouterProvider router={router} />
+      </Suspense>
+    </ApolloProvider>
   );
 };
 
