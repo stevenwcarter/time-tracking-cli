@@ -324,14 +324,7 @@ pub async fn show_single_day(
     let file_path = data_service.create_day_file_if_not_exists(date).await?;
 
     if !noedit {
-        if file_path.exists() {
-            info!(
-                "Opening existing time tracking file: {}",
-                file_path.display()
-            );
-        } else {
-            println!("Created new time tracking file: {}", file_path.display());
-        }
+        info!("Opening time tracking file: {}", file_path.display());
 
         // Open the file in the default editor
         open_in_editor(&file_path)?;
