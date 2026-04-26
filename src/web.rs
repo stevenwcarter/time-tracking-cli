@@ -262,7 +262,7 @@ async fn get_week_data(
 
     let week_start_day = params
         .week_start_day
-        .unwrap_or_else(|| "Saturday".to_string());
+        .unwrap_or_else(|| state.config.get_week_start_day().to_string());
 
     get_week_data_impl(date, week_start_day, &state).await
 }
