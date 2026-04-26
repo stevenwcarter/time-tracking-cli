@@ -2,6 +2,7 @@ use tokio::fs;
 
 use anyhow::{Context, Result};
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
 
 /// Initialize tracing and return the worker guard.
 /// The caller must hold the guard for the process lifetime to ensure logs are flushed at shutdown.
@@ -21,7 +22,8 @@ pub async fn init_tracing() -> Result<WorkerGuard> {
 
     tracing_subscriber::fmt()
         .with_writer(non_blocking)
-        .with_ansi(true)
+        .with_ansi(false)
+        .with_env_filter(EnvFilter::from_default_env())
         .init();
 
     Ok(guard)
