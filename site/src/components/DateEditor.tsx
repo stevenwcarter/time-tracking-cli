@@ -77,7 +77,19 @@ export const DateEditor = (props: DateEditorProps) => {
         style={{ width: '50%', height: '100%' }}
       />
       <div className="w-1/2 p-4 border-l overflow-y-auto">
-        <DateSummary parsedData={parsedData || { date: 'N/A', projects: [], warnings: [] }} />
+        <DateSummary
+          parsedData={
+            parsedData || {
+              date: 'N/A',
+              totalHours: 0,
+              deadTimeHours: 0,
+              startTime: null,
+              endTime: null,
+              projects: [],
+              warnings: [],
+            }
+          }
+        />
       </div>
     </div>
   );

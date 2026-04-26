@@ -1,9 +1,24 @@
 import { toast } from 'react-toastify';
 
-export const DateSummary = (props: { parsedData: any }) => {
+interface ParsedProject {
+  name: string;
+  totalHours: number;
+  notes: string[];
+}
+
+interface ParsedDayData {
+  date: string;
+  totalHours: number;
+  deadTimeHours: number;
+  startTime: string | null;
+  endTime: string | null;
+  warnings: string[];
+  projects: ParsedProject[];
+}
+
+export const DateSummary = (props: { parsedData: ParsedDayData }) => {
   const { parsedData } = props;
 
-  // Helper function to copy project notes to clipboard
   const copyProjectNotesToClipboard = async (projectName: string, notes: string[]) => {
     if (notes.length === 0) return;
 
@@ -30,8 +45,8 @@ export const DateSummary = (props: { parsedData: any }) => {
   return (
     <div className="px-2 overflow-y-auto">
       <h2 className="text-2xl font-bold mb-4">Summary for {parsedData.date}</h2>
-      <p className="mb-2">Total Hours: {parsedData.totalHours}</p>
-      <p className="mb-2">Dead Time Hours: {parsedData.deadTimeHours}</p>
+      <p className="mb-2">Total Hours: {parsedData.totalHours?.toFixed(2)}</p>
+      <p className="mb-2">Dead Time Hours: {parsedData.deadTimeHours?.toFixed(2)}</p>
       <p className="mb-4">
         Start Time: {parsedData.startTime} - End Time: {parsedData.endTime}
       </p>
@@ -46,7 +61,7 @@ export const DateSummary = (props: { parsedData: any }) => {
         </div>
       )}
       <h3 className="text-xl font-semibold mt-8 mb-2">Projects:</h3>
-      {parsedData.projects.map((project: any) => (
+      {parsedData.projects.map((project) => (
         <div key={project.name} className="mb-4">
           <div className="font-semibold flex text-lg">
             {project.name}
