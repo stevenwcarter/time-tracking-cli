@@ -51,7 +51,7 @@ export const DateSelector = (props: DateSelectorProps) => {
         type="date"
         className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-4 rounded-xl"
         value={formatDate(date)}
-        onChange={(e) => setDate(new Date(e.target.value))}
+        onChange={(e) => setDate(new Date(e.target.value + 'T00:00:00'))}
       />
 
       {/* Go to Date button */}
