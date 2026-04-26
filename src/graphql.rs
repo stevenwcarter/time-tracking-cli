@@ -3,9 +3,9 @@ use time::Date;
 use tokio::fs;
 
 use crate::{
-    DATE_FORMAT,
+    DATE_FORMAT, DataService,
     context::GraphQLContext,
-    create_template_content, get_time_tracking_dir, get_week_dates, parse_weekday,
+    get_time_tracking_dir, get_week_dates, parse_weekday,
     web::{DayData, WeekData, aggregate_week_days, get_day_data_impl},
 };
 
@@ -29,34 +29,28 @@ impl Query {
         get_day_data_impl(date, state).await.map_err(|e| e.into())
     }
 
+    // C2: Use DataService so reads go through the shared 30-second cache and
+    // template creation is handled in one place (DataService::create_day_file_if_not_exists).
     #[graphql(name = "fileContentForDate")]
     pub async fn file_content_for_date(
-        context: &GraphQLContext,
+        _context: &GraphQLContext,
         date: String,
     ) -> FieldResult<String> {
-        let state = &context.app_state;
         let date = Date::parse(&date, DATE_FORMAT)
             .map_err(|_| INVALID_DATE_MSG)?;
 
-        let time_tracking_dir = get_time_tracking_dir()
-            .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
-        let file_path = time_tracking_dir.join(format!("{}.md", date.format(DATE_FORMAT).unwrap()));
-
-        if !file_path.exists() {
-            // Create file with template content if it doesn't exist
-            let template_content =
-                create_template_content(&date, state.config.template_file.as_deref())
-                    .await
-                    .map_err(|e| format!("Failed to create template content: {}", e))?;
-            fs::write(&file_path, &template_content)
-                .await
-                .map_err(|e| format!("Failed to create file: {}", e))?;
-            return Ok(template_content);
-        }
-
-        fs::read_to_string(&file_path)
+        DataService::get()
+            .create_day_file_if_not_exists(&date)
             .await
-            .map_err(|e| format!("Failed to read file: {}", e).into())
+            .map_err(|e| format!("Failed to create file: {}", e))?;
+
+        let content = DataService::get()
+            .read_day(&date)
+            .await
+            .map_err(|e| format!("Failed to read file: {}", e))?
+            .unwrap_or_default();
+
+        Ok(content)
     }
 
     #[graphql(name = "weekDataForDate")]
@@ -112,6 +106,8 @@ impl Mutation {
         Ok("Hello from Mutation!".to_string())
     }
 
+    // C1: Invalidate the DataService cache after writing so subsequent reads
+    // return fresh content instead of stale data for up to 30 seconds.
     #[graphql(name = "updateFileContent")]
     pub async fn update_file_content(
         _context: &GraphQLContext,
@@ -124,7 +120,6 @@ impl Mutation {
         let time_tracking_dir = get_time_tracking_dir()
             .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;
 
-        // Create directory if it doesn't exist
         fs::create_dir_all(&time_tracking_dir)
             .await
             .map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -137,6 +132,8 @@ impl Mutation {
         fs::write(&file_path, &content)
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        DataService::get().invalidate_date(&date).await;
 
         Ok(format!("Successfully updated file for date {}", date_str))
     }
