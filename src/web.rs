@@ -21,7 +21,7 @@ use time::{Date, OffsetDateTime};
 use tokio::{select, sync::oneshot::Receiver};
 use tower::ServiceBuilder;
 use tower_http::{compression::CompressionLayer, cors::CorsLayer};
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{get_week_dates, parse_weekday};
 
@@ -140,11 +140,8 @@ pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
-    println!(
-        "🌐 Time Tracking Web Server running on http://localhost:{}",
-        port
-    );
-    println!("📊 Access your time tracking data via the web interface");
+    info!("Time Tracking Web Server running on http://localhost:{}", port);
+    info!("Access your time tracking data via the web interface");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(rx))
@@ -276,7 +273,7 @@ async fn get_week_data_by_date(
 ) -> Result<Json<WeekData>, StatusCode> {
     let date = Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    get_week_data_impl(date, "Saturday".to_string(), &state).await
+    get_week_data_impl(date, state.config.get_week_start_day().to_string(), &state).await
 }
 
 pub async fn aggregate_week_days(
@@ -315,10 +312,11 @@ pub async fn aggregate_week_days(
         days[idx] = day_data;
     }
 
-    let project_summaries: Vec<ProjectSummary> = week_projects
+    let mut project_summaries: Vec<ProjectSummary> = week_projects
         .into_iter()
         .map(|(name, total_hours)| ProjectSummary { name, total_hours })
         .collect();
+    project_summaries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
 
     (days, project_summaries, total_week_hours, total_dead_hours)
 }
