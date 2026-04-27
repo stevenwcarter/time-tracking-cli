@@ -1,15 +1,32 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import App from './App';
+import { render, screen } from '@testing-library/react';
+import { ApolloClient, ApolloProvider, InMemoryCache } from '@apollo/client';
+import { MemoryRouter } from 'react-router-dom';
+import WeeklySummaryPage from './page/WeeklySummaryPage';
 import '@testing-library/jest-dom';
 
-describe('AxumReactStarter', () => {
-  it('renders without errors', async () => {
-    render(<App />);
+// DateSelector and WeeklySummary import `Link`/`useNavigate` from 'react-router'
+// (not 'react-router-dom'), which triggers an ESM/CJS dual-module split in the
+// Vitest environment and produces two separate NavigationContext instances.
+// Mocking these child components avoids that split while still exercising the
+// page-level rendering logic.
+vi.mock('./components/DateSelector', () => ({ default: () => null }));
+vi.mock('./components/WeeklySummary', () => ({ default: () => null }));
 
-    await waitFor(async () => {
-      const h1 = screen.getByText('Welcome to the Homepage');
+const testClient = new ApolloClient({
+  cache: new InMemoryCache({ addTypename: false }),
+  uri: '/graphql',
+});
 
-      expect(h1).toBeInTheDocument();
-    });
+describe('App', () => {
+  it('renders without errors', () => {
+    render(
+      <ApolloProvider client={testClient}>
+        <MemoryRouter>
+          <WeeklySummaryPage />
+        </MemoryRouter>
+      </ApolloProvider>,
+    );
+
+    expect(screen.getByText('Time Tracking Explorer')).toBeInTheDocument();
   });
 });

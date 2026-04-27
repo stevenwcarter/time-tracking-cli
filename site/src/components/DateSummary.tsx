@@ -66,7 +66,7 @@ export const DateSummary = (props: { parsedData: ParsedDayData }) => {
           <div className="font-semibold flex text-lg">
             {project.name}
             <div className="text-sm ml-2 self-center">
-              ({project.totalHours} {project.totalHours === 1 ? 'hour' : 'hours'})
+              ({project.totalHours.toFixed(2)} {project.totalHours === 1 ? 'hour' : 'hours'})
             </div>
           </div>
           <ul
