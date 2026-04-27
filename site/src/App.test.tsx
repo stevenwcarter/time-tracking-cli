@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { ApolloClient, ApolloProvider, InMemoryCache } from '@apollo/client';
 import { MemoryRouter } from 'react-router-dom';
+import { vi } from 'vitest';
 import WeeklySummaryPage from './page/WeeklySummaryPage';
 import '@testing-library/jest-dom';
 
