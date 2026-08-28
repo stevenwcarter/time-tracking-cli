@@ -740,6 +740,8 @@ git add -A && git commit -m "refactor(tui): replace view booleans with a mode en
 
 The real keymap lives in three places that have already drifted by four bindings: the `match` at `app.rs:227`, the second match in `ProjectListWidget::handle_key_event`, the hardcoded string at `help_popup.rs:14-19`, and the README table at `README.md:192-199`. `app.rs` implements nine bindings; the popup and README document six.
 
+**Pre-flight Ruling R1 — read before implementing.** `BINDINGS` carries *every* binding, list navigation and raw-file scrolling included. A key may appear in more than one row **provided their `ModeMask`s are disjoint**: `j` is one row with `ModeMask::DAY` (select next project) and a separate row with `ModeMask::RAW` (scroll down, added in Task 16). The mode layer dispatches by calling `lookup(key, mode)` and matching the resulting `AppEvent` — it does **not** keep a second private `match`. This is what keeps the `no_duplicate_key_within_a_mode` test meaningful while letting the same physical key mean different things in different modes, and it is what removes the third drifted copy of the keymap rather than merely adding a fourth.
+
 **Files:**
 - Create: `src/tui/keymap.rs`
 - Modify: `src/tui/app.rs`, `src/tui/widgets/help_popup.rs`, `README.md:190-199`
@@ -2365,6 +2367,10 @@ git add -A && git commit -m "feat(tui): add config-driven light, dark, and no-co
 - Produces:
   - `Config.daily_target_hours: Option<f64>` (default 8.0)
   - `fn chart_ceiling(week_max_minutes: u32, target_hours: f64) -> u64` — returns tenths of an hour, matching the existing `minutes * 10 / 60` bar scale
+  - `WeeklyBarChart::ceiling_for(&self, area: Rect) -> u64` — the widget-level wrapper the
+    height-independence test calls. It ignores `area` entirely for the ceiling (that is the
+    point of the test) and returns `chart_ceiling(self.week_max_minutes(), self.target_hours)`.
+    *(Pre-flight Ruling R2: implied by Task 23's test but not previously declared.)*
 
 - [ ] **Step 1: Write the failing tests**
 
