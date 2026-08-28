@@ -21,6 +21,7 @@
 - `tempfile` may be added to the **`cli` package's `[dev-dependencies]`**. It is already a dev-dependency of the root package and so already in `Cargo.lock` — this adds no new vendored code.
 - Two new config keys, both optional and additive: `theme` (`"dark"` | `"light"` | `"none"`, default `"dark"`) and `daily_target_hours` (default `8`).
 - No new `unwrap()` or `expect()` anywhere under `src/tui/`.
+- **Every test that constructs an `App` must be `#[tokio::test] async fn`, not `#[test]`.** `App::new` builds an `EventHandler`, which calls `tokio::spawn`; a plain `#[test]` panics with "there is no reactor running". Discovered in Task 2. Do not work around this by making the spawn conditional on test-only state — that would fork production behaviour.
 - Every task ends green: `cargo test` passes and the working tree is committed.
 
 ---
@@ -302,8 +303,8 @@ pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn app_can_be_constructed_without_parsing_argv() {
+    #[tokio::test]
+    async fn app_can_be_constructed_without_parsing_argv() {
         // Regression: App::new() used to call Config::get(), which runs
         // Args::parse() and so panicked or consumed the test harness's argv.
         let ctx = TuiContext::for_test();
@@ -600,8 +601,8 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    #[test]
-    fn overlay_swallows_keys_the_mode_would_otherwise_handle() {
+    #[tokio::test]
+    async fn overlay_swallows_keys_the_mode_would_otherwise_handle() {
         let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
         app.overlay = Some(Overlay::Help);
 
@@ -612,8 +613,8 @@ mod tests {
         assert_eq!(app.active_date, date!(2026 - 08 - 24));
     }
 
-    #[test]
-    fn esc_closes_the_overlay_instead_of_quitting() {
+    #[tokio::test]
+    async fn esc_closes_the_overlay_instead_of_quitting() {
         let mut app = App::new(TuiContext::for_test());
         app.overlay = Some(Overlay::Help);
 
@@ -623,8 +624,8 @@ mod tests {
         assert!(app.running, "Esc must not quit while an overlay is open");
     }
 
-    #[test]
-    fn esc_quits_when_no_overlay_is_open() {
+    #[tokio::test]
+    async fn esc_quits_when_no_overlay_is_open() {
         let mut app = App::new(TuiContext::for_test());
         app.handle_key_events(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
         app.drain_pending_events();
@@ -874,8 +875,8 @@ git add -A && git commit -m "refactor(tui): generate the keymap, help popup, and
 - [ ] **Step 1: Write the failing test**
 
 ```rust
-#[test]
-fn stale_load_results_are_discarded() {
+#[tokio::test]
+async fn stale_load_results_are_discarded() {
     let mut app = App::new(TuiContext::for_test());
     app.load_gen = 7;
 
@@ -999,16 +1000,16 @@ git add -A && git commit -m "perf(tui): move data loads off the event loop with 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
-#[test]
-fn handled_keys_mark_the_app_dirty() {
+#[tokio::test]
+async fn handled_keys_mark_the_app_dirty() {
     let mut app = App::new(TuiContext::for_test());
     app.dirty = false;
     app.handle_key_events(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)).unwrap();
     assert!(app.dirty, "a handled key must request a redraw");
 }
 
-#[test]
-fn an_unbound_key_does_not_mark_the_app_dirty() {
+#[tokio::test]
+async fn an_unbound_key_does_not_mark_the_app_dirty() {
     let mut app = App::new(TuiContext::for_test());
     app.dirty = false;
     app.handle_key_events(KeyEvent::new(KeyCode::Char('\u{1}'), KeyModifiers::NONE)).unwrap();
@@ -1334,8 +1335,8 @@ Expected: FAIL — `existing_dates` does not exist, and the third test fails bec
 `App.month_memo: HashMap<(i32, u8), Vec<Date>>`. `spawn_load` (Task 6) checks whether the displayed month is already memoized; a date change within the same month reuses it and skips the populated-dates scan entirely. Cleared by `invalidate_date`, editor exit, and `r`.
 
 ```rust
-#[test]
-fn same_month_navigation_reuses_the_memo() {
+#[tokio::test]
+async fn same_month_navigation_reuses_the_memo() {
     let mut app = App::new(TuiContext::for_test());
     app.month_memo.insert((2026, 8), vec![date!(2026 - 08 - 24)]);
     assert!(app.month_scan_needed(date!(2026 - 08 - 25)).is_none());
@@ -1483,8 +1484,8 @@ fn enter_emits_a_copy_intent_rather_than_doing_io() {
     }
 }
 
-#[test]
-fn status_expires_after_its_ttl() {
+#[tokio::test]
+async fn status_expires_after_its_ttl() {
     let mut app = App::new(TuiContext::for_test());
     app.set_status("Copied 4 notes for admin");
     assert!(app.status.is_some());
@@ -1494,8 +1495,8 @@ fn status_expires_after_its_ttl() {
     assert!(app.status.is_none(), "an expired status must clear on tick");
 }
 
-#[test]
-fn an_expiring_status_requests_a_redraw() {
+#[tokio::test]
+async fn an_expiring_status_requests_a_redraw() {
     let mut app = App::new(TuiContext::for_test());
     app.status = Some(("stale".into(), Instant::now() - Duration::from_secs(10)));
     app.dirty = false;
@@ -1503,8 +1504,8 @@ fn an_expiring_status_requests_a_redraw() {
     assert!(app.dirty, "clearing the toast must repaint so it actually disappears");
 }
 
-#[test]
-fn a_failed_load_surfaces_on_the_status_line() {
+#[tokio::test]
+async fn a_failed_load_surfaces_on_the_status_line() {
     let mut app = App::new(TuiContext::for_test());
     app.load_gen = 3;
     app.apply_sync_event(AppEvent::LoadFailed(3, "permission denied".into()));
@@ -1562,8 +1563,8 @@ The block built at `ui.rs:51-53` with `self.active_date.format(DATE_FORMAT).unwr
 - [ ] **Step 1: Write the failing test**
 
 ```rust
-#[test]
-fn the_day_pane_shows_the_active_date_with_its_weekday() {
+#[tokio::test]
+async fn the_day_pane_shows_the_active_date_with_its_weekday() {
     let mut app = App::new(TuiContext::for_test())
         .with_active_date(date!(2026 - 08 - 27))
         .with_data(fixture_day());
@@ -1571,8 +1572,8 @@ fn the_day_pane_shows_the_active_date_with_its_weekday() {
     assert!(screen.contains("Thu 2026-08-27"), "got:\n{screen}");
 }
 
-#[test]
-fn the_empty_pane_also_shows_the_active_date() {
+#[tokio::test]
+async fn the_empty_pane_also_shows_the_active_date() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 27));
     let screen = render_to_string(&mut app, 100, 30);
     assert!(screen.contains("Thu 2026-08-27"), "got:\n{screen}");
@@ -1618,8 +1619,8 @@ Dead-time detection is a headline README feature computed on every parse, yet th
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn the_header_shows_dead_time() {
+#[tokio::test]
+async fn the_header_shows_dead_time() {
     let mut data = fixture_day();
     data.dead_time_minutes = 95;
     let mut app = App::new(TuiContext::for_test()).with_data(data);
@@ -1627,8 +1628,8 @@ fn the_header_shows_dead_time() {
     assert!(screen.to_lowercase().contains("dead"), "got:\n{screen}");
 }
 
-#[test]
-fn parser_warnings_are_rendered() {
+#[tokio::test]
+async fn parser_warnings_are_rendered() {
     let mut data = fixture_day();
     data.warnings = vec!["Error parsing time range 'x-y'".into()];
     let mut app = App::new(TuiContext::for_test()).with_data(data);
@@ -1636,8 +1637,8 @@ fn parser_warnings_are_rendered() {
     assert!(screen.contains("Error parsing time range"), "got:\n{screen}");
 }
 
-#[test]
-fn a_clean_day_renders_no_warning_block() {
+#[tokio::test]
+async fn a_clean_day_renders_no_warning_block() {
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
     let screen = render_to_string(&mut app, 100, 30);
     assert!(!screen.to_lowercase().contains("warning"), "got:\n{screen}");
@@ -1681,16 +1682,16 @@ The TUI renders a three-month populated-date calendar that invites the user to l
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn shift_l_advances_a_week() {
+#[tokio::test]
+async fn shift_l_advances_a_week() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
     app.handle_key_events(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT)).unwrap();
     app.drain_pending_events();
     assert_eq!(app.active_date, date!(2026 - 08 - 31));
 }
 
-#[test]
-fn bracket_steps_a_month_and_clamps_at_a_short_month_end() {
+#[tokio::test]
+async fn bracket_steps_a_month_and_clamps_at_a_short_month_end() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 01 - 31));
     app.handle_key_events(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE)).unwrap();
     app.drain_pending_events();
@@ -1698,8 +1699,8 @@ fn bracket_steps_a_month_and_clamps_at_a_short_month_end() {
     assert_eq!(app.active_date, date!(2026 - 02 - 28));
 }
 
-#[test]
-fn page_down_is_an_alias_for_next_month() {
+#[tokio::test]
+async fn page_down_is_an_alias_for_next_month() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
     app.handle_key_events(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE)).unwrap();
     app.drain_pending_events();
@@ -1749,8 +1750,8 @@ The prefix/suffix fencing feature means a day file can be full of text yet parse
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn v_enters_raw_mode_and_shows_the_file_text() {
+#[tokio::test]
+async fn v_enters_raw_mode_and_shows_the_file_text() {
     let mut app = App::new(TuiContext::for_test());
     app.raw_content = Some("```timetracking\n8-10 admin\n```".into());
     app.mode = Mode::RawFile;
@@ -1758,8 +1759,8 @@ fn v_enters_raw_mode_and_shows_the_file_text() {
     assert!(screen.contains("8-10 admin"), "got:\n{screen}");
 }
 
-#[test]
-fn raw_mode_scrolls_with_j_and_k() {
+#[tokio::test]
+async fn raw_mode_scrolls_with_j_and_k() {
     let mut app = App::new(TuiContext::for_test());
     app.raw_content = Some((0..100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n"));
     app.mode = Mode::RawFile;
@@ -1769,16 +1770,16 @@ fn raw_mode_scrolls_with_j_and_k() {
     assert_eq!(app.raw_scroll, 0);
 }
 
-#[test]
-fn raw_scroll_does_not_go_negative() {
+#[tokio::test]
+async fn raw_scroll_does_not_go_negative() {
     let mut app = App::new(TuiContext::for_test());
     app.mode = Mode::RawFile;
     app.handle_key_events(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE)).unwrap();
     assert_eq!(app.raw_scroll, 0);
 }
 
-#[test]
-fn a_missing_file_says_so_rather_than_rendering_blank() {
+#[tokio::test]
+async fn a_missing_file_says_so_rather_than_rendering_blank() {
     let mut app = App::new(TuiContext::for_test());
     app.raw_content = None;
     app.mode = Mode::RawFile;
@@ -1843,8 +1844,8 @@ fn rejects_gibberish_with_a_message() {
     assert!(parse_prompt("not a date at all", now).is_err());
 }
 
-#[test]
-fn typing_into_the_prompt_does_not_move_the_date() {
+#[tokio::test]
+async fn typing_into_the_prompt_does_not_move_the_date() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
     app.overlay = Some(Overlay::DatePrompt(String::new()));
     for c in "last friday".chars() {
@@ -1855,8 +1856,8 @@ fn typing_into_the_prompt_does_not_move_the_date() {
     assert_eq!(app.overlay, Some(Overlay::DatePrompt("last friday".into())));
 }
 
-#[test]
-fn esc_cancels_without_changing_the_date() {
+#[tokio::test]
+async fn esc_cancels_without_changing_the_date() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
     app.overlay = Some(Overlay::DatePrompt("2026-01-01".into()));
     app.handle_key_events(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
@@ -1865,8 +1866,8 @@ fn esc_cancels_without_changing_the_date() {
     assert_eq!(app.active_date, date!(2026 - 08 - 24));
 }
 
-#[test]
-fn bad_input_keeps_the_prompt_open_and_reports() {
+#[tokio::test]
+async fn bad_input_keeps_the_prompt_open_and_reports() {
     let mut app = App::new(TuiContext::for_test());
     app.overlay = Some(Overlay::DatePrompt("gibberish".into()));
     app.handle_key_events(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
@@ -1926,8 +1927,8 @@ The stated workflow is pasting per-project totals into a timesheet or standup no
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn y_yanks_a_day_summary_containing_project_hours() {
+#[tokio::test]
+async fn y_yanks_a_day_summary_containing_project_hours() {
     let mut app = App::new(TuiContext::for_test()).with_raw_content("8-10 admin\n  - note\n");
     app.handle_key_events(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)).unwrap();
     match app.take_pending_copy() {
@@ -1939,8 +1940,8 @@ fn y_yanks_a_day_summary_containing_project_hours() {
     }
 }
 
-#[test]
-fn capital_y_yanks_the_week_summary() {
+#[tokio::test]
+async fn capital_y_yanks_the_week_summary() {
     let mut app = App::new(TuiContext::for_test());
     app.weekly_summary = Some(fixture_week_summary());
     app.handle_key_events(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT)).unwrap();
@@ -1948,8 +1949,8 @@ fn capital_y_yanks_the_week_summary() {
     assert!(payload.contains("client-bd"));
 }
 
-#[test]
-fn yanking_an_empty_day_reports_rather_than_copying_nothing() {
+#[tokio::test]
+async fn yanking_an_empty_day_reports_rather_than_copying_nothing() {
     let mut app = App::new(TuiContext::for_test());
     app.handle_key_events(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)).unwrap();
     assert!(app.take_pending_copy().is_none());
@@ -1998,8 +1999,8 @@ This is the first screen a new user sees if they launch `--tui` before writing a
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn no_file_offers_to_create_one() {
+#[tokio::test]
+async fn no_file_offers_to_create_one() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 30));
     assert_eq!(app.day_state(), DayState::NoFile);
     let screen = render_to_string(&mut app, 100, 30);
@@ -2007,8 +2008,8 @@ fn no_file_offers_to_create_one() {
     assert!(screen.contains("press e"), "got:\n{screen}");
 }
 
-#[test]
-fn a_file_that_parses_to_nothing_says_so_and_points_at_v() {
+#[tokio::test]
+async fn a_file_that_parses_to_nothing_says_so_and_points_at_v() {
     let mut app = App::new(TuiContext::for_test())
         .with_active_date(date!(2026 - 08 - 30))
         .with_raw_content("# just a heading, no entries\n");
@@ -2018,8 +2019,8 @@ fn a_file_that_parses_to_nothing_says_so_and_points_at_v() {
     assert!(screen.contains("press v"), "got:\n{screen}");
 }
 
-#[test]
-fn the_help_hint_survives_the_empty_screen() {
+#[tokio::test]
+async fn the_help_hint_survives_the_empty_screen() {
     let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 30));
     let screen = render_to_string(&mut app, 100, 30);
     assert!(screen.contains("? for help"), "the hint must not vanish on an empty day:\n{screen}");
@@ -2066,8 +2067,8 @@ The consultant's actual weekly billing question is "how many hours did client-bd
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn week_mode_lists_projects_with_hours_biggest_first() {
+#[tokio::test]
+async fn week_mode_lists_projects_with_hours_biggest_first() {
     let mut app = App::new(TuiContext::for_test());
     app.weekly_summary = Some(fixture_week_summary()); // client-bd 18h, internal 9.5h, admin 6h
     app.mode = Mode::Week;
@@ -2078,8 +2079,8 @@ fn week_mode_lists_projects_with_hours_biggest_first() {
     assert!(screen.contains("18"), "hours must be shown:\n{screen}");
 }
 
-#[test]
-fn week_mode_shows_the_week_total_and_dead_time() {
+#[tokio::test]
+async fn week_mode_shows_the_week_total_and_dead_time() {
     let mut app = App::new(TuiContext::for_test());
     app.weekly_summary = Some(fixture_week_summary());
     app.mode = Mode::Week;
@@ -2088,8 +2089,8 @@ fn week_mode_shows_the_week_total_and_dead_time() {
     assert!(screen.to_lowercase().contains("dead"), "week dead time:\n{screen}");
 }
 
-#[test]
-fn enter_in_week_mode_yanks_that_projects_week_notes() {
+#[tokio::test]
+async fn enter_in_week_mode_yanks_that_projects_week_notes() {
     let mut app = App::new(TuiContext::for_test());
     app.weekly_summary = Some(fixture_week_summary());
     app.mode = Mode::Week;
@@ -2098,8 +2099,8 @@ fn enter_in_week_mode_yanks_that_projects_week_notes() {
     assert!(payload.contains("client-bd"), "the selected (first) project is yanked");
 }
 
-#[test]
-fn week_mode_with_no_data_renders_an_empty_state_not_a_panic() {
+#[tokio::test]
+async fn week_mode_with_no_data_renders_an_empty_state_not_a_panic() {
     let mut app = App::new(TuiContext::for_test());
     app.weekly_summary = None;
     app.mode = Mode::Week;
@@ -2488,16 +2489,16 @@ fn breakpoints_are_chosen_by_size() {
     assert_eq!(breakpoint(Rect::new(0, 0, 120, 30)), Breakpoint::Full);
 }
 
-#[test]
-fn a_tiny_terminal_gets_a_notice_naming_the_required_size() {
+#[tokio::test]
+async fn a_tiny_terminal_gets_a_notice_naming_the_required_size() {
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
     let screen = render_to_string(&mut app, 50, 10);
     assert!(screen.contains("60"), "the notice names the required width:\n{screen}");
     assert!(screen.contains("15"), "the notice names the required height:\n{screen}");
 }
 
-#[test]
-fn a_narrow_terminal_drops_the_calendar_for_the_chart() {
+#[tokio::test]
+async fn a_narrow_terminal_drops_the_calendar_for_the_chart() {
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
     let narrow = render_to_string(&mut app, 80, 30);
     let wide = render_to_string(&mut app, 140, 30);
@@ -2506,16 +2507,16 @@ fn a_narrow_terminal_drops_the_calendar_for_the_chart() {
     assert!(!narrow.contains("Su"), "the narrow layout drops it:\n{narrow}");
 }
 
-#[test]
-fn a_short_terminal_keeps_the_project_list_usable() {
+#[tokio::test]
+async fn a_short_terminal_keeps_the_project_list_usable() {
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day_with_projects(6));
     let screen = render_to_string(&mut app, 100, 20);
     let listed = ["admin", "client-bd", "internal"].iter().filter(|p| screen.contains(**p)).count();
     assert!(listed >= 3, "the collapsed chart band must give the list room:\n{screen}");
 }
 
-#[test]
-fn no_render_panics_at_any_plausible_size() {
+#[tokio::test]
+async fn no_render_panics_at_any_plausible_size() {
     for (w, h) in [(1, 1), (10, 3), (40, 10), (60, 15), (80, 24), (200, 60), (400, 100)] {
         let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
         let _ = render_to_string(&mut app, w, h);
@@ -2562,8 +2563,8 @@ Date navigation appears in neither the popup nor the README, so a user who reads
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test]
-fn every_implemented_binding_appears_in_the_help_popup() {
+#[tokio::test]
+async fn every_implemented_binding_appears_in_the_help_popup() {
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
     app.overlay = Some(Overlay::Help);
     let screen = render_to_string(&mut app, 120, 40);
@@ -2576,8 +2577,8 @@ fn every_implemented_binding_appears_in_the_help_popup() {
     }
 }
 
-#[test]
-fn help_renders_over_the_zoomed_chart() {
+#[tokio::test]
+async fn help_renders_over_the_zoomed_chart() {
     // Regression: ui.rs used to early-return on zoom_bar before the help check,
     // so `?` did nothing visible while `f` was active.
     let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
@@ -2587,8 +2588,8 @@ fn help_renders_over_the_zoomed_chart() {
     assert!(screen.contains("Help"), "got:\n{screen}");
 }
 
-#[test]
-fn help_lists_the_date_motions() {
+#[tokio::test]
+async fn help_lists_the_date_motions() {
     let mut app = App::new(TuiContext::for_test());
     app.overlay = Some(Overlay::Help);
     let screen = render_to_string(&mut app, 120, 40);
