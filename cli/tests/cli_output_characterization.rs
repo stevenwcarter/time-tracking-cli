@@ -65,7 +65,15 @@ fn weekly_summary_output_is_stable_across_formatters() {
     for f in ["default", "plain", "markdown"] {
         let dir = staged("week_no_ties");
         let got = run_ttcli(
-            &["--week", "--date", "2026-08-24", "--formatter", f],
+            &[
+                "--week",
+                "--date",
+                "2026-08-24",
+                "--formatter",
+                f,
+                "--week-start-day",
+                "Saturday",
+            ],
             dir.path(),
         );
         compare_golden(&format!("weekly_{f}"), &got);
@@ -88,7 +96,15 @@ fn single_day_output_is_stable_across_formatters() {
 fn missing_day_still_renders_no_file_found() {
     let dir = staged("week_no_ties");
     let got = run_ttcli(
-        &["--week", "--date", "2026-08-24", "--formatter", "plain"],
+        &[
+            "--week",
+            "--date",
+            "2026-08-24",
+            "--formatter",
+            "plain",
+            "--week-start-day",
+            "Saturday",
+        ],
         dir.path(),
     );
     assert!(
@@ -104,9 +120,27 @@ fn missing_day_still_renders_no_file_found() {
 #[ignore = "unstable until Task 11 sorts weekly projects by (minutes desc, name asc)"]
 fn weekly_tie_ordering_is_deterministic() {
     let dir = staged("week_with_ties");
-    let first = run_ttcli(&["--week", "--date", "2026-08-24"], dir.path());
+    let first = run_ttcli(
+        &[
+            "--week",
+            "--date",
+            "2026-08-24",
+            "--week-start-day",
+            "Saturday",
+        ],
+        dir.path(),
+    );
     for _ in 0..20 {
-        let again = run_ttcli(&["--week", "--date", "2026-08-24"], dir.path());
+        let again = run_ttcli(
+            &[
+                "--week",
+                "--date",
+                "2026-08-24",
+                "--week-start-day",
+                "Saturday",
+            ],
+            dir.path(),
+        );
         assert_eq!(first, again, "tie ordering varied between runs");
     }
 }
