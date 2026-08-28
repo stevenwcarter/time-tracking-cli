@@ -23,7 +23,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The TUI renders a three-month populated-date calendar that invites the user to go look at a day last month, but the only route there is thirty to forty presses of `h`, each firing a full three-month populated-date rescan. The affordance the calendar promises (browse the month, spot the populated days, jump to one) is not reachable with the current keymap.
 - Blocked by: —
 - Notes: Month data is already prefetched — `load_data_for_active_date` scans prev/current/next month at app.rs:179-184 — so month stepping mostly renders data the app already holds. Split out of the same lens finding as W16; this half is keymap arms only and ships alone.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W2. Show dead time and parser warnings in the TUI day header (TUI/day-summary — src/tui/project_list.rs:177)
 - Lens: feature-gap
@@ -32,7 +33,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: Dead-time detection is a headline README feature computed on every parse, yet the one surface the user keeps open all day is the only one that hides it, and a mistyped time range is the most common data-entry mistake. Someone reconciling a day before writing a timesheet has to quit the TUI and run `ttcli` on stdout to learn they have a two-hour unaccounted gap or an unparsed line silently skewing the number they are about to paste.
 - Blocked by: —
 - Notes: Data is already loaded into `App.data` at src/tui/app.rs:198-201, so no new fetch. Parity references: the dead-time and warnings sections of `format_day_summary_impl` in src/display/mod.rs, `dead_header`/`dead_warn`/`warnings_header` in src/display/plain.rs, and `DayData.dead_time_hours`/`DayData.warnings` at src/web.rs:52,54. Pairs with W15 — warnings say something is wrong, the raw view shows what.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W3. Add a status line and move clipboard IO out of the widget (TUI/feedback — src/tui/app.rs:42, src/tui/project_list.rs:134)
 - Lens: unblock-debt
@@ -41,7 +43,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `Enter` yanking notes is the TUI's headline action and it produces zero feedback either way — on a headless box or over SSH with no clipboard backend it silently does nothing, the failure going only to the rolling log file the user cannot see because the alternate screen owns the terminal. A failed load renders identically to an empty day and `r` gives no sign it did anything. Burying the side effect in the widget also leaves nowhere to put a toast line and no way for other actions to reuse the copy path.
 - Blocked by: —
 - Notes: The footer already exists and currently shows only "? for help". Unblocks W10 (copy the whole day as markdown) and later copy targets driven by the `DisplayFormatter` impls, plus an action log once in-TUI writes exist.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W4. Add a write path to DataService for in-TUI entry (TUI/editing — src/data_svc.rs:115)
 - Lens: unblock-debt
@@ -59,7 +62,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: This is the last unchecked TUI line in TODO.md ("Poll for changes in the file and update TUI for live preview"). The intended workflow is the TUI open in one pane while the user edits the same markdown file in Obsidian or neovim (the repo ships a neovim plugin), and today they must remember to press `r` while the bar chart and totals silently go stale. Polling avoids adding `notify` as a dependency.
 - Blocked by: —
 - Notes: Tension with W7, which proposes dropping the tick entirely — the two are compatible only if the tick survives at a low rate, so implement them together and land on a 1 Hz tick that drives this poll while leaving idle redraw cost at zero. W24 is the more robust form of this feature (a watcher task posting events) and supersedes the polling loop if it lands first.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W6. Document every implemented key in the help popup and README, and make the popup modal (TUI/discoverability — src/tui/widgets/help_popup.rs:12)
 - Lens: feature-gap
@@ -68,7 +72,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: Date navigation is the TUI's core browsing action and appears in neither the popup nor the README, so a user who reads both learns no way to look at yesterday and may conclude the TUI only shows today. Worse, the key users reflexively press to dismiss a modal, `Esc`, quits the whole application, so trying to close help drops them back to the shell. This is a near-zero-cost multiplier on features already shipped.
 - Blocked by: —
 - Notes: Three sources disagree — app.rs implements nine bindings, help_popup.rs documents six, README documents the same six. W25 is the structural fix that stops the drift recurring by generating both from one table; this item corrects the text now, W25 makes the correction durable.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W7. Redraw only on state change instead of unconditionally at 30 FPS (TUI — src/tui/app.rs:78)
 - Lens: scale-perf
@@ -77,7 +82,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `run()` calls `terminal.draw` at the top of every loop iteration and the loop turns once per event, so the 30 FPS tick in src/tui/event.rs:9 forces thirty full re-renders per second forever with zero input and no animation. Each render rebuilds a `CalendarEventStore` from up to ninety populated dates, re-derives the week's seven bar labels, and reallocates a `String` per project plus one per note bullet. The target user leaves this open all day on a laptop; render-on-change takes idle cost to approximately zero and makes the per-frame cost of W12 and W13 irrelevant while idle.
 - Blocked by: —
 - Notes: Do not remove `Event::Tick` outright — W5 wants a roughly 1 Hz tick for mtime polling and W3 expires its status line on `tick()`. A low-rate tick serves all three; the dirty flag is what makes keeping the tick cheap.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W8. Scale the weekly bar chart to the week's data, not terminal height (TUI/chart — src/tui/widgets/weekly_bar_chart.rs:127)
 - Lens: terminal-robustness
@@ -86,7 +92,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: An eight-hour day renders at half height in the inline chart and shrinks further the taller the terminal gets — zoom with `f` on a 44-row terminal and the ceiling lands near forty hours, turning a full working day into a stub about a fifth of the frame. The weekly chart is the tool's main at-a-glance signal about whether the week is on track, and today its meaning changes when you resize your window.
 - Blocked by: —
 - Notes: The total-hours overlay `Rect` at line 166 is computed from `area` rather than the block's inner area and uses `total_text.len()` (bytes) as a column count; folding it into a right-aligned `Block::title_top(...)` while touching this widget removes the hand-rolled geometry.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W9. Show the active date on the project-list pane (TUI/layout — src/tui/ui.rs:51)
 - Lens: ux
@@ -94,7 +101,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - What: Render `active_date`, formatted with the weekday (for example `Thu 2026-08-27`), as a persistent title on the project-list pane. The bordered block built at ui.rs:51 with `self.active_date.format(DATE_FORMAT)` is attached only to the "No data found" paragraph in the `else` branch, so when `project_list_widget` is `Some` the block is dropped unused and the date string never reaches the screen.
 - Why: After a few `h`/`l` presses the user has no textual confirmation of which day they are looking at and must decode the highlighted cell in the 24-column calendar or the highlighted bar's day-of-month label. When notes get copied into a timesheet against the wrong day the cost is a wrong billing entry. The date is already computed and formatted — it is simply discarded.
 - Blocked by: —
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W10. Yank the whole day summary to the clipboard with `y` (TUI/clipboard — src/tui/project_list.rs:134)
 - Lens: feature-gap
@@ -121,7 +129,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `prepare_bars` reaches into the global `Config` singleton and re-runs `parse_weekday` (a chain of case-insensitive string comparisons) plus `get_week_dates` (a heap-allocated `Vec<Date>`) on every frame, for a value that can only change when the active date changes. Under the current unconditional 30 FPS redraw that is thirty times the necessary work per second, and even after W7 it is work re-derived per render rather than per state change, duplicating a computation the load path already performed.
 - Blocked by: —
 - Notes: Best done together with W7; on its own the win is modest. It also removes one of the in-render `Config::get()` calls that W19 eliminates wholesale.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W13. Precompute project-list line content once per data load (TUI/project-list — src/tui/project_list.rs:202)
 - Lens: scale-perf
@@ -130,7 +139,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `render_list` rebuilds `Vec<ListItem>` every frame, and `From<&ProjectItem> for ListItem` at project_list.rs:233 does a `format!` for the project header plus one `format!` and `push_str` per note bullet into a fresh `String` per project. Cost scales linearly with projects times notes per day — exactly the dimension that grows as the user logs longer, more detailed days — and is currently paid thirty times a second regardless of whether anything changed. The list content is a pure function of `TimeTrackingData`, which only changes on a reload.
 - Blocked by: —
 - Notes: The `ListState` (selection and scroll) must stay mutable and outside the cached body; only the item text is memoized. W28 changes how these lines are built and makes them width-dependent, so sequence the two deliberately to avoid rework.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W14. Stop printing the webserver ctrl-c message on a TUI-only launch (TUI/startup — cli/src/main.rs:91)
 - Lens: ux
@@ -138,7 +148,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - What: Print the "Other jobs are running (webserver or tui), press ctrl-c to quit (webserver)" line only when the webserver task was actually spawned; for a TUI-only run print nothing (the TUI owns the screen and documents its own quit key) or a TUI-specific line emitted before the alternate screen is entered.
 - Why: In `--tui` mode this line is written to stdout while the spawned TUI task is concurrently entering the alternate screen, so it either corrupts the first frame or lurks on the normal screen as the first thing the user sees after quitting. Either way it teaches ctrl-c as the quit key and blames a webserver that is not running, when `q` is the actual quit key — a confusing first and last impression of the only surface that ran.
 - Blocked by: —
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W15. View the raw day-file text without leaving the TUI (TUI/day-summary — src/tui/ui.rs:55)
 - Lens: feature-gap
@@ -147,7 +158,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The prefix/suffix fencing feature means a day file can be full of text yet parse to zero entries, and the TUI's response is an unhelpful "No data found" with no way to see why short of suspending to `$EDITOR`. Users on the Obsidian daily-note setup hit this whenever a fence marker gets moved or a time range is mistyped.
 - Blocked by: —
 - Notes: Pairs with W2 (warnings tell you something is wrong, the raw view shows you what) and with W11's "file exists but has no entries" state.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W16. Add a jump-to-date prompt that accepts natural-language dates (TUI/navigation — src/tui/app.rs:236)
 - Lens: feature-gap
@@ -156,7 +168,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The CLI user can type `ttcli 'last friday'`, but the TUI user, looking at a rendered calendar of that very month, cannot jump to a visible date. Coarse motions shorten the walk; only a prompt makes an arbitrary date one action away, and every intermediate step today fires a full three-month populated-date rescan.
 - Blocked by: —
 - Notes: Split out of the same lens finding as W1 because the effort differs materially — W1 is keymap arms, this needs a new input component. That component is shared with W22's append prompt, so whichever lands second is cheap, and W20's mode enum is what makes key capture clean rather than a fourth boolean flag.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W17. Add a weekly per-project rollup pane to the TUI (TUI/weekly — src/tui/app.rs:194)
 - Lens: feature-gap
@@ -183,7 +196,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `App::new()` takes zero arguments and reaches for a `OnceLock` initialised by `Config::init(true)`, which runs `Args::parse()` — so config is immutable for the process lifetime and constructing an `App` outside the real binary parses argv. That blocks a settings pane that flips `week_start_day` live (the bar chart and week query would keep the frozen value), a switch-data-directory command inside the TUI, and any rendering test of `ui.rs` against ratatui's `TestBackend`; there are currently zero tests under src/tui, so every TUI change is verified by hand.
 - Blocked by: —
 - Notes: This is the prerequisite plumbing for W21 — styles are hardcoded across colors.rs, project_list.rs:7-10 (a second private copy of the row backgrounds) and an inline `SLATE.c400` italic in calendar.rs, and with no `Theme` in the context there is no seam to hang a config-driven theme on. W12 removes one of the same in-render `Config::get()` calls cheaply if this lands later.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W20. Replace view booleans with a mode enum and focus-aware key dispatch (TUI/navigation — src/tui/ui.rs:13)
 - Lens: unblock-debt
@@ -192,7 +206,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `ui.rs::render` early-returns on `zoom_bar`, lays out the day view otherwise, and paints `HelpPopup` last if `show_help`, while `handle_key_events` (app.rs:212) forwards every keypress to the project list before matching app keys, with no awareness of what is on screen — so with the help popup open, `j`/`k` still move the hidden list and `h`/`l` still change the date behind it. Any view that needs to capture text is unbuildable, and a fourth and fifth boolean would make the render function's branch matrix combinatorial.
 - Blocked by: —
 - Notes: This is the clean substrate for W16's date-jump prompt, W22's append prompt and W6's modal help; each of those is a one-off hack without it.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ## High
 
@@ -203,7 +218,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: On a light-background terminal (Solarized Light, default macOS Terminal, most IDE-embedded shells) the near-black slate row stripes sit as dark blocks over a white page and the pale blue calendar days lose contrast; over SSH to an 8/16-color `TERM` the truecolor values are approximated unpredictably. A theme seam plus a palette-inheriting preset makes the tool legible everywhere the user works instead of only in a dark 24-bit terminal, and is the prerequisite for any later high-contrast or accessibility option.
 - Blocked by: —
 - Notes: Grep confirms no occurrence of `NO_COLOR`, `COLORTERM` or any theme concept anywhere in the repo. Styles are split across colors.rs, project_list.rs module-level consts and an inline italic in calendar.rs, so the seam should absorb all three. Depends on W19 for the context that carries the resolved `Theme`; doing it first means threading the theme by hand.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W22. Append a time entry from inside the TUI with `a` (TUI/editing — src/tui/app.rs:140)
 - Lens: feature-gap
@@ -221,7 +237,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: A single arrow-key press triggers `find_populated_dates` over about ninety dates plus `get_weekly_data` over seven, so roughly ninety-seven `parse_day` calls. The cache stores only the file `String`, so all of those markdown parses re-run on every keypress even on a full cache hit, each one's cost scaling with the length of the day file. The CLI and GraphQL surfaces call `parse_day` a handful of times per process; only the long-lived TUI amortizes a parse cache, and only the TUI pays the multiplier on every navigation. This is what will make holding `l`/`h` sluggish as days get longer.
 - Blocked by: —
 - Notes: `TimeTrackingData` would need `Clone`, or storage behind an `Arc`, to hand out cached copies; caching just the has-data and total-minutes summary is a smaller change that still covers both hot TUI callers. Pairs with W27 — the directory listing tells you which files exist, this keeps you from re-parsing them.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W24. Expose a cloneable AppEvent sender and move loads off the event loop (TUI/event-loop — src/tui/event.rs:98)
 - Lens: unblock-debt
@@ -230,7 +247,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: `EventHandler::send` takes `&mut self` and the sender is private, so only `App` can emit an app event while it holds the loop — a `notify` watcher or poll task is unimplementable without a sender clone, which matters precisely because the intended workflow is editing the day file in neovim while the TUI is open. The same seam is what makes loads blocking: `handle_app_event` awaits the load inline, so holding `l`/`h` to scrub dates stalls the UI on three concurrent file scans with no way to render a spinner or cancel a superseded load.
 - Blocked by: —
 - Notes: This is the robust form of W5's mtime polling (a background watcher posting events rather than a stat inside `tick`), and it is what lets W3 render a real loading state instead of a frozen frame.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W25. Generate the keymap, help popup, and README from one binding table (TUI/keymap — src/tui/app.rs:227)
 - Lens: unblock-debt
@@ -239,7 +257,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The real keymap is a `match key_event.code` arm in app.rs plus a second match in `ProjectListWidget::handle_key_event`; the user-facing help is a hardcoded string literal at help_popup.rs:14-19; the README has a third copy. They have already drifted by four bindings. A binding table unblocks user-configurable keybindings from config.toml (a natural request for a vim-user-oriented tool that already ships a neovim plugin), a which-key style overlay showing what each key does in the current mode, and a help pane that cannot drift because it is generated.
 - Blocked by: —
 - Notes: Structurally distinct from W6, which corrects the drifted text now; this is what stops it recurring. Every keymap item on this list (W1, W10, W15, W16, W17, W22) adds rows, so landing this early keeps their help entries free.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W26. Make the layout responsive with breakpoints and a minimum-size notice (TUI/layout — src/tui/ui.rs:24)
 - Lens: terminal-robustness
@@ -247,7 +266,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - What: Make the top-level layout size-aware instead of the fixed `Vertical[Length(12), Min(9)]` with `Horizontal[Length(24), Fill(1)]` inside. Below roughly 100 columns drop the calendar and give the chart full width (or the reverse on a toggle key); below roughly 22 rows collapse the chart band so the project list keeps usable height; below a hard minimum render a centered "terminal too small" notice naming the required size rather than a mangled frame. Size the help popup with `Constraint::Length`-based clamping instead of a flat 60 percent square, and on very wide terminals cap the chart width and center the app so bars do not stretch into unreadable slabs.
 - Why: On a stock 80x24 terminal the fixed band leaves the project list twelve rows, of which the header consumes two and the footer one — nine rows for a day that may hold several projects with note bullets, which is the actual content the user came to read. Narrower than 24 columns the calendar consumes everything and the chart is squeezed to nothing. Adaptive layout turns the TUI into something usable in a tmux split or a small side pane, which is exactly where a time tracker gets glanced at during the day.
 - Blocked by: —
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W27. Rescan populated dates only when the visible month changes (TUI — src/tui/app.rs:171)
 - Lens: scale-perf
@@ -256,7 +276,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: Every arrow-key press spawns a `JoinSet` with one task per date across prev, current and next month, each walking `parse_day` into `read_day` into `get_file_path`, where `get_file_path` itself re-resolves the home directory and stats the data directory before the file's own `exists()` and `metadata()` calls. That is several hundred syscalls plus ninety parses to recompute a month-population map that is identical twenty-nine days out of thirty, and it stays O(90) per keypress as years of files accumulate. A directory listing is one syscall regardless of history size and is the foundation for a year heatmap or jump-to-previous-populated-day later.
 - Blocked by: —
 - Notes: `get_file_path` creating the data directory as a side effect (data_svc.rs:63) is what makes it expensive to call ninety-seven times per load; a `read_dir`-based scan sidesteps that path entirely. Pairs with W23, and it is the change that makes W1's month stepping cheap rather than a full rescan per press.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W28. Wrap or ellipsize long project names and note bullets (TUI/project-list — src/tui/project_list.rs:237)
 - Lens: terminal-robustness
