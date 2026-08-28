@@ -29,7 +29,7 @@ impl<'a> WeeklyBarChart<'a> {
 
     /// Calculate total hours for the week
     fn calculate_total_weekly_hours(&self) -> f64 {
-        if let Some(ref week_data) = self.week_data {
+        if let Some(week_data) = self.week_data {
             let total_minutes: u32 = week_data.values().sum();
             total_minutes as f64 / 60.0
         } else {
@@ -38,7 +38,7 @@ impl<'a> WeeklyBarChart<'a> {
     }
 
     fn prepare_bars(&self, bar_width: u16) -> Vec<Bar<'_>> {
-        let Some(ref week_data) = self.week_data else {
+        let Some(week_data) = self.week_data else {
             return vec![]; // Empty data if not loaded
         };
 

@@ -255,7 +255,7 @@ pub async fn show_weekly_summary(
 
     if !week_projects.is_empty() {
         let mut projects: Vec<_> = week_projects.iter().collect();
-        projects.sort_by(|a, b| b.1.0.cmp(&a.1.0)); // Sort by total minutes descending
+        projects.sort_by_key(|a| std::cmp::Reverse(a.1.0)); // Sort by total minutes descending
         formatter.display_weekly_projects(&projects);
     }
 
