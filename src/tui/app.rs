@@ -1,9 +1,10 @@
-use crate::time_utils::{get_week_dates, parse_weekday};
+use crate::time_utils::get_week_dates;
 use std::{collections::HashMap, io::stdout};
 
-use crate::{Config, DataService, editor::open_in_editor};
+use crate::{DataService, editor::open_in_editor};
 
 use super::{
+    context::TuiContext,
     event::{AppEvent, Event, EventHandler},
     project_list::ProjectListWidget,
 };
@@ -28,6 +29,8 @@ pub struct App {
     pub zoom_bar: bool,
     /// Is help popup currently being shown
     pub show_help: bool,
+    /// Is a load of the active date's data currently in flight
+    pub loading: bool,
     /// Current active date
     pub active_date: Date,
     /// Event handler.
@@ -40,33 +43,54 @@ pub struct App {
     pub populated_dates: Vec<Date>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
+    /// Environment the app runs against (week start, data dir, theme, ...)
+    pub ctx: TuiContext,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    /// Constructs a new instance of [`App`], opened on today's date.
+    ///
+    /// Everything the app needs from the environment arrives in `ctx`; `App`
+    /// never reads the global `Config` singleton, so it stays constructible
+    /// from a test.
+    pub fn new(ctx: TuiContext) -> Self {
         Self {
             running: true,
             zoom_bar: false,
             show_help: false,
-            active_date: OffsetDateTime::now_local()
-                .unwrap_or_else(|_| OffsetDateTime::now_utc())
-                .date(),
+            loading: false,
+            active_date: today(),
             events: EventHandler::new(),
             data: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
             weekly_data: HashMap::new(),
+            ctx,
         }
     }
-}
 
-impl App {
-    /// Constructs a new instance of [`App`].
-    pub fn new() -> Self {
-        Self {
-            active_date: Config::get().date,
-            ..Default::default()
-        }
+    /// Open on `date` rather than today.
+    #[must_use]
+    pub fn with_active_date(mut self, date: Date) -> Self {
+        self.active_date = date;
+        self
+    }
+
+    /// Seed the app with already-parsed data, as a disk load would.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_data(mut self, data: TimeTrackingData) -> Self {
+        self.set_day_data(Some(data));
+        self
+    }
+
+    /// Seed the app by parsing the body of a day file.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_raw_content(self, content: &str) -> Self {
+        use time_tracking_parser::parse_time_tracking_data;
+
+        self.with_data(parse_time_tracking_data(content, None, None))
     }
 
     /// Run the application's main loop.
@@ -113,9 +137,7 @@ impl App {
                 self.events.send(AppEvent::ReloadFromDisk);
             }
             AppEvent::Today => {
-                self.active_date = OffsetDateTime::now_local()
-                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
-                    .date();
+                self.active_date = today();
                 self.events.send(AppEvent::ReloadFromDisk);
             }
             AppEvent::ToggleHelp => self.show_help = !self.show_help,
@@ -184,9 +206,7 @@ impl App {
             .replace_day(next_month.month().length(next_month.year()))
             .unwrap_or(next_month);
 
-        let week_start_day = parse_weekday(Config::get().get_week_start_day())
-            .context("Could not parse week start day")?;
-        let week_dates = get_week_dates(&active_date, week_start_day);
+        let week_dates = get_week_dates(&active_date, self.ctx.week_start_day);
 
         // Run all three data loads concurrently
         let (day_result, populated_result, weekly_result) = tokio::join!(
@@ -196,18 +216,7 @@ impl App {
         );
 
         // Apply results
-        if let Some(data) = day_result? {
-            if !data.projects.is_empty() {
-                self.project_list_widget = Some(ProjectListWidget::new(&data));
-                self.data = Some(data);
-            } else {
-                self.data = None;
-                self.project_list_widget = None;
-            }
-        } else {
-            self.data = None;
-            self.project_list_widget = None;
-        }
+        self.set_day_data(day_result?);
         self.populated_dates = populated_result.context("Finding populated dates")?;
         self.weekly_data = weekly_result.context("Loading weekly data")?;
 
@@ -252,6 +261,28 @@ impl App {
     pub fn quit(&mut self) {
         self.running = false;
     }
+
+    /// Install a freshly loaded day, dropping the project list when the day
+    /// holds no projects so the "no data" placeholder renders instead.
+    fn set_day_data(&mut self, data: Option<TimeTrackingData>) {
+        match data {
+            Some(data) if !data.projects.is_empty() => {
+                self.project_list_widget = Some(ProjectListWidget::new(&data, &self.ctx.theme));
+                self.data = Some(data);
+            }
+            _ => {
+                self.data = None;
+                self.project_list_widget = None;
+            }
+        }
+    }
+}
+
+/// Today's date in the local timezone, falling back to UTC.
+fn today() -> Date {
+    OffsetDateTime::now_local()
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+        .date()
 }
 
 /// Return the first day of the month `offset` months from `date` (negative = previous).

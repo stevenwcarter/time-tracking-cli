@@ -1,20 +1,18 @@
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::prelude::*;
 use ratatui::widgets::*;
-use ratatui::{prelude::*, style::palette::tailwind::*};
 
 use time_tracking_parser::TimeTrackingData;
 
-const TODO_HEADER_STYLE: Style = Style::new().fg(SLATE.c100).bg(BLUE.c800);
-const NORMAL_ROW_BG: Color = SLATE.c950;
-const ALT_ROW_BG_COLOR: Color = SLATE.c900;
-const SELECTED_STYLE: Style = Style::new().bg(BLUE.c950).add_modifier(Modifier::BOLD);
+use super::theme::Theme;
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct ProjectListWidget {
     start_time: String,
     end_time: String,
     total_minutes: u32,
     project_list: ProjectList,
+    theme: Theme,
 }
 
 #[derive(Default, Debug)]
@@ -31,7 +29,7 @@ struct ProjectItem {
 }
 
 impl ProjectListWidget {
-    pub fn new(data: &TimeTrackingData) -> Self {
+    pub fn new(data: &TimeTrackingData, theme: &Theme) -> Self {
         let mut items: Vec<ProjectItem> = Vec::new();
         for project in &data.projects {
             let name = project.name.clone();
@@ -55,6 +53,7 @@ impl ProjectListWidget {
             end_time: data.formatted_end_time(),
             total_minutes: data.total_minutes,
             project_list: ProjectList { items, state },
+            theme: theme.clone(),
         }
     }
 
@@ -197,7 +196,7 @@ impl ProjectListWidget {
             .title(Line::raw("Project Summaries").centered())
             .borders(Borders::TOP)
             .border_set(symbols::border::EMPTY)
-            .border_style(TODO_HEADER_STYLE);
+            .border_style(self.theme.list_header);
 
         let items: Vec<ListItem> = self
             .project_list
@@ -205,14 +204,13 @@ impl ProjectListWidget {
             .iter()
             .enumerate()
             .map(|(i, project_item)| {
-                let color = alternate_colors(i);
-                ListItem::from(project_item).bg(color)
+                ListItem::from(project_item).style(alternate_row_style(&self.theme, i))
             })
             .collect();
 
         let list = List::new(items)
             .block(block)
-            .highlight_style(SELECTED_STYLE)
+            .highlight_style(self.theme.selection)
             .highlight_symbol(">>")
             .highlight_spacing(HighlightSpacing::Always)
             .repeat_highlight_symbol(true)
@@ -222,11 +220,12 @@ impl ProjectListWidget {
     }
 }
 
-const fn alternate_colors(i: usize) -> Color {
+/// Background style for row `i`, alternating so long lists stay readable.
+fn alternate_row_style(theme: &Theme, i: usize) -> Style {
     if i.is_multiple_of(2) {
-        NORMAL_ROW_BG
+        theme.row_bg
     } else {
-        ALT_ROW_BG_COLOR
+        theme.alt_row_bg
     }
 }
 

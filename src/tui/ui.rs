@@ -11,12 +11,7 @@ use super::widgets::HelpPopup;
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if self.zoom_bar {
-            let mut bar_chart = WeeklyBarChart::new(self.active_date);
-            // Pre-populate with loaded data if available
-            if !self.weekly_data.is_empty() {
-                bar_chart.set_weekly_data(&self.weekly_data);
-            }
-            bar_chart.render(area, buf);
+            self.weekly_bar_chart().render(area, buf);
             return;
         }
         let chunks = Layout::default()
@@ -30,15 +25,11 @@ impl Widget for &mut App {
         let calendar_area = header_area[0];
         let bar_chart_area = header_area[1];
 
-        Calendar::new(self).render(calendar_area, buf);
+        Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
+            .render(calendar_area, buf);
 
         // Create and render the weekly bar chart
-        let mut bar_chart = WeeklyBarChart::new(self.active_date);
-        // Pre-populate with loaded data if available
-        if !self.weekly_data.is_empty() {
-            bar_chart.set_weekly_data(&self.weekly_data);
-        }
-        bar_chart.render(bar_chart_area, buf);
+        self.weekly_bar_chart().render(bar_chart_area, buf);
 
         if let Some(group_rect) = bounding_rect(&header_area) {
             Block::default()
@@ -57,7 +48,7 @@ impl Widget for &mut App {
         } else {
             let tt_par = Paragraph::new("No data found for date")
                 .block(block)
-                .fg(Color::Yellow)
+                .style(self.ctx.theme.warning)
                 .alignment(Alignment::Left);
             tt_par.render(chunks[1], buf);
         }
@@ -65,6 +56,19 @@ impl Widget for &mut App {
         if self.show_help {
             HelpPopup::default().render(area, buf);
         }
+    }
+}
+
+impl App {
+    /// Build the weekly bar chart for the active date, pre-populated with any
+    /// week data that has already been loaded.
+    fn weekly_bar_chart(&self) -> WeeklyBarChart<'_> {
+        let mut bar_chart =
+            WeeklyBarChart::new(self.active_date, self.ctx.week_start_day, &self.ctx.theme);
+        if !self.weekly_data.is_empty() {
+            bar_chart.set_weekly_data(&self.weekly_data);
+        }
+        bar_chart
     }
 }
 

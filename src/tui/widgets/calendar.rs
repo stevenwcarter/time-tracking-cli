@@ -1,30 +1,37 @@
 use ratatui::prelude::*;
-use ratatui::style::palette::tailwind::*;
 use ratatui::widgets::calendar::*;
 use ratatui::widgets::*;
+use time::Date;
 
-use super::colors::WidgetColors;
-use crate::tui::app::App;
+use crate::tui::theme::Theme;
 
-pub struct Calendar<'a>(&'a App);
+pub struct Calendar<'a> {
+    active_date: Date,
+    populated_dates: &'a [Date],
+    theme: &'a Theme,
+}
 
 impl<'a> Calendar<'a> {
-    pub fn new(app: &'a App) -> Self {
-        Self(app)
+    pub fn new(active_date: Date, populated_dates: &'a [Date], theme: &'a Theme) -> Self {
+        Self {
+            active_date,
+            populated_dates,
+            theme,
+        }
     }
+
     fn build_event_store(&self) -> CalendarEventStore {
         let mut es = CalendarEventStore::default();
-        self.0
-            .populated_dates
+        self.populated_dates
             .iter()
-            .for_each(|d| es.add(*d, WidgetColors::populated_style()));
-        es.add(self.0.active_date, WidgetColors::active_style());
+            .for_each(|d| es.add(*d, self.theme.populated_date));
+        es.add(self.active_date, self.theme.active_date);
 
         es
     }
 }
 
-impl<'a> Widget for &mut Calendar<'a> {
+impl Widget for &mut Calendar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
@@ -40,11 +47,11 @@ impl<'a> Widget for &mut Calendar<'a> {
 
         let es = self.build_event_store();
 
-        Monthly::new(self.0.active_date, es)
+        Monthly::new(self.active_date, es)
             .block(calendar_block)
-            .show_surrounding(Style::new().fg(SLATE.c400).add_modifier(Modifier::ITALIC))
-            .show_month_header(Style::new().bold())
-            .show_weekdays_header(Style::new().italic())
+            .show_surrounding(self.theme.inactive_date)
+            .show_month_header(Style::new().add_modifier(Modifier::BOLD))
+            .show_weekdays_header(Style::new().add_modifier(Modifier::ITALIC))
             .render(area, buf);
     }
 }

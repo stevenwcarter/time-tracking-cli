@@ -3,22 +3,22 @@ use ratatui::widgets::*;
 use std::collections::HashMap;
 use time::{Date, Weekday};
 
-use super::colors::WidgetColors;
-use crate::time_utils::WeekdayExt;
-use crate::{
-    Config,
-    time_utils::{get_week_dates, parse_weekday},
-};
+use crate::time_utils::{WeekdayExt, get_week_dates};
+use crate::tui::theme::Theme;
 
 pub struct WeeklyBarChart<'a> {
     active_date: Date,
+    week_start_day: Weekday,
+    theme: &'a Theme,
     week_data: Option<&'a HashMap<Date, u32>>, // Date -> total minutes
 }
 
 impl<'a> WeeklyBarChart<'a> {
-    pub fn new(active_date: Date) -> Self {
+    pub fn new(active_date: Date, week_start_day: Weekday, theme: &'a Theme) -> Self {
         Self {
             active_date,
+            week_start_day,
+            theme,
             week_data: None,
         }
     }
@@ -42,9 +42,7 @@ impl<'a> WeeklyBarChart<'a> {
             return vec![]; // Empty data if not loaded
         };
 
-        let week_start_day =
-            parse_weekday(Config::get().get_week_start_day()).unwrap_or(Weekday::Saturday);
-        let week_dates = get_week_dates(&self.active_date, week_start_day);
+        let week_dates = get_week_dates(&self.active_date, self.week_start_day);
 
         week_dates
             .iter()
@@ -76,11 +74,11 @@ impl<'a> WeeklyBarChart<'a> {
                 };
 
                 let style = if *date == self.active_date {
-                    WidgetColors::active_style()
+                    self.theme.active_date
                 } else if *minutes > 0 {
-                    WidgetColors::populated_style()
+                    self.theme.populated_date
                 } else {
-                    WidgetColors::inactive_style()
+                    self.theme.inactive_date
                 };
 
                 Bar::default()
@@ -171,7 +169,7 @@ impl Widget for &mut WeeklyBarChart<'_> {
         };
 
         Paragraph::new(total_text)
-            .style(Style::default().fg(Color::Yellow))
+            .style(self.theme.warning)
             .render(total_area, buf);
 
         // Render the chart in the inner area
