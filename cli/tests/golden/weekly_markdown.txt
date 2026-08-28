@@ -1,0 +1,96 @@
+# Weekly Summary
+**Period:** Saturday 2026-08-22 to Friday 2026-08-28
+
+
+## Summary
+- **Total Time:** 22.75 hours
+- **Dead Time:** 2.50 hours
+
+
+## Projects
+### client-bd
+**Time:** 9.00 hours
+**Notes:**
+- Saturday 2026-08-22: Kickoff planning
+- Monday 2026-08-24: Reviewed the migration plan
+- Tuesday 2026-08-25: Client call
+- Wednesday 2026-08-26: Feature development
+- Friday 2026-08-28: Wrap-up client-bd tasks
+
+### internal
+**Time:** 7.50 hours
+**Notes:**
+- Saturday 2026-08-22: Standup
+- Monday 2026-08-24: Sprint planning
+- Tuesday 2026-08-25: Code review
+- Wednesday 2026-08-26: Team sync
+- Friday 2026-08-28: Retro
+
+### admin
+**Time:** 4.75 hours
+**Notes:**
+- Saturday 2026-08-22: Filed expenses
+- Monday 2026-08-24: Expense report
+- Wednesday 2026-08-26: Timesheet cleanup
+- Friday 2026-08-28: Weekly report
+
+### ops
+**Time:** 1.50 hours
+**Notes:**
+- Tuesday 2026-08-25: System maintenance
+- Friday 2026-08-28: Equipment audit
+
+
+## Daily Breakdowns
+
+### Saturday 2026-08-22
+
+  **Total Time:** 4.50 hours
+  **Dead Time:** 1.50 hours
+  **Projects:**
+    - **admin** - 1.00 hours      - Filed expenses
+    - **client-bd** - 2.00 hours      - Kickoff planning
+    - **internal** - 1.50 hours      - Standup
+
+### Sunday 2026-08-23
+
+  *No time tracking file found*
+### Monday 2026-08-24
+
+  **Total Time:** 6.25 hours
+  **Dead Time:** 1.00 hours
+  **Projects:**
+    - **admin** - 2.25 hours      - Expense report
+    - **client-bd** - 2.50 hours      - Reviewed the migration plan
+    - **internal** - 1.50 hours      - Sprint planning
+
+### Tuesday 2026-08-25
+
+  **Total Time:** 4.00 hours
+  **Projects:**
+    - **client-bd** - 1.50 hours      - Client call
+    - **internal** - 2.00 hours      - Code review
+    - **ops** - 0.50 hours      - System maintenance
+
+### Wednesday 2026-08-26
+
+  **Total Time:** 4.00 hours
+  **Projects:**
+    - **admin** - 1.00 hours      - Timesheet cleanup
+    - **client-bd** - 2.00 hours      - Feature development
+    - **internal** - 1.00 hours      - Team sync
+
+### Thursday 2026-08-27
+
+  *No time tracking data found*
+### Friday 2026-08-28
+
+  **Total Time:** 4.00 hours
+  **Projects:**
+    - **admin** - 0.50 hours      - Weekly report
+    - **client-bd** - 1.00 hours      - Wrap-up client-bd tasks
+    - **internal** - 1.50 hours      - Retro
+    - **ops** - 1.00 hours      - Equipment audit
+
+
+================================================================================

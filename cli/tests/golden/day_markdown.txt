@@ -1,0 +1,7 @@
+**Total Time:** 6.25 hours
+**Dead Time:** 1.00 hours
+**Projects:**
+  - **admin** - 2.25 hours    - Expense report
+  - **client-bd** - 2.50 hours    - Reviewed the migration plan
+  - **internal** - 1.50 hours    - Sprint planning
+
