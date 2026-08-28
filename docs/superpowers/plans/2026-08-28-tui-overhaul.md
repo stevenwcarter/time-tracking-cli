@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Rust **edition 2024** for every crate; `rustfmt.toml` is edition 2024 and must stay equal to every workspace crate's edition.
+- Rust **edition 2024** for every crate. This repo has **no `rustfmt.toml`** — verified — so `cargo fmt --all` takes the edition from each `Cargo.toml`, and both crates are already 2024. Do not add a `rustfmt.toml`; if you ever do, it must be edition 2024 to match, or `cargo fmt --all` and a bare `rustfmt` will disagree and leave permanent stray diffs.
 - `cargo clippy --all-targets --all-features` must be **warning-free**; `cargo fmt --all` must produce no diff.
 - Conventional commits, enforced by Husky + commitlint: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
 - **`ttcli` stdout must not change.** Task 1 pins it. The single intentional divergence is weekly project *tie* ordering, which is unspecified today.
