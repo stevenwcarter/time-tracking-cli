@@ -1,5 +1,5 @@
 use crate::{
-    Config, DataService, DATE_FORMAT,
+    Config, DATE_FORMAT, DataService,
     context::GraphQLContext,
     graphql::{Schema, create_schema},
 };
@@ -140,7 +140,10 @@ pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
-    info!("Time Tracking Web Server running on http://localhost:{}", port);
+    info!(
+        "Time Tracking Web Server running on http://localhost:{}",
+        port
+    );
     info!("Access your time tracking data via the web interface");
 
     axum::serve(listener, app)

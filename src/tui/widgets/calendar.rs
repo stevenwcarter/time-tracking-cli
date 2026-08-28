@@ -3,8 +3,8 @@ use ratatui::style::palette::tailwind::*;
 use ratatui::widgets::calendar::*;
 use ratatui::widgets::*;
 
-use crate::tui::app::App;
 use super::colors::WidgetColors;
+use crate::tui::app::App;
 
 pub struct Calendar<'a>(&'a App);
 

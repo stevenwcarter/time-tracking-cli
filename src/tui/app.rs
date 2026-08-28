@@ -49,8 +49,8 @@ impl Default for App {
             zoom_bar: false,
             show_help: false,
             active_date: OffsetDateTime::now_local()
-                    .unwrap_or_else(|_| OffsetDateTime::now_utc())
-                    .date(),
+                .unwrap_or_else(|_| OffsetDateTime::now_utc())
+                .date(),
             events: EventHandler::new(),
             data: None,
             project_list_widget: None,
@@ -176,7 +176,8 @@ impl App {
         let current_month = active_date
             .replace_day(1)
             .context("could not set day to 1")?;
-        let prev_month = month_offset(current_month, -1).context("could not compute previous month")?;
+        let prev_month =
+            month_offset(current_month, -1).context("could not compute previous month")?;
         let next_month = month_offset(current_month, 1).context("could not compute next month")?;
         let start_date = prev_month;
         let end_date = next_month

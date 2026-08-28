@@ -23,8 +23,7 @@ impl Query {
     #[graphql(name = "dataForDate")]
     pub async fn data_for_date(context: &GraphQLContext, date: String) -> FieldResult<DayData> {
         let state = &context.app_state;
-        let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| INVALID_DATE_MSG)?;
+        let date = Date::parse(&date, DATE_FORMAT).map_err(|_| INVALID_DATE_MSG)?;
 
         get_day_data_impl(date, state).await.map_err(|e| e.into())
     }
@@ -36,8 +35,7 @@ impl Query {
         _context: &GraphQLContext,
         date: String,
     ) -> FieldResult<String> {
-        let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| INVALID_DATE_MSG)?;
+        let date = Date::parse(&date, DATE_FORMAT).map_err(|_| INVALID_DATE_MSG)?;
 
         DataService::get()
             .create_day_file_if_not_exists(&date)
@@ -60,8 +58,7 @@ impl Query {
         week_start_day: Option<String>,
     ) -> FieldResult<WeekData> {
         let state = &context.app_state;
-        let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| INVALID_DATE_MSG)?;
+        let date = Date::parse(&date, DATE_FORMAT).map_err(|_| INVALID_DATE_MSG)?;
 
         let week_start_day = week_start_day
             .or_else(|| state.config.week_start_day.clone())
@@ -114,8 +111,7 @@ impl Mutation {
         date: String,
         content: String,
     ) -> FieldResult<String> {
-        let date = Date::parse(&date, DATE_FORMAT)
-            .map_err(|_| INVALID_DATE_MSG)?;
+        let date = Date::parse(&date, DATE_FORMAT).map_err(|_| INVALID_DATE_MSG)?;
 
         let time_tracking_dir = get_time_tracking_dir()
             .map_err(|e| format!("Failed to get time tracking directory: {}", e))?;

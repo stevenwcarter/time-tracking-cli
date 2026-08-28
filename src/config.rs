@@ -205,9 +205,7 @@ impl Config {
     }
 
     fn init(use_args: bool) -> &'static Config {
-        CONFIG.get_or_init(|| {
-            Config::load(use_args).expect("Could not load configuration")
-        })
+        CONFIG.get_or_init(|| Config::load(use_args).expect("Could not load configuration"))
     }
 
     pub fn get_no_args() -> &'static Config {
@@ -299,8 +297,8 @@ impl Config {
                     // Parse the provided date
 
                     use interim::{Dialect, parse_date_string};
-                    let now = OffsetDateTime::now_local()
-                        .unwrap_or_else(|_| OffsetDateTime::now_utc());
+                    let now =
+                        OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
                     let date_time = parse_date_string(&date_str, now, Dialect::Us);
                     match date_time {
                         Ok(date_time) => date_time.date(),
@@ -396,9 +394,7 @@ impl Config {
 }
 
 fn write_config_comments(file: &mut impl Write) -> Result<()> {
-    file.write_all(
-        b"\n# Optional template file which will be used to create each new day note\n",
-    )?;
+    file.write_all(b"\n# Optional template file which will be used to create each new day note\n")?;
     file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
     file.write_all(
         b"\n# Optional prefix to look for in a file before starting to parse time notes\n",
