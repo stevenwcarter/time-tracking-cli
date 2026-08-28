@@ -146,7 +146,7 @@ pub struct WeeklyProject { pub name: String, pub total_minutes: u32, pub notes: 
 pub struct WeeklySummary {
     pub total_minutes: u32,
     pub dead_time_minutes: u32,
-    pub projects: Vec<WeeklyProject>,   // sorted by name for determinism
+    pub projects: Vec<WeeklyProject>,   // sorted by (total_minutes desc, name asc)
     pub warnings: Vec<String>,
     pub per_day: HashMap<Date, u32>,
 }
@@ -154,6 +154,13 @@ pub async fn get_weekly_summary(&self, dates: &[Date]) -> Result<WeeklySummary>;
 ```
 
 `show_weekly_summary` becomes a formatter call over that struct; `get_weekly_data` becomes `summary.per_day`. **The characterization test in Phase 1 Task 1 is written and green before any of this moves** (see Invariants).
+
+Two things this extraction changes deliberately, both discovered while reading the current code:
+
+1. **Ties become deterministic.** Today `show_weekly_summary` does `week_projects.iter()` into `projects.sort_by(|a, b| b.1.0.cmp(&a.1.0))` — total minutes descending over a `HashMap` iteration order, so two projects with equal minutes come out in an arbitrary, run-to-run-varying order. `WeeklySummary.projects` sorts by `(total_minutes desc, name asc)`, which preserves the intended primary ordering and makes the tie case stable. The characterization test therefore uses a tie-free fixture for its byte-for-byte assertion and a separate tie fixture asserting stability across repeated runs — a guarantee the current code does not provide.
+2. **The formatter trait's weekly signature changes** from `weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))])` to `weekly_projects(&self, projects: &[WeeklyProject])`, with the same change to `display_weekly_projects`. All three impls (`default`, `plain`, `markdown`) are updated; each body's formatting is untouched, so rendered output is unchanged. This is what lets the TUI's week pane (W17) consume the same data the CLI prints.
+
+Note ordering *within* a project is unchanged: notes are pushed while iterating `week_dates` in order, so they stay in day order.
 
 ---
 
@@ -270,7 +277,7 @@ daily_target_hours = 8
 
 Recorded so a later change touching these funnels can grep for who relies on them.
 
-1. **`ttcli` stdout is unchanged by the W18 extraction.** W18's own note claims "the CLI path keeps identical output because the formatter calls stay in `display/mod.rs`". That is an appeal to a current invariant, not a test — and it is exactly the load-bearing case. Task 1.1 writes the characterization test **first**, covering `ttcli` and `ttcli --week` across the default, plain, and markdown formatters against a fixture directory. No aggregation moves until it is green.
+1. **`ttcli` stdout is unchanged by the W18 extraction.** W18's own note claims "the CLI path keeps identical output because the formatter calls stay in `display/mod.rs`". That is an appeal to a current invariant, not a test — and it is exactly the load-bearing case. Task 1.1 writes the characterization test **first**, covering `ttcli` and `ttcli --week` across the default, plain, and markdown formatters against a fixture directory. No aggregation moves until it is green. The one intentional divergence is tie ordering, which is unspecified today (see Architecture → W18); the test pins tie-free output byte-for-byte and asserts tie stability separately.
 2. **`TimeTrackingData: Clone`** — W23's parse cache hands out cached copies. Provided by `time-tracking-parser` (`#[derive(Clone, ..)]` on `TimeTrackingData`). If that derive is ever dropped, the cache must move to `Arc<TimeTrackingData>`.
 3. **`interim` is an unconditional dependency**, not feature-gated, so W16's prompt can call `parse_date_string` from `src/tui/` directly.
 4. **`Config` is a process-lifetime `OnceLock`** — `TuiContext` snapshots it once at startup. Correct today; if config ever becomes reloadable, the context needs a refresh path (it is already `&mut`-reachable for that reason).
