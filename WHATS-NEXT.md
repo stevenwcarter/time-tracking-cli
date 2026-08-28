@@ -111,7 +111,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The stated workflow is pasting per-project totals into a timesheet or standup note, but today `Enter` yanks one project's bullets without its hours, so producing a standup paste means N separate `Enter` presses or quitting the TUI to run `ttcli --formatter markdown`. A markdown day summary is one keypress away from data and plumbing that already exist.
 - Blocked by: —
 - Notes: `MarkdownDisplayFormatter` and `PlainDisplayFormatter` are already constructible via `Config::get_formatter()` (src/config.rs:389), and the TUI currently never touches the formatter layer at all. Cleaner on top of W3, which moves clipboard IO into `App` and gives the copy a visible confirmation.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W11. Give the empty-date screen a call to action and keep the help hint (TUI/empty-state — src/tui/ui.rs:58)
 - Lens: ux
@@ -120,7 +121,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: This is the first screen a new user sees if they launch `--tui` before writing anything, and the screen they hit on every weekend or future date. It states a negative fact, offers no way forward, and simultaneously removes the only on-screen pointer to the help popup, at the moment the user most needs the keymap.
 - Blocked by: —
 - Notes: Distinguishing the two empty cases pairs with W15, which renders the raw text when a file exists but parses to nothing.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W12. Hoist week-start derivation out of the bar chart render path (TUI/widgets — src/tui/widgets/weekly_bar_chart.rs:46)
 - Lens: scale-perf
@@ -178,7 +180,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The consultant's actual weekly billing question is "how many hours did client-bd get this week", and timesheets are filed weekly. That answer exists behind `ttcli --week` and behind the SPA's WeeklySummary page but not in the TUI, where the bar chart teases weekly data yet only answers "how long did I work Tuesday" — so the user quits the TUI, runs the CLI, then relaunches to keep browsing. This is the single largest capability the TUI is missing relative to its siblings, and the week's data is already loaded on every date change.
 - Blocked by: —
 - Notes: W18 is the data-layer half that lifts the aggregation out of the stdout printer into `DataService`; ship the two together, since this pane is the consumer that justifies that extraction. If W18 is skipped, the cheapest standalone path is a `DataService::get_weekly_projects(&[Date]) -> Vec<(String, u32, Vec<String>)>` alongside `get_weekly_data` (data_svc.rs:179), reusing the same per-day `parse_day` JoinSet but keeping `data.projects` instead of discarding them.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W18. Extract weekly per-project aggregation out of the stdout printer (TUI/weekly — src/display/mod.rs:189)
 - Lens: unblock-debt
@@ -187,7 +190,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: The per-project weekly rollup already exists but is computed inline inside `show_weekly_summary`, interleaved with `println!` and `formatter.display_*` calls, so the TUI cannot reach it and is left with bare per-day minutes. That blocks the feature closest to the primary user's job: a weekly project-totals pane in the `f` zoom view, a copy-the-week's-totals-as-markdown action reusing the existing `MarkdownDisplayFormatter`, and surfacing week-level parse warnings in the TUI, which today are visible only on CLI stdout.
 - Blocked by: —
 - Notes: Non-TUI seam justified by named TUI features. The CLI path keeps identical output because the formatter calls stay in display/mod.rs. This is the enabling half of W17 — they ship together.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W19. Inject a TuiContext instead of reading the global Config singleton (TUI — src/tui/app.rs:65)
 - Lens: unblock-debt
@@ -286,7 +290,8 @@ Last triage: 2026-08-28 against `main` @ fe7f2b2.
 - Why: Notes are the payload of this tool — the user selects a project and presses `Enter` to copy its bullets into a timesheet or invoice, so seeing them in full matters. Ratatui silently clips any line wider than the list area, so on a narrow or split terminal a long task description just disappears at the right edge with no indication anything was cut. A project name longer than 25 characters also pushes the hours column out of alignment, and a name containing CJK text or an emoji misaligns it even when shorter.
 - Blocked by: —
 - Notes: Touches the same construction path as W13, which memoizes these lines per data load; wrapping is width-dependent, so cache the wrapped body keyed on width or sequence the two deliberately.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
+> in-flight (handed to /ship-it on 2026-08-28)
 
 ### W29. Add Ctrl-Z suspend/resume via a shared terminal-suspension helper (TUI/lifecycle — src/tui/app.rs:140)
 - Lens: terminal-robustness
