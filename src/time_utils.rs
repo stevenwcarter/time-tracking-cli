@@ -33,7 +33,7 @@ pub fn parse_weekday(day_str: &str) -> Result<Weekday> {
     )
 }
 
-pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {
+pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> [Date; 7] {
     // Calculate how many days to go back to reach the week start day
     let current_weekday = date.weekday();
     let days_since_week_start = (current_weekday.number_from_monday() as i32
@@ -44,7 +44,7 @@ pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> Vec<Date> {
     let week_start = *date - Duration::days(days_since_week_start as i64);
 
     // Generate all 7 days of the week
-    (0..7).map(|i| week_start + Duration::days(i)).collect()
+    std::array::from_fn(|i| week_start + Duration::days(i as i64))
 }
 
 pub fn format_day_with_date(date: &Date) -> String {
@@ -195,16 +195,6 @@ mod tests {
         assert_eq!(week_dates[1], date); // Input date
         // Should continue into November
         assert_eq!(week_dates[6], date!(2023 - 11 - 5));
-    }
-
-    #[test]
-    fn get_week_dates_always_returns_seven_days() {
-        // Guards the `.try_into::<[Date; 7]>()` in `App::week_dates_for`: if
-        // this ever stopped holding, that conversion would panic instead of
-        // failing a test.
-        for start in [Weekday::Monday, Weekday::Saturday, Weekday::Sunday] {
-            assert_eq!(get_week_dates(&date!(2026 - 08 - 24), start).len(), 7);
-        }
     }
 
     #[test]

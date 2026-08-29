@@ -13,6 +13,21 @@ pub struct WeeklyBarChart<'a> {
     week_data: Option<&'a HashMap<Date, u32>>, // Date -> total minutes
 }
 
+/// One day's worth of bar data, computed once and then either read by a
+/// test or turned into a `Bar` by `prepare_bars`.
+struct BarValue {
+    date: Date,
+    /// Tracked minutes scaled to tenths of an hour, so `BarChart`'s integer
+    /// axis can carry one decimal place of precision.
+    tenths: u64,
+    /// Raw tracked minutes. `tenths` floors anything under six minutes to
+    /// zero, so style selection reads this instead — a day with a few
+    /// tracked minutes should still count as populated.
+    minutes: u32,
+    /// The text shown at the foot of the bar.
+    text: String,
+}
+
 impl<'a> WeeklyBarChart<'a> {
     pub fn new(active_date: Date, week_dates: &'a [Date; 7], theme: &'a Theme) -> Self {
         Self {
@@ -37,14 +52,10 @@ impl<'a> WeeklyBarChart<'a> {
         }
     }
 
-    /// Per-day bar data for the week: the date, its value scaled to tenths
-    /// of an hour (so `BarChart`'s integer axis can carry one decimal
-    /// place), and the text shown at the foot of the bar.
-    ///
-    /// Split out of `prepare_bars` because `Bar`'s `value` field is private
-    /// in ratatui 0.29, so a test can't read it back off a built `Bar` —
-    /// it asserts against this instead.
-    fn bar_values(&self, bar_width: u16) -> Vec<(Date, u64, String)> {
+    /// Per-day bar data for the week, split out of `prepare_bars` because
+    /// `Bar`'s `value` field is private in ratatui 0.29, so a test can't
+    /// read it back off a built `Bar` — tests assert against this instead.
+    fn bar_values(&self, bar_width: u16) -> Vec<BarValue> {
         let week_data = self.week_data;
 
         self.week_dates
@@ -55,10 +66,10 @@ impl<'a> WeeklyBarChart<'a> {
                     .copied()
                     .unwrap_or(0);
                 let hours = minutes as f64 / 60.0;
-                let value = u64::from(minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
+                let tenths = u64::from(minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
 
                 // Format text to fit within bar width dynamically
-                let text_value = if bar_width >= 5 {
+                let text = if bar_width >= 5 {
                     // Wide bars can show full precision
                     format!("{:.1}h", hours) // "10.5h"
                 } else if bar_width >= 4 {
@@ -73,9 +84,27 @@ impl<'a> WeeklyBarChart<'a> {
                     format!("{:.0}h", hours) // "10h" or "8h"
                 };
 
-                (date, value, text_value)
+                BarValue {
+                    date,
+                    tenths,
+                    minutes,
+                    text,
+                }
             })
             .collect()
+    }
+
+    /// Style for one day's bar: today's date wins over having data, and
+    /// `bar.minutes` (not the scaled `tenths`, which floors anything under
+    /// six minutes to zero) decides whether a day counts as populated.
+    fn style_for(&self, bar: &BarValue) -> Style {
+        if bar.date == self.active_date {
+            self.theme.active_date
+        } else if bar.minutes > 0 {
+            self.theme.populated_date
+        } else {
+            self.theme.inactive_date
+        }
     }
 
     fn prepare_bars(&self, bar_width: u16) -> Vec<Bar<'_>> {
@@ -85,24 +114,15 @@ impl<'a> WeeklyBarChart<'a> {
 
         self.bar_values(bar_width)
             .into_iter()
-            .map(|(date, value, text_value)| {
-                let day_name = date.weekday().short_name();
-
-                // Create label with day name and day of month
-                let label = format!("{}\n{}", day_name, date.day());
-
-                let style = if date == self.active_date {
-                    self.theme.active_date
-                } else if value > 0 {
-                    self.theme.populated_date
-                } else {
-                    self.theme.inactive_date
-                };
+            .map(|bar| {
+                let style = self.style_for(&bar);
+                // Day abbreviation and day of month below the bar
+                let label = format!("{}\n{}", bar.date.weekday().short_name(), bar.date.day());
 
                 Bar::default()
-                    .value(value)
-                    .label(Line::from(label).style(style)) // Day abbreviation and day of month below the bar
-                    .text_value(text_value) // Hours at bottom of bar
+                    .value(bar.tenths)
+                    .label(Line::from(label).style(style))
+                    .text_value(bar.text) // Hours at bottom of bar
                     .style(style)
                     .value_style(style)
             })
@@ -231,11 +251,30 @@ mod tests {
         let values = chart.bar_values(6);
 
         assert_eq!(values.len(), 7);
-        assert_eq!(values[2].0, date!(2026 - 08 - 24));
-        assert_eq!(values[2].1, 80, "8h in tenths of an hour");
+        assert_eq!(values[2].date, date!(2026 - 08 - 24));
+        assert_eq!(values[2].tenths, 80, "8h in tenths of an hour");
         assert_eq!(
-            values[0].1, 0,
+            values[0].tenths, 0,
             "a day with no data is a zero bar, not absent"
         );
+    }
+
+    #[test]
+    fn a_few_tracked_minutes_still_style_as_populated() {
+        // Regression guard: `tenths` floors anything under six minutes to a
+        // zero-height bar, but the day still has tracked time and must not
+        // render with the same style as a day with none.
+        let theme = Theme::none();
+        let week = week();
+        let chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        let bar = BarValue {
+            date: date!(2026 - 08 - 23),
+            tenths: 0,
+            minutes: 3,
+            text: "0.0h".to_string(),
+        };
+
+        assert_eq!(chart.style_for(&bar), theme.populated_date);
+        assert_ne!(chart.style_for(&bar), theme.inactive_date);
     }
 }

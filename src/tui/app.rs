@@ -17,7 +17,7 @@ use ratatui::{
     DefaultTerminal,
     crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
 };
-use time::{Date, OffsetDateTime, Weekday};
+use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
 
 /// Application.
@@ -62,7 +62,7 @@ impl App {
     /// from a test.
     pub fn new(ctx: TuiContext) -> Self {
         let active_date = today();
-        let week_dates = week_dates_for(active_date, ctx.week_start_day);
+        let week_dates = get_week_dates(&active_date, ctx.week_start_day);
         let data_svc = DataService::new_with_dir(
             DataService::DEFAULT_CACHE_TIMEOUT_SECONDS,
             ctx.data_dir.clone(),
@@ -89,7 +89,7 @@ impl App {
     #[must_use]
     pub fn with_active_date(mut self, date: Date) -> Self {
         self.active_date = date;
-        self.week_dates = week_dates_for(date, self.ctx.week_start_day);
+        self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
         self
     }
 
@@ -242,7 +242,7 @@ impl App {
             .replace_day(next_month.month().length(next_month.year()))
             .unwrap_or(next_month);
 
-        self.week_dates = week_dates_for(active_date, self.ctx.week_start_day);
+        self.week_dates = get_week_dates(&active_date, self.ctx.week_start_day);
         let week_dates = self.week_dates;
 
         // Run all three data loads concurrently
@@ -313,17 +313,6 @@ impl App {
             }
         }
     }
-}
-
-/// The seven dates of the week containing `date`, per `week_start_day`.
-///
-/// `get_week_dates` always returns exactly seven dates (see
-/// `get_week_dates_always_returns_seven_days` in `time_utils`), so this
-/// `expect` is guarded rather than assumed.
-fn week_dates_for(date: Date, week_start_day: Weekday) -> [Date; 7] {
-    get_week_dates(&date, week_start_day)
-        .try_into()
-        .expect("get_week_dates always returns 7 days")
 }
 
 /// Today's date in the local timezone, falling back to UTC.
