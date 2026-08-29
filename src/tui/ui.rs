@@ -393,7 +393,13 @@ mod tests {
 
     /// Cheap insurance: ratatui panics on some zero-width layout arithmetic,
     /// and this task's constraints are exactly the kind of place that can
-    /// produce it.
+    /// produce it. Swept across every `Mode` and both overlay states, not
+    /// just `Day`: `Day` is the one mode `breakpoint` protects below the
+    /// floor, so it is the *least* likely of the four to hit a degenerate
+    /// rectangle — restricting the sweep to it would cover the safest case
+    /// and miss the others entirely (as it did in fix round 1, where the
+    /// zoomed chart's total-hours overlay had a real mislocation bug at a
+    /// narrow width no test here ever rendered).
     #[tokio::test]
     async fn no_render_panics_at_any_plausible_size() {
         for (w, h) in [
@@ -405,9 +411,31 @@ mod tests {
             (200, 60),
             (400, 100),
         ] {
-            let mut app = day_app();
-            let _ = render_to_string(&mut app, w, h);
+            for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+                for overlay in [None, Some(Overlay::Help)] {
+                    let mut app = day_app();
+                    app.mode = mode;
+                    app.overlay = overlay;
+                    let _ = render_to_string(&mut app, w, h);
+                }
+            }
         }
+    }
+
+    /// Pins the property `breakpoint` exists to guarantee: at exactly the
+    /// floor it names, the day view must actually clear the gate. A notice
+    /// reading "resize to at least 60x15" while sitting at 60x15 would be
+    /// self-contradicting — this was verified by hand during Task 24 and
+    /// then discarded; a future change to `MIN_ROWS`, `MIN_COLS`, or the
+    /// status-line split could silently reintroduce it without this test.
+    #[tokio::test]
+    async fn the_exact_floor_size_does_not_trigger_the_too_small_notice() {
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, MIN_COLS, MIN_ROWS);
+        assert!(
+            !screen.contains("Terminal too small"),
+            "60x15 is the advertised minimum, not below it:\n{screen}"
+        );
     }
 
     /// Regression: `render` early-returned on the zoom branch before the help
