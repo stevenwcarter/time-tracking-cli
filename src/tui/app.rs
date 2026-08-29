@@ -5,7 +5,7 @@ use crate::{DataService, editor::open_in_editor};
 
 use super::{
     context::TuiContext,
-    event::{AppEvent, Event, EventHandler},
+    event::{AppEvent, Event, EventHandler, LoadPayload},
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
@@ -36,6 +36,12 @@ pub struct App {
     pub overlay: Option<Overlay>,
     /// Is a load of the active date's data currently in flight
     pub loading: bool,
+    /// Which load is the current one; see [`App::spawn_load`].
+    ///
+    /// Bumped every time a load starts, and stamped on the event that load
+    /// reports back with, so a result that arrives after the user has already
+    /// moved on can be recognised as superseded and dropped.
+    pub load_gen: u64,
     /// Current active date
     pub active_date: Date,
     /// The seven dates of `active_date`'s week, per `ctx.week_start_day`.
@@ -78,6 +84,7 @@ impl App {
             mode: Mode::Day,
             overlay: None,
             loading: false,
+            load_gen: 0,
             active_date,
             week_dates,
             events: EventHandler::new(),
@@ -135,9 +142,9 @@ impl App {
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         // Nothing polls the terminal until now; see `EventHandler::start`.
         self.events.start();
-        if let Err(e) = self.load_data_for_active_date().await {
-            tracing::warn!("Failed to load data on startup: {e}");
-        }
+        // Off the loop, so the first frame is drawn from the empty state
+        // instead of behind three file scans.
+        self.spawn_load();
         while self.running {
             terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
             match self.events.next().await.context("couldn't read events")? {
@@ -160,24 +167,42 @@ impl App {
         Ok(())
     }
 
-    /// Apply `app_event`, awaiting the two events that need to.
+    /// Apply `app_event`, handling the two events that need the runtime.
     ///
     /// Everything else is delegated to [`App::apply_sync_event`], which is the
     /// single place application state changes in response to an event.
+    ///
+    /// **There is deliberately no `_` arm**, for the same reason
+    /// [`changes_key_routing`] has none: an event that needs to await or spawn
+    /// but is only listed in [`App::apply_sync_event`]'s do-nothing arm would
+    /// be silently dropped by both functions, with nothing failing.
     pub async fn handle_app_event(
         &mut self,
         app_event: AppEvent,
         terminal: &mut DefaultTerminal,
     ) -> Result<()> {
         match app_event {
-            AppEvent::ReloadFromDisk => {
-                self.load_data_for_active_date().await?;
-            }
+            // Returns immediately, but `tokio::spawn` still needs the runtime
+            // this loop is running on.
+            AppEvent::ReloadFromDisk => self.spawn_load(),
             AppEvent::Edit => {
                 self.run_editor(terminal).await?;
                 self.events.send(AppEvent::ReloadFromDisk);
             }
-            sync_event => self.apply_sync_event(sync_event),
+            e @ (AppEvent::ToggleZoomBar
+            | AppEvent::ToggleHelp
+            | AppEvent::CloseOverlay
+            | AppEvent::Today
+            | AppEvent::NextDate
+            | AppEvent::PreviousDate
+            | AppEvent::NextProject
+            | AppEvent::PreviousProject
+            | AppEvent::FirstProject
+            | AppEvent::LastProject
+            | AppEvent::CopyNotes
+            | AppEvent::DataLoaded(..)
+            | AppEvent::LoadFailed(..)
+            | AppEvent::Quit) => self.apply_sync_event(e),
         }
 
         Ok(())
@@ -201,6 +226,21 @@ impl App {
                 self.go_to_date(self.active_date.previous_day().unwrap_or(self.active_date));
             }
             AppEvent::Quit => self.quit(),
+            // Latest-wins: a load only lands while it is still the current
+            // one. Holding `h` starts a load per key press, and the earlier
+            // ones must not overwrite the date the user stopped on.
+            AppEvent::DataLoaded(generation, payload) if generation == self.load_gen => {
+                self.loading = false;
+                self.apply_payload(*payload);
+            }
+            AppEvent::LoadFailed(generation, message) if generation == self.load_gen => {
+                self.loading = false;
+                tracing::warn!("load failed: {message}");
+                self.set_status(format!("Load failed: {message}"));
+            }
+            // Superseded: a newer load is still in flight, so `loading` stays
+            // set and the stale results are dropped.
+            AppEvent::DataLoaded(..) | AppEvent::LoadFailed(..) => {}
             // The day view's project list owns these. They normally never
             // reach the queue — `handle_mode_key` hands them straight to the
             // widget — but a day with no list lets them fall through.
@@ -213,7 +253,12 @@ impl App {
                     widget.apply(&app_event);
                 }
             }
-            // Both await; `handle_app_event` owns them.
+            // `handle_app_event` owns these: `Edit` awaits the editor, and
+            // `ReloadFromDisk` spawns a load, which needs a runtime.
+            //
+            // Adding a variant here alone is not enough — list it in
+            // `handle_app_event`'s alternation too, or it is dropped in both
+            // places and no test fails.
             AppEvent::ReloadFromDisk | AppEvent::Edit => {}
         }
     }
@@ -285,38 +330,56 @@ impl App {
         Ok(())
     }
 
-    pub async fn load_data_for_active_date(&mut self) -> Result<()> {
-        let active_date = self.active_date;
+    /// Start loading the active date in the background, superseding whatever
+    /// load is already in flight.
+    ///
+    /// The event loop keeps drawing and reading keys while the three file
+    /// scans run, so holding `h` or `l` scrubs dates instead of freezing.
+    /// Each load is stamped with a generation and reports back as
+    /// [`AppEvent::DataLoaded`] or [`AppEvent::LoadFailed`]; only the newest
+    /// generation is applied, so the date the user stopped on wins however
+    /// the scans happen to interleave.
+    ///
+    /// Must be called from inside the Tokio runtime — `App::run` and
+    /// [`App::handle_app_event`] both are.
+    fn spawn_load(&mut self) {
+        self.load_gen += 1;
+        let generation = self.load_gen;
+        let tx = self.events.sender();
         let data_svc = self.data_svc.clone();
-
-        // Compute date ranges for the populated-dates scan (prev, current, next month)
-        let current_month = active_date
-            .replace_day(1)
-            .context("could not set day to 1")?;
-        let prev_month =
-            month_offset(current_month, -1).context("could not compute previous month")?;
-        let next_month = month_offset(current_month, 1).context("could not compute next month")?;
-        let start_date = prev_month;
-        let end_date = next_month
-            .replace_day(next_month.month().length(next_month.year()))
-            .unwrap_or(next_month);
-
-        self.week_dates = get_week_dates(&active_date, self.ctx.week_start_day);
+        let date = self.active_date;
+        self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
         let week_dates = self.week_dates;
+        self.loading = true;
 
-        // Run all three data loads concurrently
-        let (day_result, populated_result, weekly_result) = tokio::join!(
-            data_svc.parse_day(&active_date),
-            data_svc.find_populated_dates(start_date, end_date),
-            data_svc.get_weekly_data(&week_dates),
-        );
+        tokio::spawn(async move {
+            match load_payload(&data_svc, date, &week_dates).await {
+                Ok(payload) => tx.send(AppEvent::DataLoaded(generation, Box::new(payload))),
+                Err(e) => tx.send(AppEvent::LoadFailed(generation, e.to_string())),
+            }
+        });
+    }
 
-        // Apply results
-        self.set_day_data(day_result?);
-        self.populated_dates = populated_result.context("Finding populated dates")?;
-        self.weekly_data = weekly_result.context("Loading weekly data")?;
+    /// Install a completed load. The day, the calendar and the bar chart move
+    /// together, so no frame shows two different dates at once.
+    fn apply_payload(&mut self, payload: LoadPayload) {
+        let LoadPayload {
+            day,
+            populated,
+            weekly,
+        } = payload;
+        self.set_day_data(day);
+        self.populated_dates = populated;
+        self.weekly_data = weekly;
+    }
 
-        Ok(())
+    /// Record a one-line message for the user.
+    ///
+    /// Task 12 gives `App` a status field and a footer to draw it in; until
+    /// then the message only reaches the log, which is enough for the call
+    /// sites to be written once and left alone.
+    fn set_status(&mut self, message: String) {
+        tracing::debug!("status: {message}");
     }
 
     /// Offer `key_event` to each key layer in turn, outermost first.
@@ -450,6 +513,40 @@ impl App {
     }
 }
 
+/// Read everything one frame needs for `date`: its day, the calendar markers
+/// around it, and its week's minutes.
+///
+/// A free function rather than a method so it can run in a spawned task,
+/// holding only a cloned [`DataService`] instead of borrowing the [`App`].
+async fn load_payload(
+    data_svc: &DataService,
+    date: Date,
+    week_dates: &[Date; 7],
+) -> Result<LoadPayload> {
+    // The calendar scans the previous, current and next month, so paging a
+    // month either way already has its markers.
+    let current_month = date.replace_day(1).context("could not set day to 1")?;
+    let start_date = month_offset(current_month, -1).context("could not compute previous month")?;
+    let next_month = month_offset(current_month, 1).context("could not compute next month")?;
+    let end_date = next_month
+        .replace_day(next_month.month().length(next_month.year()))
+        .unwrap_or(next_month);
+
+    // All three concurrently; the day file is usually cached, the two scans
+    // are not.
+    let (day, populated, weekly) = tokio::join!(
+        data_svc.parse_day(&date),
+        data_svc.find_populated_dates(start_date, end_date),
+        data_svc.get_weekly_data(week_dates),
+    );
+
+    Ok(LoadPayload {
+        day: day.context("Parsing the day")?,
+        populated: populated.context("Finding populated dates")?,
+        weekly: weekly.context("Loading weekly data")?,
+    })
+}
+
 /// Does applying `app_event` change which layer sees the next key, or what
 /// that layer makes of it?
 ///
@@ -481,6 +578,10 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::PreviousDate
         | AppEvent::ReloadFromDisk
         | AppEvent::Today
+        // Never reach this function at all — a load reports back, it is not
+        // emitted by a key — and they touch neither mode nor overlay.
+        | AppEvent::DataLoaded(..)
+        | AppEvent::LoadFailed(..)
         | AppEvent::Quit => false,
     }
 }
@@ -537,9 +638,39 @@ mod tests {
     use super::*;
     use crate::tui::testing::{fixture_date, fixture_day};
     use ratatui::crossterm::event::KeyCode;
+    use std::time::Duration;
+    use time::macros::date;
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn payload_with(populated: Vec<Date>) -> Box<LoadPayload> {
+        Box::new(LoadPayload {
+            day: None,
+            populated,
+            weekly: HashMap::new(),
+        })
+    }
+
+    /// Wait for the next app event the queue produces.
+    ///
+    /// `App::run` would await `EventHandler::next`, but that needs the
+    /// crossterm poller started — which a test must not do, since it would
+    /// read the real tty. Polling the same queue is equivalent for a load
+    /// that reports back from a spawned task.
+    async fn next_app_event(app: &mut App) -> AppEvent {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match app.events.try_next() {
+                    Some(Event::App(app_event)) => return app_event,
+                    Some(_) => {}
+                    None => tokio::time::sleep(Duration::from_millis(5)).await,
+                }
+            }
+        })
+        .await
+        .expect("the spawned load should report back")
     }
 
     fn day_app() -> App {
@@ -652,5 +783,99 @@ mod tests {
         app.handle_key_events(key('g')).unwrap();
         app.drain_pending_events();
         assert_eq!(selection(&app), Some(0));
+    }
+
+    /// The guard that makes off-loop loading safe. Holding `h` starts a load
+    /// per key press against a different date; whichever finishes last would
+    /// otherwise win, leaving the screen on a date the user scrolled past.
+    #[test]
+    fn stale_load_results_are_discarded() {
+        let mut app = App::new(TuiContext::for_test());
+        app.load_gen = 7;
+        app.loading = true;
+
+        app.apply_sync_event(AppEvent::DataLoaded(
+            6,
+            payload_with(vec![date!(2026 - 01 - 01)]),
+        ));
+        assert!(
+            app.populated_dates.is_empty(),
+            "generation 6 is stale and must be dropped"
+        );
+        assert!(app.loading, "generation 7 is still in flight");
+
+        app.apply_sync_event(AppEvent::DataLoaded(
+            7,
+            payload_with(vec![date!(2026 - 02 - 02)]),
+        ));
+        assert_eq!(app.populated_dates, vec![date!(2026 - 02 - 02)]);
+        assert!(!app.loading);
+    }
+
+    /// The same guard on the failure path: a stale error must not clear the
+    /// in-flight flag, or report a failure the user has already navigated
+    /// away from.
+    #[test]
+    fn a_stale_load_failure_is_discarded() {
+        let mut app = App::new(TuiContext::for_test());
+        app.load_gen = 3;
+        app.loading = true;
+
+        app.apply_sync_event(AppEvent::LoadFailed(2, "superseded".to_owned()));
+        assert!(app.loading, "generation 3 is still in flight");
+
+        app.apply_sync_event(AppEvent::LoadFailed(3, "boom".to_owned()));
+        assert!(!app.loading);
+    }
+
+    /// End to end: the load runs in a spawned task and reports back through
+    /// the same queue the keys arrive on, rather than being awaited inline.
+    #[tokio::test]
+    async fn a_spawned_load_reports_back_through_the_event_queue() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        tokio::fs::write(
+            dir.path().join("2025-06-11.md"),
+            "9:00-10:30 admin\n- standup\n",
+        )
+        .await
+        .expect("write the fixture day file");
+
+        let ctx = TuiContext {
+            data_dir: dir.path().to_path_buf(),
+            ..TuiContext::for_test()
+        };
+        let mut app = App::new(ctx).with_active_date(fixture_date());
+
+        app.spawn_load();
+        assert!(app.loading, "the load is in flight");
+        assert_eq!(app.load_gen, 1);
+
+        let event = next_app_event(&mut app).await;
+        assert!(
+            matches!(event, AppEvent::DataLoaded(1, _)),
+            "expected the first generation's payload, got {event:?}"
+        );
+        app.apply_sync_event(event);
+
+        assert!(!app.loading);
+        assert_eq!(app.data.map(|d| d.total_minutes), Some(90));
+        assert_eq!(app.populated_dates, vec![fixture_date()]);
+        assert_eq!(app.weekly_data.get(&fixture_date()).copied(), Some(90));
+    }
+
+    /// Scrubbing dates touches no disk on the event loop: each key moves the
+    /// date and leaves a reload on the queue for `handle_app_event` to spawn.
+    #[test]
+    fn scrubbing_dates_only_queues_reloads() {
+        let mut app = day_app();
+
+        for _ in 0..3 {
+            app.handle_key_events(key('l')).unwrap();
+        }
+        app.drain_pending_events();
+
+        assert_eq!(app.active_date, date!(2025 - 06 - 14));
+        assert_eq!(app.load_gen, 0, "no load may start on the event loop");
+        assert!(!app.loading);
     }
 }
