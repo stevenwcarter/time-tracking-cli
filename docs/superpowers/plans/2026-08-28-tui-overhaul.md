@@ -904,6 +904,21 @@ fn sender_can_be_cloned_and_used_without_mut() {
 Run: `cargo test --lib tui::app`
 Expected: FAIL — `AppEventSender` does not exist.
 
+- [ ] **Step 2b: Add the missing structural guard on `start()` (carried from Task 2's re-review)**
+
+Task 2 split `EventHandler::new()` (channels only) from `start()` (spawns the poller), and `App::run` calls `start()` as its first statement. But **nothing pins that call.** A future refactor that drops the `start()` line would hang the real TUI on an empty channel while the whole test suite stays green — `App::run` takes `DefaultTerminal`, which is concrete over `CrosstermBackend<Stdout>`, so `run` is not callable from a test and no test can cover it.
+
+Add the guard at the top of `EventHandler::next`, where it fires on the first await instead of hanging:
+
+```rust
+debug_assert!(
+    self.task.is_none(),
+    "EventHandler::start() was never called — the poller is not running and next() will block forever"
+);
+```
+
+`start()` is `take()`-and-spawn, so `task.is_none()` means it ran. This costs nothing in release and converts a silent hang into an immediate, named panic in debug.
+
 - [ ] **Step 3: Implement the sender**
 
 ```rust
