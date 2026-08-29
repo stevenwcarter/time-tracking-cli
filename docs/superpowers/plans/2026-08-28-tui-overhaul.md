@@ -1412,6 +1412,15 @@ Expected: FAIL — `get_weekly_summary` does not exist.
 
 - [ ] **Step 3: Implement `get_weekly_summary`**
 
+**Finding carried from Task 1's re-review — read before you move the warning block.** The filter
+`!warning.contains("Error parsing time range '#'")` is **provably dead code** under the current
+parser. Verified in `time-tracking-parser`'s `parser.rs`: the branch that emits
+`Error parsing time range '{}'` sits in the `else` of `if !line.starts_with(char::is_numeric)`, so a
+`#`-leading line always routes to the notes branch and can never produce a warning containing `'#'`.
+Preserve the filter **verbatim anyway** — this task is behaviour-preserving, and a dead branch is not
+yours to delete. Do not "simplify" it away; note it and move on. A separate follow-up can remove it
+deliberately.
+
 Move the collection loop verbatim: same `total_week_minutes` / `total_week_dead_minutes` accumulation, the same warning filter (`!warning.contains("Error parsing time range '#'")`) with the same `format!("{}: {}", format_day_with_date(day_date), warning)` shape, and the same per-note `format!("{}: {}", format_day_with_date(day_date), note)`. Notes stay in day order because `dates` is iterated in order. Then:
 
 ```rust
