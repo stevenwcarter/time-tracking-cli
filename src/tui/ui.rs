@@ -35,14 +35,22 @@ const HEADER_BAND_ROWS: u16 = 12;
 /// Rows the day pane's border costs, top and bottom.
 const PANE_BORDER_ROWS: u16 = 2;
 
-/// Below this many rows the calendar/chart header stops earning its space.
+/// Columns the day pane's border costs, left and right.
+const PANE_BORDER_COLS: u16 = 2;
+
+/// Below this many rows the calendar/chart header stops earning its space,
+/// whatever the day holds.
+///
+/// The size-only half of the rule; [`App::band_is_affordable`] carries the
+/// half that depends on the data, and is what a day with a project list is
+/// actually judged by. This floor decides the case that has no list to
+/// measure — an empty day would otherwise hand the band twelve of its
+/// fifteen rows and squeeze its one-line notice into what was left.
 ///
 /// Derived rather than chosen, because choosing it is how this went wrong:
 /// at 22 the band cost 12 of the terminal's rows and left the project list
 /// below it too short to draw a single project, so dragging a window from
-/// 21 rows to 22 made the day's work *disappear*. The band earns its rows
-/// only once the list beneath it can still show real work — two whole
-/// projects — so that is what the number says.
+/// 21 rows to 22 made the day's work *disappear*.
 const COMPACT_ROWS: u16 = 1 // App's status line, outside the day view entirely
     + HEADER_BAND_ROWS
     + PANE_BORDER_ROWS
@@ -122,13 +130,13 @@ impl App {
             return;
         }
 
-        // `Compact` drops the calendar/chart header entirely: on a short
-        // terminal the project list is what the user opened the app to
-        // read, and a header it can't afford is worse than no header.
-        let header_height = if bp == Breakpoint::Compact {
-            0
-        } else {
+        // The calendar/chart header is dropped entirely unless it is free:
+        // on a short terminal the project list is what the user opened the
+        // app to read, and a header it can't afford is worse than no header.
+        let header_height = if self.band_is_affordable(bp, area) {
             HEADER_BAND_ROWS
+        } else {
+            0
         };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -172,6 +180,44 @@ impl App {
                 render_call_to_action(text, self.ctx.theme.warning, block, chunks[1], buf);
             }
         }
+    }
+
+    /// Can the calendar/chart band be drawn in `area` without costing the
+    /// project list a single row it would otherwise have used?
+    ///
+    /// The band is a fixed [`HEADER_BAND_ROWS`], so the terminal row that
+    /// takes the layout across the threshold buys eleven rows *less* list
+    /// than the row below it had. Wherever the list was still the binding
+    /// constraint that means a taller window renders a shorter day — the
+    /// non-monotonic resize this branch has hit three times, once badly
+    /// enough to blank the pane outright. No threshold on `area` alone can
+    /// fix it, because whether the list is the binding constraint depends on
+    /// the day, not on the terminal.
+    ///
+    /// So the band's cost is paid for before it is drawn: it appears only
+    /// once every project already fits underneath it, and until then those
+    /// twelve rows go to the work. Growing the terminal then never takes
+    /// anything away — the band arrives at the first height where nothing
+    /// has to leave to make room for it.
+    ///
+    /// [`Breakpoint::Compact`] still gates it as a hard floor, for the days
+    /// with no list to crowd out; see [`COMPACT_ROWS`].
+    fn band_is_affordable(&self, bp: Breakpoint, area: Rect) -> bool {
+        if bp == Breakpoint::Compact {
+            return false;
+        }
+        let Some(widget) = self
+            .project_list_widget
+            .as_ref()
+            .filter(|_| self.day_pane() == DayPane::Projects)
+        else {
+            return true;
+        };
+        let pane_inner_width = area.width.saturating_sub(PANE_BORDER_COLS);
+        let needed = HEADER_BAND_ROWS
+            .saturating_add(PANE_BORDER_ROWS)
+            .saturating_add(widget.rows_to_show_everything(pane_inner_width));
+        area.height >= needed
     }
 
     /// The calendar/chart band above the project list.
@@ -480,6 +526,8 @@ mod tests {
     use time::Weekday;
     use time::macros::date;
 
+    use time_tracking_parser::TimeTrackingData;
+
     use super::*;
     use crate::time_utils::get_week_dates;
     use crate::tui::context::TuiContext;
@@ -672,38 +720,109 @@ mod tests {
         );
     }
 
-    /// Pins what [`COMPACT_ROWS`] is derived from, rather than the number
-    /// it currently works out to: wherever the calendar/chart band is drawn,
-    /// the pane below it must still afford its whole header *and* two
-    /// projects. A band that costs more than it leaves behind is a band that
-    /// should have collapsed — which is exactly what a hand-picked
-    /// `COMPACT_ROWS = 22` did, turning a window drag from 21 rows to 22
-    /// into a day's work disappearing.
+    /// `data` with `n` parser warnings attached.
+    fn with_warnings(mut data: TimeTrackingData, n: usize) -> TimeTrackingData {
+        data.warnings = (0..n).map(|i| format!("bad entry {i}")).collect();
+        data
+    }
+
+    /// `data` with every project carrying `notes` notes instead of two, so
+    /// its list items are taller than the three-row typical case.
+    fn with_more_notes(mut data: TimeTrackingData, notes: usize) -> TimeTrackingData {
+        for (i, project) in data.projects.iter_mut().enumerate() {
+            project.notes = (0..notes).map(|n| format!("note {i}-{n}")).collect();
+        }
+        data
+    }
+
+    /// The invariant behind three separate findings on this branch, written
+    /// once so there is no fourth: for a fixed width and fixed data, making
+    /// the terminal *taller* must never render *fewer* projects.
+    ///
+    /// Each of those findings was a point where crossing into the
+    /// calendar/chart band cost the list more rows than the extra height
+    /// gave it — first blanking the pane outright at 80x22, then, once that
+    /// was fixed, still dropping a three-project day to one at 80x26 as soon
+    /// as a single warning was in play. Three point assertions would not
+    /// have caught the third; this sweep does, and it will catch the fourth.
     #[tokio::test]
-    async fn wherever_the_band_is_drawn_the_list_still_shows_two_projects() {
-        for height in COMPACT_ROWS..=COMPACT_ROWS + 4 {
+    async fn a_taller_terminal_never_renders_fewer_projects() {
+        let cases = [
+            ("a clean day", fixture_day_with_projects(4)),
+            (
+                "one parser warning",
+                with_warnings(fixture_day_with_projects(4), 1),
+            ),
+            (
+                "a flood of warnings",
+                with_warnings(fixture_day_with_projects(4), 20),
+            ),
+            (
+                "multi-note projects",
+                with_more_notes(fixture_day_with_projects(4), 5),
+            ),
+        ];
+
+        for (label, data) in cases {
+            let names: Vec<String> = data.projects.iter().map(|p| p.name.clone()).collect();
+            // Both sides of `NARROW_COLS`, so the band is swept with the
+            // calendar beside the chart as well as without it.
+            for width in [80, 120] {
+                let mut previous = 0;
+                for height in MIN_ROWS..=44 {
+                    let mut app = App::new(TuiContext::for_test())
+                        .with_active_date(fixture_date())
+                        .with_data(data.clone());
+                    let screen = render_to_string(&mut app, width, height);
+                    let visible = names.iter().filter(|n| screen.contains(*n)).count();
+
+                    assert!(
+                        visible >= previous,
+                        "{label}: {width}x{height} renders {visible} projects where \
+                         {width}x{} rendered {previous}:\n{screen}",
+                        height - 1
+                    );
+                    previous = visible;
+                }
+            }
+        }
+    }
+
+    /// The rule [`App::band_is_affordable`] enforces, and the reason the
+    /// sweep above can hold: wherever the calendar/chart band is drawn, the
+    /// pane below it still shows its whole header *and* every project. A
+    /// band that costs the list a row is a band that should have collapsed.
+    ///
+    /// Stated as "every project" rather than "two projects" deliberately.
+    /// Two was the old, weaker pin, and it is what let 80x26 drop a
+    /// three-project day to one as soon as a warning appeared: the band was
+    /// affordable by that measure while the list was still paying for it.
+    #[tokio::test]
+    async fn wherever_the_band_is_drawn_the_list_still_shows_every_project() {
+        let mut band_seen = false;
+        for height in COMPACT_ROWS..=44 {
             let mut app = day_app();
             let screen = render_to_string(&mut app, 80, height);
+            if !screen.contains("tt-tui") {
+                continue;
+            }
+            band_seen = true;
 
-            // Without this the loop would pass vacuously if the band ever
-            // stopped being drawn at its own threshold.
-            assert!(
-                screen.contains("tt-tui"),
-                "80x{height} is at or above COMPACT_ROWS, so the band is drawn:\n{screen}"
-            );
             assert!(
                 screen.contains("Working Time"),
                 "80x{height} clipped the header the band was preferred over:\n{screen}"
             );
-            let visible = ["admin", "client-bd", "internal"]
-                .iter()
-                .filter(|name| screen.contains(**name))
-                .count();
-            assert!(
-                visible >= 2,
-                "80x{height} shows {visible} projects under the band:\n{screen}"
-            );
+            for name in ["admin", "client-bd", "internal"] {
+                assert!(
+                    screen.contains(name),
+                    "80x{height} drew the band over a list missing {name}:\n{screen}"
+                );
+            }
         }
+        assert!(
+            band_seen,
+            "the band has to be drawn somewhere in the swept range, or this proves nothing"
+        );
     }
 
     /// Cheap insurance: ratatui panics on some zero-width layout arithmetic,

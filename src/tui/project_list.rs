@@ -133,6 +133,18 @@ impl ProjectItem {
         text
     }
 
+    /// Rows [`Self::body`] occupies at `width`, read off the memo rather
+    /// than through the clone `body` hands back — this is called once per
+    /// item per frame purely to measure, and measuring should not allocate.
+    fn body_rows(&self, width: u16) -> usize {
+        if let Some((cached_width, text)) = self.rendered.borrow().as_ref()
+            && *cached_width == width
+        {
+            return text.lines.len();
+        }
+        self.body(width).lines.len()
+    }
+
     #[cfg(test)]
     fn rebuild_count(&self) -> usize {
         self.rebuild_count.get()
@@ -377,6 +389,30 @@ fn clamp_item_rows(mut body: Text<'static>, max_rows: u16) -> Text<'static> {
 }
 
 impl ProjectListWidget {
+    /// The inner rows this pane would need at `width` to show its header and
+    /// every one of its projects at once, with nothing scrolled out of view.
+    ///
+    /// Read by [`ui`](super::ui) to decide whether the calendar/chart band
+    /// above the pane can be afforded — see `App::band_is_affordable`. It has
+    /// to be measured rather than estimated because all three inputs move:
+    /// the header grows with dead time and warnings, and an item grows with
+    /// its notes and with how they wrap at this width.
+    pub(super) fn rows_to_show_everything(&self, width: u16) -> u16 {
+        let working_time_lines = self.working_time_lines(width);
+        let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
+        let body_width = width.saturating_sub(4);
+        let items = self
+            .project_list
+            .items
+            .iter()
+            .map(|item| u16::try_from(item.body_rows(body_width)).unwrap_or(u16::MAX))
+            .fold(0u16, u16::saturating_add);
+
+        header_height(&working_time_lines, &warning_lines)
+            .saturating_add(LIST_TITLE_ROWS)
+            .saturating_add(items)
+    }
+
     fn render_header(
         &self,
         area: Rect,
