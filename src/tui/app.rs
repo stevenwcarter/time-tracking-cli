@@ -16,7 +16,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    DefaultTerminal,
+    DefaultTerminal, Terminal,
+    backend::Backend,
     crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
 };
 use time::{Date, OffsetDateTime};
@@ -37,7 +38,11 @@ pub struct App {
     /// [`App::handle_app_event`] and [`App::apply_sync_event`] — rather than
     /// at each individual call site. A terminal resize sets it too: nothing in
     /// the app changed, but the frame on screen was laid out for another size.
-    pub dirty: bool,
+    ///
+    /// Private for the same reason `load_task` is: a flag whose *clearing*
+    /// freezes the UI has no business being reachable from outside this
+    /// module. The in-module tests set it directly.
+    dirty: bool,
     /// The view currently filling the screen.
     pub mode: Mode,
     /// The modal layer drawn over `mode`, if any.
@@ -168,9 +173,9 @@ impl App {
 
     /// Run the application's main loop.
     ///
-    /// The loop turns once per event but draws only when [`App::dirty`] is
-    /// set, so an idle terminal costs the tick rate in wakeups a second and no
-    /// rendering at all.
+    /// The loop turns once per event but draws only when `dirty` is set, so an
+    /// idle terminal costs the tick rate in wakeups a second and no rendering
+    /// at all.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         // Reads no longer create the data directory (see
         // `DataService::get_file_path`), so this is where a fresh install gets
@@ -222,10 +227,15 @@ impl App {
     /// [`changes_key_routing`] has none: an event that needs to await or spawn
     /// but is only listed in [`App::apply_sync_event`]'s do-nothing arm would
     /// be silently dropped by both functions, with nothing failing.
-    pub async fn handle_app_event(
+    ///
+    /// Generic over the backend rather than taking a [`DefaultTerminal`], so a
+    /// test can drive it against a `TestBackend` — which is what pins the
+    /// `dirty` set below, the one this function's own two arms depend on.
+    /// `App::run` still passes the real terminal.
+    pub async fn handle_app_event<B: Backend>(
         &mut self,
         app_event: AppEvent,
-        terminal: &mut DefaultTerminal,
+        terminal: &mut Terminal<B>,
     ) -> Result<()> {
         // Set here as well as in `apply_sync_event`, because the two arms this
         // function keeps for itself never reach it: `ReloadFromDisk` flips
@@ -355,7 +365,7 @@ impl App {
         self.events.send(AppEvent::ReloadFromDisk);
     }
 
-    pub async fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
         // Pause event polling to prevent interference with editor
         self.events.pause();
 
@@ -402,9 +412,12 @@ impl App {
     ///
     /// The superseded load is aborted rather than left to finish: the
     /// generation guard drops its *result*, but only aborting bounds its
-    /// *work*. One load fans out to a task per date over a ninety-day window
-    /// plus the week, so a held-down date key would otherwise pile up
-    /// thousands of tasks contending on the one cache mutex.
+    /// *work*. A load fans out to a task per populated date in the calendar's
+    /// window plus one per day of the week, and
+    /// [`DataService::find_populated_dates`] keeps those children in a
+    /// `JoinSet` precisely so aborting this one handle cascades to all of them
+    /// — see the comment there. Without that, a held-down date key would pile
+    /// them up unabortably on the one cache mutex.
     ///
     /// Must be called from inside the Tokio runtime — `App::run` and
     /// [`App::handle_app_event`] both are.
@@ -486,9 +499,8 @@ impl App {
     ///    on screen.
     /// 3. The global bindings, which mean the same thing everywhere.
     ///
-    /// A key some layer acted on marks the app [dirty](App::dirty); one no
-    /// layer wanted leaves the screen exactly as it was, and must not cost a
-    /// frame.
+    /// A key some layer acted on marks the app `dirty`; one no layer wanted
+    /// leaves the screen exactly as it was, and must not cost a frame.
     pub fn handle_key_events(&mut self, key_event: KeyEvent) -> Result<()> {
         let handled = if self.overlay.is_some() {
             // Overlays are modal, so a key the overlay did not handle stops
@@ -783,7 +795,7 @@ fn month_offset(date: Date, offset: i32) -> Result<Date> {
 mod tests {
     use super::*;
     use crate::tui::testing::{fixture_date, fixture_day};
-    use ratatui::crossterm::event::KeyCode;
+    use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
     use std::time::Duration;
     use time::macros::date;
 
@@ -1066,10 +1078,34 @@ mod tests {
         assert!(app.dirty, "a landed load has to repaint");
     }
 
+    /// The seam item (b) of the brief named. `ReloadFromDisk` and `Edit` are
+    /// the two events `handle_app_event` keeps for itself, so neither reaches
+    /// `apply_sync_event` — and `spawn_load` writes `loading` and `week_dates`
+    /// without marking anything. The central set at the top of
+    /// `handle_app_event` is the only thing repainting for them, which makes
+    /// it load-bearing today rather than merely defensive.
+    #[tokio::test]
+    async fn an_event_dispatched_off_the_queue_marks_the_app_dirty() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test backend");
+        let mut app = day_app();
+        app.dirty = false;
+
+        app.handle_app_event(AppEvent::ReloadFromDisk, &mut terminal)
+            .await
+            .unwrap();
+
+        assert!(app.loading, "the reload is in flight");
+        assert!(
+            app.dirty,
+            "an event dispatched off the queue must request a redraw"
+        );
+    }
+
     /// The generation guard drops a superseded load's *result*; aborting is
-    /// what bounds its *work*. One load fans out to a task per date across a
-    /// ninety-day window, so a held-down date key would otherwise leave
-    /// thousands of them contending on the single cache mutex.
+    /// what bounds its *work*. The load's children live in `DataService`'s
+    /// `JoinSet`s, so aborting this one outer handle cascades to all of them —
+    /// without it a held-down date key leaves them contending on the single
+    /// cache mutex long after the user stopped scrubbing.
     #[tokio::test]
     async fn aborting_a_superseded_load_stops_it() {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
