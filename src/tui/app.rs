@@ -889,36 +889,37 @@ impl App {
         }
     }
 
+    /// Hand the terminal to `$EDITOR` on the active date's file, then take
+    /// it back.
+    ///
+    /// Nothing here propagates with a bare `?` past the point the TUI is
+    /// suspended, and that is the whole design. Every step in the middle is
+    /// genuinely fallible — `create_day_file_if_not_exists` writes, so a
+    /// read-only mount, a full disk, or a `data_directory` whose parent is a
+    /// file all fail it — and a `?` there used to skip both the terminal
+    /// restore *and* `events.resume()`. A paused [`EventTask`] emits neither
+    /// ticks nor keys and never observes its receiver closing, so the loop's
+    /// next `events.next().await` blocked forever: the app drawing over the
+    /// user's shell scrollback with raw mode off, no key — not even the
+    /// in-app Ctrl-C — able to reach it, and under `--tui --serve` a process
+    /// that never exited. `App::run`'s catch at the top of this file names
+    /// this path as how a broken data directory gets *reported*; it hung
+    /// instead.
+    ///
+    /// So the poller is resumed by [`PausedPoller`]'s `Drop` and the screen
+    /// is restored by an unconditional statement, with the two results
+    /// combined at the end rather than propagated where they happen.
+    ///
+    /// [`EventTask`]: super::event::EventHandler
     pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
-        // Pause event polling to prevent interference with editor
-        self.events.pause();
-
-        // Stop the TUI completely before opening editor
-        stdout().execute(LeaveAlternateScreen)?;
-        disable_raw_mode()?;
-
-        // Create the file if it doesn't exist and get the path
-        let file_path = self
-            .data_svc
-            .create_day_file_if_not_exists(&self.active_date)
-            .await?;
-
-        // Open the file in the user's editor
-        if let Err(e) = open_in_editor(&file_path) {
-            eprintln!("Failed to open editor: {}", e);
-        }
-
-        // Invalidate cache since we just edited the file
-        self.data_svc.invalidate_date(&self.active_date).await;
-
-        // Restore the TUI after editor exits
-        stdout().execute(EnterAlternateScreen)?;
-        enable_raw_mode()?;
-        terminal.clear()?;
-
-        // Resume event polling
-        self.events.resume();
-        Ok(())
+        let edited = {
+            // Borrowed field by field so the guard and the edit below are
+            // visibly two different fields of `self`.
+            let _paused = PausedPoller::new(&mut self.events);
+            edit_date(&self.data_svc, self.active_date).await
+        };
+        let restored = restore_terminal(terminal);
+        edited.and(restored)
     }
 
     /// Start loading the active date in the background, superseding whatever
@@ -1509,6 +1510,59 @@ impl App {
             }
         }
     }
+}
+
+/// Holds the event poller paused for as long as it lives, and resumes it on
+/// the way out — including the way out an `?` takes.
+///
+/// A `Drop` guard rather than a matching `resume()` call at the bottom of
+/// [`App::run_editor`] because the failure mode is invisible: a paused poller
+/// emits nothing at all, so a missed resume does not error, it hangs. The
+/// pairing has to be structural, not remembered.
+struct PausedPoller<'a>(&'a mut EventHandler);
+
+impl<'a> PausedPoller<'a> {
+    /// Pause `events` until the returned guard is dropped.
+    fn new(events: &'a mut EventHandler) -> Self {
+        events.pause();
+        Self(events)
+    }
+}
+
+impl Drop for PausedPoller<'_> {
+    fn drop(&mut self) {
+        self.0.resume();
+    }
+}
+
+/// Leave the alternate screen, open `$EDITOR` on `date`'s file — creating it
+/// if it does not exist — and drop the cache entry the edit invalidates.
+///
+/// A free function taking the fields it needs so [`App::run_editor`] can hold
+/// [`PausedPoller`] over it: the guard borrows `App::events` and this borrows
+/// `App::data_svc`, which the borrow checker only sees as disjoint when the
+/// two are named separately.
+async fn edit_date(data_svc: &DataService, date: Date) -> Result<()> {
+    stdout().execute(LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+
+    let file_path = data_svc.create_day_file_if_not_exists(&date).await?;
+    // Reported rather than propagated: the file exists either way, so the
+    // TUI coming back with a complaint beats the error unwinding the loop.
+    if let Err(e) = open_in_editor(&file_path) {
+        eprintln!("Failed to open editor: {e}");
+    }
+    data_svc.invalidate_date(&date).await;
+    Ok(())
+}
+
+/// Put the alternate screen and raw mode back, and clear whatever the editor
+/// left on the way out.
+fn restore_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+    stdout().execute(EnterAlternateScreen)?;
+    enable_raw_mode()?;
+    terminal.clear()?;
+    Ok(())
 }
 
 /// Read everything one frame needs for `date`: its day, the calendar markers
@@ -3168,6 +3222,38 @@ mod tests {
             "a stale week must not be copied"
         );
         assert_eq!(status_text(&app), Some(WEEK_STILL_LOADING));
+    }
+
+    /// Regression: `run_editor` paused the poller and left the alternate
+    /// screen before doing anything fallible, and the `?` on
+    /// `create_day_file_if_not_exists` skipped both the restore and
+    /// `events.resume()`. A paused `EventTask` emits neither ticks nor keys
+    /// and never notices its receiver closing, so the loop's next
+    /// `events.next().await` blocked forever — a wedged app outside the
+    /// alternate screen with raw mode off, and under `--tui --serve` a
+    /// process that never exited.
+    ///
+    /// Driven through `PausedPoller` rather than through `run_editor`
+    /// itself on purpose: `run_editor` calls `enable_raw_mode`, and
+    /// crossterm reaches for `/dev/tty` directly rather than for the
+    /// captured stdout, so a test that ran it would leave the developer's
+    /// own terminal in raw mode. The guard is the seam that carries the
+    /// invariant, and it is the seam this asserts on.
+    #[test]
+    fn the_pause_guard_resumes_the_poller_on_the_way_out_of_a_failure() {
+        let mut events = EventHandler::new();
+
+        let handover: Result<()> = (|| {
+            let _paused = PausedPoller::new(&mut events);
+            anyhow::bail!("create_day_file_if_not_exists: Read-only file system")
+        })();
+
+        assert!(handover.is_err(), "the fixture must model a failure");
+        assert_eq!(
+            events.drain_pause_signals(),
+            vec![true, false],
+            "a failed handover must leave the poller running, not paused"
+        );
     }
 
     /// The day-axis twin of the test above, and of the bug it pins.

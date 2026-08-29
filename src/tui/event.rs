@@ -345,6 +345,27 @@ impl EventHandler {
     pub fn resume(&mut self) {
         let _ = self.pause_sender.send(false);
     }
+
+    /// Every pause/resume signal sent so far, oldest first, consuming them.
+    ///
+    /// A test never calls [`EventHandler::start`], so the [`EventTask`] — and
+    /// with it the receiving half of the pause channel — is still sitting in
+    /// `self.task`. Reading it is what turns "the editor handover left the
+    /// poller paused" into a falsifiable assertion instead of something
+    /// inferred from the shape of the code. A paused poller emits neither
+    /// ticks nor keys, so the symptom in production is a hang, which no test
+    /// can wait for.
+    #[cfg(test)]
+    pub fn drain_pause_signals(&mut self) -> Vec<bool> {
+        let Some(task) = self.task.as_mut() else {
+            return Vec::new();
+        };
+        let mut signals = Vec::new();
+        while let Ok(paused) = task.pause_receiver.try_recv() {
+            signals.push(paused);
+        }
+        signals
+    }
 }
 
 /// A thread that handles reading crossterm events and emitting tick events on a regular schedule.
