@@ -148,6 +148,11 @@ pub struct WeeklySummary {
     pub days: Vec<(Date, String, Option<TimeTrackingData>)>,
 }
 
+/// One day as the load phase of [`DataService::get_weekly_summary`] hands it
+/// to the fold phase: its index in the caller's slice, its date, and its raw
+/// content and parse (both `None` when the day has no file).
+type DayLoad = (usize, Date, Option<String>, Option<TimeTrackingData>);
+
 /// Centralized data service for time tracking files
 #[derive(Debug, Clone)]
 pub struct DataService {
@@ -320,6 +325,19 @@ impl DataService {
         Ok(file_path)
     }
 
+    /// The markers and template this service parses and creates files with.
+    ///
+    /// Callers that render a day themselves must parse it with *these*
+    /// settings rather than reaching for [`Config::get`], or the aggregate and
+    /// the per-day views of the same file can disagree about where the entries
+    /// begin and end. See `show_weekly_summary_with`.
+    pub fn parse_settings(&self) -> ParseSettings {
+        match &self.parse_opts {
+            ParseOpts::FromConfig => ParseSettings::from_config(Config::get()),
+            ParseOpts::Fixed(settings) => settings.clone(),
+        }
+    }
+
     /// Check if a date has data (contains projects with time > 0)
     pub async fn check_date_has_data(&self, date: &Date) -> Result<bool> {
         if let Some(data) = self.parse_day(date).await? {
@@ -369,34 +387,53 @@ impl DataService {
 
     /// Aggregate `dates` into a single [`WeeklySummary`].
     ///
-    /// Days are visited in the order given, which is what keeps the per-day
-    /// prefixes on warnings and project notes in day order. Both the raw
-    /// content and the parse come from the per-date cache, so a week that is
-    /// already cached costs no file reads and no reparses.
+    /// The days are loaded concurrently and then folded in the caller's order,
+    /// which is what keeps the per-day prefixes on warnings and project notes
+    /// in day order. Both the raw content and the parse come from the per-date
+    /// cache, so a week that is already cached costs no file reads and no
+    /// reparses; a cold week pays for its slowest day rather than all seven.
     pub async fn get_weekly_summary(&self, dates: &[Date]) -> Result<WeeklySummary> {
+        // Load phase: one task per date. The dates are distinct, so no two
+        // tasks can race to parse the same day.
+        let mut set = tokio::task::JoinSet::new();
+        for (idx, &date) in dates.iter().enumerate() {
+            let svc = self.clone();
+            set.spawn(async move {
+                let content = svc.read_day(&date).await?;
+                let parsed = svc.parse_day(&date).await?;
+                Ok::<DayLoad, anyhow::Error>((idx, date, content, parsed))
+            });
+        }
+
+        let mut loaded: Vec<DayLoad> = Vec::with_capacity(dates.len());
+        while let Some(result) = set.join_next().await {
+            loaded.push(result??);
+        }
+        // Restore the caller's order before folding: the fold below is where
+        // the day prefixes on notes and warnings get their sequence.
+        loaded.sort_unstable_by_key(|(idx, ..)| *idx);
+
         let mut summary = WeeklySummary::default();
         let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
 
-        for day_date in dates {
-            let (Some(content), Some(data)) = (
-                self.read_day(day_date).await?,
-                self.parse_day(day_date).await?,
-            ) else {
-                summary.per_day.insert(*day_date, 0);
-                summary.days.push((*day_date, String::new(), None));
+        // Fold phase: sequential, in date order.
+        for (_, day_date, content, parsed) in loaded {
+            let (Some(content), Some(data)) = (content, parsed) else {
+                summary.per_day.insert(day_date, 0);
+                summary.days.push((day_date, String::new(), None));
                 continue;
             };
 
             summary.total_minutes += data.total_minutes;
             summary.dead_time_minutes += data.dead_time_minutes;
-            summary.per_day.insert(*day_date, data.total_minutes);
+            summary.per_day.insert(day_date, data.total_minutes);
 
             for warning in &data.warnings {
                 if !warning.contains("Error parsing time range '#'") {
                     // Skip markdown header warnings
                     summary.warnings.push(format!(
                         "{}: {}",
-                        format_day_with_date(day_date),
+                        format_day_with_date(&day_date),
                         warning
                     ));
                 }
@@ -410,11 +447,11 @@ impl DataService {
                 for note in &project.notes {
                     entry
                         .1
-                        .push(format!("{}: {}", format_day_with_date(day_date), note));
+                        .push(format!("{}: {}", format_day_with_date(&day_date), note));
                 }
             }
 
-            summary.days.push((*day_date, content, Some(data)));
+            summary.days.push((day_date, content, Some(data)));
         }
 
         summary.projects = week_projects

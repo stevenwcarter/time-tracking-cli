@@ -176,6 +176,12 @@ fn weekly_tie_ordering_is_deterministic() {
         );
         assert_eq!(first, again, "tie ordering varied between runs");
     }
+    // Determinism alone would be satisfied by any fixed order, so pin which
+    // one: alpha and zulu tie on minutes, and the name tiebreak is ascending.
+    assert!(
+        first.find("alpha") < first.find("zulu"),
+        "tied projects must be ordered by name ascending in:\n{first}"
+    );
 }
 
 #[test]

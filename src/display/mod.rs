@@ -189,12 +189,31 @@ pub(super) fn format_day_summary_impl(
     msg
 }
 
+/// Print a week's summary using the process-wide [`DataService`].
 pub async fn show_weekly_summary(
     date: &Date,
     week_start_day: Weekday,
     formatter: &dyn DisplayFormatter,
 ) -> Result<()> {
-    let data_service = DataService::get();
+    show_weekly_summary_with(DataService::get(), date, week_start_day, formatter).await
+}
+
+/// Print a week's summary using `data_service`.
+///
+/// Both halves of this render — the aggregate that `get_weekly_summary`
+/// computes and the per-day breakdowns the formatter parses itself — take
+/// their prefix/suffix markers from `data_service`. They must: reading the
+/// per-day markers from [`Config::get`] instead would silently disagree with
+/// the aggregate for any service built by
+/// [`DataService::new_with_dir`], and the two views of the same file would
+/// then be bounded by different fences. `weekly_render_parses_both_halves_with_the_service_settings`
+/// pins that.
+pub async fn show_weekly_summary_with(
+    data_service: &DataService,
+    date: &Date,
+    week_start_day: Weekday,
+    formatter: &dyn DisplayFormatter,
+) -> Result<()> {
     let week_dates = get_week_dates(date, week_start_day);
 
     formatter.display_weekly_header(
@@ -221,7 +240,7 @@ pub async fn show_weekly_summary(
     // Now display detailed daily summaries
     formatter.display_daily_breakdowns_header();
 
-    let config = Config::get();
+    let parse_settings = data_service.parse_settings();
     for (day_date, content, data_opt) in summary.days {
         formatter.display_day_header(&format_day_with_date(&day_date));
 
@@ -230,8 +249,8 @@ pub async fn show_weekly_summary(
                 formatter.display_day_summary(
                     &content,
                     "  ",
-                    config.get_prefix(),
-                    config.get_suffix(),
+                    parse_settings.prefix.as_deref(),
+                    parse_settings.suffix.as_deref(),
                 );
             } else {
                 formatter.display_no_data_found("  ");
@@ -304,7 +323,12 @@ pub async fn show_single_day(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use time::macros::date;
+
     use super::*;
+    use crate::data_svc::ParseSettings;
 
     fn project(name: &str, total_minutes: u32, notes: &[&str]) -> WeeklyProject {
         WeeklyProject {
@@ -312,6 +336,157 @@ mod tests {
             total_minutes,
             notes: notes.iter().map(|n| (*n).to_string()).collect(),
         }
+    }
+
+    /// One per-day breakdown exactly as the renderer handed it to the
+    /// formatter, markers included.
+    #[derive(Debug)]
+    struct RenderedDay {
+        content: String,
+        prefix: Option<String>,
+        suffix: Option<String>,
+    }
+
+    /// Records what the weekly render hands each formatter method instead of
+    /// printing it, so a test can assert on the arguments rather than on
+    /// captured stdout.
+    #[derive(Debug, Default)]
+    struct SpyFormatter {
+        weekly_totals: Mutex<Vec<(u32, u32)>>,
+        day_summaries: Mutex<Vec<RenderedDay>>,
+    }
+
+    impl DisplayFormatter for SpyFormatter {
+        fn day_summary(
+            &self,
+            _content: &str,
+            _indent: &str,
+            _prefix: Option<&str>,
+            _suffix: Option<&str>,
+        ) -> String {
+            String::new()
+        }
+        fn display_day_summary(
+            &self,
+            content: &str,
+            _indent: &str,
+            prefix: Option<&str>,
+            suffix: Option<&str>,
+        ) {
+            self.day_summaries
+                .lock()
+                .expect("spy lock")
+                .push(RenderedDay {
+                    content: content.to_string(),
+                    prefix: prefix.map(str::to_owned),
+                    suffix: suffix.map(str::to_owned),
+                });
+        }
+
+        fn weekly_header(&self, _week_start: &str, _week_end: &str) -> String {
+            String::new()
+        }
+        fn display_weekly_header(&self, _week_start: &str, _week_end: &str) {}
+
+        fn weekly_totals(&self, _total_minutes: u32, _dead_minutes: u32) -> String {
+            String::new()
+        }
+        fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32) {
+            self.weekly_totals
+                .lock()
+                .expect("spy lock")
+                .push((total_minutes, dead_minutes));
+        }
+
+        fn weekly_projects(&self, _projects: &[WeeklyProject]) -> String {
+            String::new()
+        }
+        fn display_weekly_projects(&self, _projects: &[WeeklyProject]) {}
+
+        fn daily_breakdowns_header(&self) -> String {
+            String::new()
+        }
+        fn display_daily_breakdowns_header(&self) {}
+
+        fn day_header(&self, _day_with_date: &str) -> String {
+            String::new()
+        }
+        fn display_day_header(&self, _day_with_date: &str) {}
+
+        fn display_no_file_found(&self, _indent: &str) {}
+        fn display_no_data_found(&self, _indent: &str) {}
+    }
+
+    /// The weekly render has two parse paths: the aggregate, which
+    /// `DataService::get_weekly_summary` computes with the service's own
+    /// markers, and the per-day breakdowns, which the formatter parses from
+    /// raw content using markers the renderer supplies. They must come from
+    /// the same place. Before this was pinned they agreed only because
+    /// `show_weekly_summary` hardcoded the process-wide service, whose markers
+    /// happen to be `Config::get()`'s -- so the first injected service would
+    /// have parsed the two halves of the same file with different fences, with
+    /// nothing failing.
+    #[tokio::test]
+    async fn weekly_render_parses_both_halves_with_the_service_settings() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = ParseSettings {
+            prefix: Some("```timetracking".to_string()),
+            suffix: Some("```".to_string()),
+            template_file: None,
+        };
+        let service = DataService::new_with_dir(60, dir.path().to_path_buf(), settings.clone());
+        std::fs::write(
+            dir.path().join("2026-08-24.md"),
+            "9:00-10:00 ignored-before-the-fence\n\
+             ```timetracking\n\
+             10:00-11:30 admin\n\
+             ```\n\
+             11:30-12:00 ignored-after-the-fence\n",
+        )
+        .expect("write day file");
+
+        let spy = SpyFormatter::default();
+        show_weekly_summary_with(&service, &date!(2026 - 08 - 24), Weekday::Saturday, &spy)
+            .await
+            .expect("weekly render");
+
+        assert_eq!(
+            *spy.weekly_totals.lock().expect("spy lock"),
+            vec![(90, 0)],
+            "the aggregate half must honour the injected fence"
+        );
+
+        let day_summaries = spy.day_summaries.lock().expect("spy lock");
+        assert_eq!(
+            day_summaries.len(),
+            1,
+            "only the one populated day renders a breakdown"
+        );
+        let rendered = &day_summaries[0];
+        assert_eq!(
+            rendered.prefix, settings.prefix,
+            "per-day prefix comes from the service"
+        );
+        assert_eq!(
+            rendered.suffix, settings.suffix,
+            "per-day suffix comes from the service"
+        );
+        assert_eq!(
+            parse_time_tracking_data(
+                &rendered.content,
+                rendered.prefix.as_deref(),
+                rendered.suffix.as_deref()
+            )
+            .total_minutes,
+            90,
+            "the per-day half must reach the same 90 minutes as the aggregate"
+        );
+        assert_ne!(
+            parse_time_tracking_data(&rendered.content, None, None).total_minutes,
+            90,
+            "the fixture must be one where the markers change the answer, \
+             otherwise this test would pass even with the halves disagreeing"
+        );
     }
 
     #[test]
