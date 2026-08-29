@@ -46,6 +46,64 @@ impl DataDir {
     }
 }
 
+/// How day files are parsed and created: the markers that bound the time
+/// entries within a file, and the template a new day file starts from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParseSettings {
+    /// Line before which parsing does not start, e.g. ```` ```timetracking ````.
+    pub prefix: Option<String>,
+    /// Line at which parsing stops, e.g. ```` ``` ````.
+    pub suffix: Option<String>,
+    /// Template file a newly created day file is seeded from.
+    pub template_file: Option<String>,
+}
+
+impl ParseSettings {
+    /// Read the markers and the template out of a loaded configuration.
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            prefix: config.get_prefix().map(str::to_owned),
+            suffix: config.get_suffix().map(str::to_owned),
+            template_file: config.get_template_file().map(str::to_owned),
+        }
+    }
+}
+
+/// How a [`DataService`] parses the day files it reads.
+#[derive(Debug, Clone)]
+enum ParseOpts {
+    /// Read from the global [`Config`] on each use. The CLI and web paths run
+    /// after `Config::get()` has parsed the real argv, so this is what they
+    /// have always done.
+    FromConfig,
+    /// Settings supplied by the caller, so nothing touches the config
+    /// singleton. Used by the TUI and by tests.
+    Fixed(ParseSettings),
+}
+
+impl ParseOpts {
+    fn prefix(&self) -> Option<&str> {
+        match self {
+            Self::FromConfig => Config::get().get_prefix(),
+            Self::Fixed(settings) => settings.prefix.as_deref(),
+        }
+    }
+
+    fn suffix(&self) -> Option<&str> {
+        match self {
+            Self::FromConfig => Config::get().get_suffix(),
+            Self::Fixed(settings) => settings.suffix.as_deref(),
+        }
+    }
+
+    fn template_file(&self) -> Option<&str> {
+        match self {
+            Self::FromConfig => Config::get().get_template_file(),
+            Self::Fixed(settings) => settings.template_file.as_deref(),
+        }
+    }
+}
+
 /// Centralized data service for time tracking files
 #[derive(Debug, Clone)]
 pub struct DataService {
@@ -55,6 +113,8 @@ pub struct DataService {
     cache_timeout: u64,
     /// Directory the day files are read from
     data_dir: DataDir,
+    /// How those files are parsed and created
+    parse_opts: ParseOpts,
 }
 
 impl DataService {
@@ -65,23 +125,39 @@ impl DataService {
         DATA_SVC.get_or_init(|| Self::new(Self::DEFAULT_CACHE_TIMEOUT_SECONDS))
     }
 
-    /// Create a new data service that resolves its directory from the global
-    /// configuration.
+    /// Create a new data service that resolves both its directory and its
+    /// parse settings from the global configuration.
     fn new(cache_timeout_seconds: u64) -> Self {
-        Self::with_data_dir(cache_timeout_seconds, DataDir::FromConfig)
+        Self::with_sources(
+            cache_timeout_seconds,
+            DataDir::FromConfig,
+            ParseOpts::FromConfig,
+        )
     }
 
-    /// Create a new data service that reads from `data_dir`, so callers that
-    /// already know their directory never reach for the config singleton.
-    pub fn new_with_dir(cache_timeout_seconds: u64, data_dir: PathBuf) -> Self {
-        Self::with_data_dir(cache_timeout_seconds, DataDir::Fixed(data_dir))
+    /// Create a new data service that reads `data_dir` with `parse_settings`.
+    ///
+    /// Nothing about such a service reads — or, on a fresh machine, writes —
+    /// the global configuration, so callers that already know their inputs
+    /// (the TUI) and tests that must stay hermetic use this.
+    pub fn new_with_dir(
+        cache_timeout_seconds: u64,
+        data_dir: PathBuf,
+        parse_settings: ParseSettings,
+    ) -> Self {
+        Self::with_sources(
+            cache_timeout_seconds,
+            DataDir::Fixed(data_dir),
+            ParseOpts::Fixed(parse_settings),
+        )
     }
 
-    fn with_data_dir(cache_timeout_seconds: u64, data_dir: DataDir) -> Self {
+    fn with_sources(cache_timeout_seconds: u64, data_dir: DataDir, parse_opts: ParseOpts) -> Self {
         Self {
             cache: Arc::new(Mutex::new(HashMap::new())),
             cache_timeout: cache_timeout_seconds,
             data_dir,
+            parse_opts,
         }
     }
 
@@ -137,27 +213,24 @@ impl DataService {
 
     /// Parse a day's time tracking data
     pub async fn parse_day(&self, date: &Date) -> Result<Option<TimeTrackingData>> {
-        let config = Config::get();
-        if let Some(content) = self.read_day(date).await? {
-            let data = time_tracking_parser::parse_time_tracking_data(
-                &content,
-                config.get_prefix(),
-                config.get_suffix(),
-            );
-            Ok(Some(data))
-        } else {
-            Ok(None)
-        }
+        let Some(content) = self.read_day(date).await? else {
+            return Ok(None);
+        };
+
+        Ok(Some(time_tracking_parser::parse_time_tracking_data(
+            &content,
+            self.parse_opts.prefix(),
+            self.parse_opts.suffix(),
+        )))
     }
 
     /// Create a new day file with template content if it doesn't exist
     pub async fn create_day_file_if_not_exists(&self, date: &Date) -> Result<PathBuf> {
-        let config = Config::get();
         let file_path = self.get_file_path(*date).await?;
 
         if !file_path.exists() {
             let template_content =
-                create_template_content(date, config.get_template_file()).await?;
+                create_template_content(date, self.parse_opts.template_file()).await?;
             fs::write(&file_path, template_content).await?;
 
             // Invalidate cache since we just created the file
@@ -281,17 +354,32 @@ impl DataService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
     use time::macros::date;
+
+    /// A service that touches nothing outside `dir`: it neither reads nor
+    /// creates the user's config file, so the test harness's own argv is never
+    /// handed to clap. The returned `TempDir` must be held for the test's
+    /// lifetime — dropping it deletes the directory.
+    fn hermetic_service(cache_timeout_seconds: u64) -> (DataService, TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = DataService::new_with_dir(
+            cache_timeout_seconds,
+            dir.path().to_path_buf(),
+            ParseSettings::default(),
+        );
+        (service, dir)
+    }
 
     #[tokio::test]
     async fn test_data_service_creation() {
-        let service = DataService::new(60);
+        let (service, _dir) = hermetic_service(60);
         assert_eq!(service.cache_timeout, 60);
     }
 
     #[tokio::test]
     async fn test_cache_invalidation() {
-        let service = DataService::new(60);
+        let (service, _dir) = hermetic_service(60);
         let test_date = date!(2023 - 10 - 15);
 
         // Add something to cache manually for testing
@@ -325,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_cache() {
-        let service = DataService::new(60);
+        let (service, _dir) = hermetic_service(60);
         let test_date1 = date!(2023 - 10 - 15);
         let test_date2 = date!(2023 - 10 - 16);
 
@@ -362,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_nonexistent_file() {
-        let service = DataService::new(60);
+        let (service, _dir) = hermetic_service(60);
 
         let test_date = date!(2001 - 10 - 15);
         let result = service.read_day(&test_date).await.unwrap();
@@ -373,7 +461,8 @@ mod tests {
     #[tokio::test]
     async fn test_new_with_dir_reads_from_the_injected_directory() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let service = DataService::new_with_dir(60, dir.path().to_path_buf());
+        let service =
+            DataService::new_with_dir(60, dir.path().to_path_buf(), ParseSettings::default());
         let test_date = date!(2023 - 10 - 15);
 
         let file_path = service
@@ -387,8 +476,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_injected_parse_settings_bound_the_entries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().to_path_buf(),
+            ParseSettings {
+                prefix: Some("```timetracking".to_string()),
+                suffix: Some("```".to_string()),
+                template_file: None,
+            },
+        );
+        let test_date = date!(2023 - 10 - 15);
+        tokio::fs::write(
+            dir.path().join("2023-10-15.md"),
+            "9:00-10:00 ignored-before-the-fence\n\
+             ```timetracking\n\
+             10:00-11:30 admin\n\
+             ```\n\
+             11:30-12:00 ignored-after-the-fence\n",
+        )
+        .await
+        .unwrap();
+
+        let data = service.parse_day(&test_date).await.unwrap().unwrap();
+
+        assert_eq!(data.total_minutes, 90);
+        assert_eq!(data.projects.len(), 1);
+        assert_eq!(data.projects[0].name, "admin");
+    }
+
+    #[tokio::test]
     async fn test_create_and_read_file() {
-        let service = DataService::new(60);
+        let (service, _dir) = hermetic_service(60);
 
         let test_date = date!(2023 - 10 - 15);
 

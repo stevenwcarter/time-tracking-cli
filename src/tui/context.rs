@@ -4,6 +4,7 @@ use time::Weekday;
 
 use super::theme::Theme;
 use crate::config::{Config, Formatter};
+use crate::data_svc::ParseSettings;
 use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::time_utils::parse_weekday;
 
@@ -27,6 +28,12 @@ pub struct TuiContext {
     pub daily_target_hours: f64,
     /// Formatter used when the TUI hands content to the display layer.
     pub formatter: Formatter,
+    /// Line before which a day file's time entries do not start.
+    pub prefix: Option<String>,
+    /// Line at which a day file's time entries stop.
+    pub suffix: Option<String>,
+    /// Template a newly created day file is seeded from.
+    pub template_file: Option<String>,
     /// The styles every widget draws with.
     pub theme: Theme,
 }
@@ -43,9 +50,24 @@ impl TuiContext {
                 .get_configured_formatter()
                 .cloned()
                 .unwrap_or(Formatter::Default),
+            prefix: config.get_prefix().map(str::to_owned),
+            suffix: config.get_suffix().map(str::to_owned),
+            template_file: config.get_template_file().map(str::to_owned),
             // Task 22 resolves the theme from the config plus NO_COLOR/COLORTERM.
             theme: Theme::dark(),
         })
+    }
+
+    /// The settings the day-file reader needs, so the TUI's [`DataService`]
+    /// parses exactly what the CLI would.
+    ///
+    /// [`DataService`]: crate::DataService
+    pub fn parse_settings(&self) -> ParseSettings {
+        ParseSettings {
+            prefix: self.prefix.clone(),
+            suffix: self.suffix.clone(),
+            template_file: self.template_file.clone(),
+        }
     }
 
     /// A deterministic context for tests: Saturday weeks, a scratch data
@@ -71,6 +93,9 @@ impl TuiContext {
             data_dir: env::temp_dir().join(format!("ttcli-test-{}-{id}", process::id())),
             daily_target_hours: DEFAULT_DAILY_TARGET_HOURS,
             formatter: Formatter::Plain,
+            prefix: None,
+            suffix: None,
+            template_file: None,
             theme: Theme::none(),
         }
     }
@@ -99,6 +124,35 @@ mod tests {
         assert_eq!(ctx.formatter, Formatter::Plain);
         assert_eq!(ctx.daily_target_hours, 8.0);
         assert!(ctx.data_dir.starts_with(std::env::temp_dir()));
+        assert_eq!(ctx.parse_settings(), ParseSettings::default());
+    }
+
+    #[test]
+    fn from_config_carries_the_directory_and_parse_markers() {
+        // Guards a silent regression: if the TUI's reader lost the configured
+        // fence markers it would parse a fenced day file differently from the
+        // CLI, and every total in the TUI would quietly disagree.
+        let config = Config {
+            week_start_day: Some("Monday".to_string()),
+            data_directory: Some("/test/data".to_string()),
+            prefix: Some("```timetracking".to_string()),
+            suffix: Some("```".to_string()),
+            template_file: Some("/test/template.md".to_string()),
+            ..Config::default()
+        };
+
+        let ctx = TuiContext::from_config(&config).expect("context from config");
+
+        assert_eq!(ctx.week_start_day, Weekday::Monday);
+        assert_eq!(ctx.data_dir, PathBuf::from("/test/data"));
+        assert_eq!(
+            ctx.parse_settings(),
+            ParseSettings {
+                prefix: Some("```timetracking".to_string()),
+                suffix: Some("```".to_string()),
+                template_file: Some("/test/template.md".to_string()),
+            }
+        );
     }
 
     #[test]

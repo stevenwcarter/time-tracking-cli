@@ -59,6 +59,7 @@ impl App {
         let data_svc = DataService::new_with_dir(
             DataService::DEFAULT_CACHE_TIMEOUT_SECONDS,
             ctx.data_dir.clone(),
+            ctx.parse_settings(),
         );
         Self {
             running: true,
