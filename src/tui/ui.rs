@@ -1,7 +1,8 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use time::Date;
 
-use crate::DATE_FORMAT;
+use crate::{DATE_FORMAT, time_utils::WeekdayExt};
 
 use super::app::App;
 use super::mode::{Mode, Overlay};
@@ -53,11 +54,13 @@ impl App {
         }
 
         let block = Block::bordered()
-            .title(self.active_date.format(DATE_FORMAT).unwrap())
+            .title(format_pane_title(self.active_date))
             .border_type(BorderType::Rounded);
 
         if let Some(widget) = &mut self.project_list_widget {
-            widget.render(chunks[1], buf);
+            let inner = block.inner(chunks[1]);
+            block.render(chunks[1], buf);
+            widget.render(inner, buf);
         } else {
             let tt_par = Paragraph::new("No data found for date")
                 .block(block)
@@ -102,6 +105,21 @@ fn render_placeholder(name: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
         .render(area, buf);
 }
 
+/// The project pane's title: the active date's short weekday plus its ISO
+/// form, e.g. `"Thu 2026-08-27"`. This is the only textual confirmation of
+/// which day is on screen once a `h`/`l` press has moved off the calendar's
+/// highlighted cell, so it is attached to the pane whether or not that day
+/// has any data.
+///
+/// Falls back to the bare ISO date if formatting ever fails, rather than
+/// unwrapping and panicking the render loop over a display string.
+fn format_pane_title(date: Date) -> String {
+    let iso = date
+        .format(DATE_FORMAT)
+        .unwrap_or_else(|_| date.to_string());
+    format!("{} {iso}", date.weekday().short_name())
+}
+
 fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
     if chunks.is_empty() {
         return None;
@@ -122,6 +140,8 @@ fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
+    use time::macros::date;
+
     use super::*;
     use crate::tui::context::TuiContext;
     use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
@@ -175,5 +195,25 @@ mod tests {
             let screen = render_to_string(&mut app, 100, 30);
             assert!(screen.contains(expected), "{mode:?} rendered:\n{screen}");
         }
+    }
+
+    /// This is the test that catches the bug: the block carrying the active
+    /// date's title was built and then dropped without ever being attached
+    /// when the day had data, so only `the_empty_pane_also_shows_the_active_date`
+    /// passed before the fix.
+    #[test]
+    fn the_day_pane_shows_the_active_date_with_its_weekday() {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(date!(2026 - 08 - 27))
+            .with_data(fixture_day());
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Thu 2026-08-27"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn the_empty_pane_also_shows_the_active_date() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 27));
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Thu 2026-08-27"), "got:\n{screen}");
     }
 }
