@@ -32,6 +32,7 @@ async fn main_impl() -> Result<()> {
         parse_weekday(config.get_week_start_day()).context("Could not parse weekday")?;
 
     let mut set: JoinSet<()> = JoinSet::new();
+    let mut webserver_running = false;
 
     #[cfg(feature = "webapp")]
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -41,6 +42,7 @@ async fn main_impl() -> Result<()> {
     if let Some(true) = config.serve
         && let Some(port) = config.port
     {
+        webserver_running = true;
         info!("🚀 Starting Time Tracking Web Server...");
         let config = config.clone();
         set.spawn(async move {
@@ -88,7 +90,9 @@ async fn main_impl() -> Result<()> {
     }
 
     if !set.is_empty() {
-        println!("Other jobs are running (webserver or tui), press ctrl-c to quit (webserver)");
+        if webserver_running {
+            println!("Other jobs are running (webserver or tui), press ctrl-c to quit (webserver)");
+        }
         while let Some(res) = set.join_next().await {
             if let Err(e) = res {
                 error!("Task failed: {}", e);

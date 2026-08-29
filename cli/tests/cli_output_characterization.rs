@@ -179,3 +179,20 @@ fn weekly_tie_ordering_is_deterministic() {
         assert_eq!(first, again, "tie ordering varied between runs");
     }
 }
+
+#[test]
+fn tui_only_launch_prints_no_webserver_banner() {
+    // --tui with no TTY exits immediately; we only care about stdout.
+    let dir = staged("week_no_ties");
+    let out = Command::new(env!("CARGO_BIN_EXE_ttcli"))
+        .args(["--tui", "--data-directory"])
+        .arg(dir.path())
+        .env("TERM", "dumb")
+        .output()
+        .expect("run ttcli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("webserver"),
+        "a TUI-only launch must not mention the webserver: {stdout}"
+    );
+}
