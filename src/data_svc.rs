@@ -313,7 +313,7 @@ impl DataService {
         #[cfg(test)]
         self.parse_count.fetch_add(1, Ordering::Relaxed);
 
-        self.cache_parsed(*date, parsed.clone()).await;
+        self.cache_parsed(*date, &content, parsed.clone()).await;
 
         Ok(Some(parsed))
     }
@@ -612,14 +612,23 @@ impl DataService {
     }
 
     /// Store a freshly computed parse alongside whatever `cache_content`
-    /// already recorded for `date` (the raw content and its mod time). If
-    /// the entry was invalidated out from under us between the parse and
-    /// this call, there's nothing to attach the parse to and it is simply
-    /// dropped — the next `parse_day` call will parse again, which is
-    /// correct, just not maximally memoized.
-    async fn cache_parsed(&self, date: Date, parsed: TimeTrackingData) {
+    /// already recorded for `date` (the raw content and its mod time).
+    ///
+    /// `content` is the text the parse was actually computed from, and the
+    /// attach happens **only** if the entry still holds exactly that text.
+    /// Both ways of losing that race drop the parse: the entry may have been
+    /// invalidated out from under us, or a concurrent `read_day` may have
+    /// replaced it with newer content. Attaching regardless left the new
+    /// content sitting next to the old parse, and `get_valid_entry` then
+    /// certified that pairing as fresh for the rest of the TTL — the raw-file
+    /// pane showing the new text while the totals, the calendar marker and the
+    /// bar chart showed the old numbers. Dropping costs only a reparse on the
+    /// next call, which is correct, just not maximally memoized.
+    async fn cache_parsed(&self, date: Date, content: &str, parsed: TimeTrackingData) {
         let mut cache = self.cache.lock().await;
-        if let Some(entry) = cache.get_mut(&date) {
+        if let Some(entry) = cache.get_mut(&date)
+            && entry.data.as_deref() == Some(content)
+        {
             entry.parsed = Some(parsed);
         }
     }
@@ -646,6 +655,67 @@ mod tests {
     /// creates the user's config file, so the test harness's own argv is never
     /// handed to clap. The returned `TempDir` must be held for the test's
     /// lifetime — dropping it deletes the directory.
+    /// A write that lands while a parse is in flight must not leave the new
+    /// content sitting next to the old parse.
+    ///
+    /// `cache_parsed` used to attach its parse to whatever entry happened to
+    /// be in the map when it finally took the lock, so this interleaving left
+    /// `{data: C2, parsed: parse(C1), mod: M2}` — which `get_valid_entry` then
+    /// certifies as fresh for the whole TTL. It is not exotic: `App::load`
+    /// issues three racing accesses to the same date on every load, the TUI
+    /// auto-reloads the instant the file changes on disk, and `r` does not
+    /// invalidate, so the only escape was to wait the TTL out.
+    ///
+    /// The window is opened deliberately rather than slept at. `C1` is large
+    /// enough that parsing it takes tens of milliseconds, and the test waits
+    /// on the cache entry `read_day` writes — the exact moment the window
+    /// opens — instead of guessing with a fixed delay. The reviewer's original
+    /// formulation slept 1100ms *before* writing, by which time the parse it
+    /// meant to race had long since finished; it passed 50/50 against the bug.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_write_racing_an_in_flight_parse_does_not_poison_the_cache() {
+        let (service, dir) = hermetic_service(60);
+        let d = date!(2026 - 08 - 24);
+        let path = dir.path().join("2026-08-24.md");
+
+        // C1: slow to parse, and its total is nowhere near C2's.
+        let c1: String = (0..20_000).map(|_| "8-10 admin\n").collect();
+        tokio::fs::write(&path, &c1).await.unwrap();
+
+        let parser = {
+            let svc = service.clone();
+            tokio::spawn(async move { svc.parse_day(&d).await })
+        };
+
+        // Wait for the parser's `read_day` to publish C1, then it is parsing.
+        loop {
+            let seen = {
+                let cache = service.cache.lock().await;
+                cache.get(&d).and_then(|e| e.data.clone())
+            };
+            if seen.as_deref() == Some(c1.as_str()) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        // C2 lands mid-parse and a concurrent reader republishes the entry.
+        tokio::fs::write(&path, "8-12 admin\n").await.unwrap();
+        assert_eq!(
+            service.read_day(&d).await.unwrap().as_deref(),
+            Some("8-12 admin\n"),
+            "the racing reader must see the new content"
+        );
+
+        parser.await.unwrap().unwrap();
+
+        assert_eq!(
+            service.parse_day(&d).await.unwrap().unwrap().total_minutes,
+            240,
+            "the cache must not be holding the pre-write parse"
+        );
+    }
+
     fn hermetic_service(cache_timeout_seconds: u64) -> (DataService, TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         let service = DataService::new_with_dir(
