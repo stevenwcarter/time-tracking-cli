@@ -1,4 +1,4 @@
-use super::DisplayFormatter;
+use super::{DisplayFormatter, WeeklyProject};
 use time_tracking_parser::Time;
 
 /// Markdown-formatted display formatter
@@ -95,20 +95,20 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
         println!("{}", self.weekly_totals(total_minutes, dead_minutes));
     }
 
-    fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String {
+    fn weekly_projects(&self, projects: &[WeeklyProject]) -> String {
         let mut msg = String::new();
         if !projects.is_empty() {
             msg.push_str("## Projects\n");
-            for (project_name, (total_minutes, notes)) in projects {
-                msg.push_str(&format!("### {}\n", project_name));
+            for project in projects {
+                msg.push_str(&format!("### {}\n", project.name));
                 msg.push_str(&format!(
                     "**Time:** {} hours\n",
-                    Time::format_duration_decimal(*total_minutes),
+                    Time::format_duration_decimal(project.total_minutes),
                 ));
 
-                if !notes.is_empty() {
+                if !project.notes.is_empty() {
                     msg.push_str("**Notes:**\n");
-                    for note in notes {
+                    for note in &project.notes {
                         msg.push_str(&format!("- {}\n", note));
                     }
                 }
@@ -117,7 +117,7 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
         }
         msg
     }
-    fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
+    fn display_weekly_projects(&self, projects: &[WeeklyProject]) {
         println!("{}", self.weekly_projects(projects));
     }
 

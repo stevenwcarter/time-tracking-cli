@@ -1,7 +1,7 @@
 use std::fmt::Debug;
+use std::io;
 use std::io::Read;
 use std::path::PathBuf;
-use std::{clone::Clone, io};
 
 mod default;
 mod markdown;
@@ -16,7 +16,10 @@ use time::{Date, Weekday};
 use time_tracking_parser::{Time, TimeTrackingData, format_time_option, parse_time_tracking_data};
 use tracing::info;
 
-use crate::{Config, DataService, format_day_with_date, get_week_dates, open_in_editor};
+use crate::{
+    Config, DataService, data_svc::WeeklyProject, format_day_with_date, get_week_dates,
+    open_in_editor,
+};
 
 /// Trait for formatting and displaying time tracking data
 pub trait DisplayFormatter: Debug + Send + Sync {
@@ -45,8 +48,8 @@ pub trait DisplayFormatter: Debug + Send + Sync {
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32);
 
     /// Display weekly projects summary
-    fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String;
-    fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]);
+    fn weekly_projects(&self, projects: &[WeeklyProject]) -> String;
+    fn display_weekly_projects(&self, projects: &[WeeklyProject]);
 
     /// Display daily breakdowns header
     fn daily_breakdowns_header(&self) -> String;
@@ -199,71 +202,27 @@ pub async fn show_weekly_summary(
         &format_day_with_date(&week_dates[6]),
     );
 
-    let mut total_week_minutes = 0;
-    let mut total_week_dead_minutes = 0;
-    let mut week_warnings = Vec::new();
-    let mut week_projects: std::collections::HashMap<String, (u32, Vec<String>)> =
-        std::collections::HashMap::new();
-    let mut daily_data = Vec::new();
-
-    // First pass: collect all data
-    for day_date in &week_dates {
-        if let Some(content) = data_service.read_day(day_date).await? {
-            let config = Config::get();
-            let data = parse_time_tracking_data(&content, config.get_prefix(), config.get_suffix());
-
-            // Add to weekly totals
-            total_week_minutes += data.total_minutes;
-            total_week_dead_minutes += data.dead_time_minutes;
-
-            // Collect warnings
-            for warning in &data.warnings {
-                if !warning.contains("Error parsing time range '#'") {
-                    // Skip markdown header warnings
-                    week_warnings.push(format!("{}: {}", format_day_with_date(day_date), warning));
-                }
-            }
-
-            // Aggregate projects
-            for project in &data.projects {
-                let entry = week_projects
-                    .entry(project.name.clone())
-                    .or_insert((0, Vec::new()));
-                entry.0 += project.total_minutes;
-                for note in &project.notes {
-                    entry
-                        .1
-                        .push(format!("{}: {}", format_day_with_date(day_date), note));
-                }
-            }
-
-            daily_data.push((*day_date, content, Some(data)));
-        } else {
-            daily_data.push((*day_date, String::new(), None));
-        }
-    }
+    let summary = data_service.get_weekly_summary(&week_dates).await?;
 
     // Display weekly summary at the top
-    formatter.display_weekly_totals(total_week_minutes, total_week_dead_minutes);
+    formatter.display_weekly_totals(summary.total_minutes, summary.dead_time_minutes);
 
-    if !week_warnings.is_empty() {
+    if !summary.warnings.is_empty() {
         println!("\n⚠️  WEEKLY WARNINGS");
-        for warning in &week_warnings {
+        for warning in &summary.warnings {
             println!("  ⚠ {}", warning);
         }
     }
 
-    if !week_projects.is_empty() {
-        let mut projects: Vec<_> = week_projects.iter().collect();
-        projects.sort_by_key(|a| std::cmp::Reverse(a.1.0)); // Sort by total minutes descending
-        formatter.display_weekly_projects(&projects);
+    if !summary.projects.is_empty() {
+        formatter.display_weekly_projects(&summary.projects);
     }
 
     // Now display detailed daily summaries
     formatter.display_daily_breakdowns_header();
 
     let config = Config::get();
-    for (day_date, content, data_opt) in daily_data {
+    for (day_date, content, data_opt) in summary.days {
         formatter.display_day_header(&format_day_with_date(&day_date));
 
         if let Some(data) = data_opt {
@@ -347,6 +306,14 @@ pub async fn show_single_day(
 mod tests {
     use super::*;
 
+    fn project(name: &str, total_minutes: u32, notes: &[&str]) -> WeeklyProject {
+        WeeklyProject {
+            name: name.to_string(),
+            total_minutes,
+            notes: notes.iter().map(|n| (*n).to_string()).collect(),
+        }
+    }
+
     #[test]
     fn test_default_display_formatter_creation() {
         let formatter = DefaultDisplayFormatter;
@@ -385,14 +352,10 @@ mod tests {
         formatter.display_no_data_found("  ");
 
         // Test with empty projects
-        let empty_projects: Vec<(&String, &(u32, Vec<String>))> = vec![];
-        formatter.display_weekly_projects(&empty_projects);
+        formatter.display_weekly_projects(&[]);
 
         // Test with sample projects
-        let project_name = "test_project".to_string();
-        let project_data = (120u32, vec!["Note 1".to_string(), "Note 2".to_string()]);
-        let projects = vec![(&project_name, &project_data)];
-        formatter.display_weekly_projects(&projects);
+        formatter.display_weekly_projects(&[project("test_project", 120, &["Note 1", "Note 2"])]);
     }
 
     #[tokio::test]
@@ -407,8 +370,7 @@ mod tests {
         formatter.display_no_file_found("");
         formatter.display_no_data_found("");
 
-        let empty_projects: Vec<(&String, &(u32, Vec<String>))> = vec![];
-        formatter.display_weekly_projects(&empty_projects);
+        formatter.display_weekly_projects(&[]);
     }
 
     #[tokio::test]
@@ -423,10 +385,7 @@ mod tests {
         formatter.display_no_file_found("    ");
         formatter.display_no_data_found("    ");
 
-        let project_name = "markdown_project".to_string();
-        let project_data = (180u32, vec!["Markdown note".to_string()]);
-        let projects = vec![(&project_name, &project_data)];
-        formatter.display_weekly_projects(&projects);
+        formatter.display_weekly_projects(&[project("markdown_project", 180, &["Markdown note"])]);
     }
 
     #[tokio::test]
@@ -476,32 +435,23 @@ mod tests {
         let formatter = DefaultDisplayFormatter;
 
         // Empty projects
-        let empty_projects: Vec<(&String, &(u32, Vec<String>))> = vec![];
-        formatter.display_weekly_projects(&empty_projects);
+        formatter.display_weekly_projects(&[]);
 
         // Project with no notes
-        let project_name = "no_notes_project".to_string();
-        let project_data = (60u32, vec![]);
-        let projects_no_notes = vec![(&project_name, &project_data)];
-        formatter.display_weekly_projects(&projects_no_notes);
+        formatter.display_weekly_projects(&[project("no_notes_project", 60, &[])]);
 
         // Project with many notes
-        let project_name_many = "many_notes_project".to_string();
-        let many_notes = (1..10).map(|i| format!("Note {}", i)).collect();
-        let project_data_many = (300u32, many_notes);
-        let projects_many_notes = vec![(&project_name_many, &project_data_many)];
-        formatter.display_weekly_projects(&projects_many_notes);
+        formatter.display_weekly_projects(&[WeeklyProject {
+            name: "many_notes_project".to_string(),
+            total_minutes: 300,
+            notes: (1..10).map(|i| format!("Note {}", i)).collect(),
+        }]);
 
         // Multiple projects
-        let project1_name = "project1".to_string();
-        let project1_data = (120u32, vec!["Note 1".to_string()]);
-        let project2_name = "project2".to_string();
-        let project2_data = (180u32, vec!["Note A".to_string(), "Note B".to_string()]);
-        let multiple_projects = vec![
-            (&project1_name, &project1_data),
-            (&project2_name, &project2_data),
-        ];
-        formatter.display_weekly_projects(&multiple_projects);
+        formatter.display_weekly_projects(&[
+            project("project1", 120, &["Note 1"]),
+            project("project2", 180, &["Note A", "Note B"]),
+        ]);
     }
 
     #[tokio::test]

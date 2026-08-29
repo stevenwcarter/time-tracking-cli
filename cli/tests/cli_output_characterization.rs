@@ -148,11 +148,9 @@ fn weekly_summary_includes_warnings_section() {
     compare_golden("weekly_with_warnings_default", &got);
 }
 
-/// Ties are ordered by `HashMap` iteration today, so this asserts a property
-/// rather than exact bytes. It is expected to be unstable until Task 11 adds
-/// the name tiebreak.
+/// Ties are broken by project name, so this asserts a property rather than
+/// exact bytes: repeated runs over the same fixture must agree.
 #[test]
-#[ignore = "unstable until Task 11 sorts weekly projects by (minutes desc, name asc)"]
 fn weekly_tie_ordering_is_deterministic() {
     let dir = staged("week_with_ties");
     let first = run_ttcli(

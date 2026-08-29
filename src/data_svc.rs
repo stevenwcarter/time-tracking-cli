@@ -13,7 +13,10 @@ use tokio::{fs, sync::Mutex};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{Config, DATE_FORMAT, file_utils::create_template_content, get_time_tracking_dir};
+use crate::{
+    Config, DATE_FORMAT, file_utils::create_template_content, format_day_with_date,
+    get_time_tracking_dir,
+};
 
 static DATA_SVC: OnceLock<DataService> = OnceLock::new();
 
@@ -108,6 +111,41 @@ impl ParseOpts {
             Self::Fixed(settings) => settings.template_file.as_deref(),
         }
     }
+}
+
+/// One project's rollup across a week.
+///
+/// `notes` are already prefixed with the day they came from, in day order,
+/// because [`DataService::get_weekly_summary`] visits the week in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeeklyProject {
+    /// Project code exactly as it appears in the day files.
+    pub name: String,
+    /// Minutes booked against this project across the whole week.
+    pub total_minutes: u32,
+    /// Notes for this project, each rendered as `"<Weekday YYYY-MM-DD>: <note>"`.
+    pub notes: Vec<String>,
+}
+
+/// Everything a week of day files adds up to.
+///
+/// This is the one weekly aggregation in the codebase: the stdout printer and
+/// the TUI both render it rather than each recomputing the rollup.
+#[derive(Debug, Clone, Default)]
+pub struct WeeklySummary {
+    /// Working minutes across the week.
+    pub total_minutes: u32,
+    /// Dead (gap) minutes across the week.
+    pub dead_time_minutes: u32,
+    /// Per-project rollup, ordered by minutes descending then name ascending.
+    pub projects: Vec<WeeklyProject>,
+    /// Parser warnings, each prefixed with the day that produced it.
+    pub warnings: Vec<String>,
+    /// Working minutes per day, zero for a day with no file.
+    pub per_day: HashMap<Date, u32>,
+    /// Every requested date, in the order given, with its raw content and its
+    /// parse. A day with no file on disk contributes `(date, String::new(), None)`.
+    pub days: Vec<(Date, String, Option<TimeTrackingData>)>,
 }
 
 /// Centralized data service for time tracking files
@@ -329,27 +367,81 @@ impl DataService {
         Ok(populated_dates)
     }
 
-    /// Get weekly data for a range of dates
-    pub async fn get_weekly_data(&self, dates: &[Date]) -> Result<HashMap<Date, u32>> {
-        let mut set = tokio::task::JoinSet::new();
-        for &date in dates {
-            let svc = self.clone();
-            set.spawn(async move {
-                let total_minutes = if let Some(data) = svc.parse_day(&date).await? {
-                    data.total_minutes
-                } else {
-                    0
-                };
-                Ok::<(Date, u32), anyhow::Error>((date, total_minutes))
-            });
+    /// Aggregate `dates` into a single [`WeeklySummary`].
+    ///
+    /// Days are visited in the order given, which is what keeps the per-day
+    /// prefixes on warnings and project notes in day order. Both the raw
+    /// content and the parse come from the per-date cache, so a week that is
+    /// already cached costs no file reads and no reparses.
+    pub async fn get_weekly_summary(&self, dates: &[Date]) -> Result<WeeklySummary> {
+        let mut summary = WeeklySummary::default();
+        let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+
+        for day_date in dates {
+            let (Some(content), Some(data)) = (
+                self.read_day(day_date).await?,
+                self.parse_day(day_date).await?,
+            ) else {
+                summary.per_day.insert(*day_date, 0);
+                summary.days.push((*day_date, String::new(), None));
+                continue;
+            };
+
+            summary.total_minutes += data.total_minutes;
+            summary.dead_time_minutes += data.dead_time_minutes;
+            summary.per_day.insert(*day_date, data.total_minutes);
+
+            for warning in &data.warnings {
+                if !warning.contains("Error parsing time range '#'") {
+                    // Skip markdown header warnings
+                    summary.warnings.push(format!(
+                        "{}: {}",
+                        format_day_with_date(day_date),
+                        warning
+                    ));
+                }
+            }
+
+            for project in &data.projects {
+                let entry = week_projects
+                    .entry(project.name.clone())
+                    .or_insert((0, Vec::new()));
+                entry.0 += project.total_minutes;
+                for note in &project.notes {
+                    entry
+                        .1
+                        .push(format!("{}: {}", format_day_with_date(day_date), note));
+                }
+            }
+
+            summary.days.push((*day_date, content, Some(data)));
         }
 
-        let mut weekly_data = HashMap::new();
-        while let Some(result) = set.join_next().await {
-            let (date, total_minutes) = result??;
-            weekly_data.insert(date, total_minutes);
-        }
-        Ok(weekly_data)
+        summary.projects = week_projects
+            .into_iter()
+            .map(|(name, (total_minutes, notes))| WeeklyProject {
+                name,
+                total_minutes,
+                notes,
+            })
+            .collect();
+        // Ties on minutes fall back to the name so the ordering is stable from
+        // run to run; iterating the `HashMap` alone is not.
+        summary.projects.sort_by(|a, b| {
+            b.total_minutes
+                .cmp(&a.total_minutes)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        Ok(summary)
+    }
+
+    /// Working minutes per day for `dates`.
+    ///
+    /// A projection of [`Self::get_weekly_summary`] rather than a second
+    /// implementation of the same walk.
+    pub async fn get_weekly_data(&self, dates: &[Date]) -> Result<HashMap<Date, u32>> {
+        Ok(self.get_weekly_summary(dates).await?.per_day)
     }
 
     /// Return the cache entry for `date` if it is still valid for
@@ -626,6 +718,93 @@ mod tests {
             service.parse_count(),
             1,
             "second call must be served from cache"
+        );
+    }
+
+    /// The week of 2026-08-22..2026-08-28, which every weekly test uses.
+    fn week_of_2026_08_22() -> Vec<Date> {
+        (22..=28)
+            .map(|d| date!(2026 - 08 - 01).replace_day(d).expect("valid day"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn weekly_projects_sort_by_minutes_desc_then_name_asc() {
+        let (service, dir) = hermetic_service(60);
+        // zulu and alpha tie at 120 minutes; beta is larger.
+        tokio::fs::write(
+            dir.path().join("2026-08-24.md"),
+            "8-10 zulu\n10-12 alpha\n1-4 beta\n",
+        )
+        .await
+        .unwrap();
+
+        let summary = service
+            .get_weekly_summary(&week_of_2026_08_22())
+            .await
+            .unwrap();
+
+        let names: Vec<&str> = summary.projects.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["beta", "alpha", "zulu"],
+            "minutes desc, then name asc"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_weekly_data_is_a_projection_of_the_summary() {
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        let week = week_of_2026_08_22();
+
+        let summary = service.get_weekly_summary(&week).await.unwrap();
+        let per_day = service.get_weekly_data(&week).await.unwrap();
+
+        assert_eq!(summary.per_day, per_day);
+    }
+
+    #[tokio::test]
+    async fn weekly_summary_keeps_missing_days_and_orders_notes_by_day() {
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(
+            dir.path().join("2026-08-24.md"),
+            "8-10 admin\n  - monday note\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.path().join("2026-08-26.md"),
+            "8-10 admin\n  - wednesday note\n",
+        )
+        .await
+        .unwrap();
+
+        let summary = service
+            .get_weekly_summary(&week_of_2026_08_22())
+            .await
+            .unwrap();
+
+        assert_eq!(summary.total_minutes, 240);
+        assert_eq!(summary.days.len(), 7, "every requested date is represented");
+        assert_eq!(
+            summary
+                .days
+                .iter()
+                .filter(|(_, _, data)| data.is_none())
+                .count(),
+            5,
+            "days with no file keep their slot"
+        );
+        assert_eq!(
+            summary.projects[0].notes,
+            vec![
+                "Monday 2026-08-24: monday note".to_string(),
+                "Wednesday 2026-08-26: wednesday note".to_string(),
+            ],
+            "notes follow the order the week is walked in"
         );
     }
 

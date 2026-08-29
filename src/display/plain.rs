@@ -1,6 +1,6 @@
 use time_tracking_parser::Time;
 
-use super::{DaySummaryStyle, DisplayFormatter, format_day_summary_impl};
+use super::{DaySummaryStyle, DisplayFormatter, WeeklyProject, format_day_summary_impl};
 
 const PLAIN_STYLE: DaySummaryStyle = DaySummaryStyle {
     overview_header: "TIME OVERVIEW",
@@ -80,21 +80,21 @@ impl DisplayFormatter for PlainDisplayFormatter {
         println!("{}", self.weekly_totals(total_minutes, dead_minutes));
     }
 
-    fn weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) -> String {
+    fn weekly_projects(&self, projects: &[WeeklyProject]) -> String {
         let mut msg = String::new();
         if !projects.is_empty() {
             msg.push_str("\nWEEKLY PROJECTS SUMMARY\n\n");
 
-            for (project_name, (total_minutes, notes)) in projects {
+            for project in projects {
                 msg.push_str(&format!(
                     "  * {} - {} ({} hrs)\n",
-                    project_name,
-                    Time::format_duration_minutes(*total_minutes),
-                    Time::format_duration_decimal(*total_minutes),
+                    project.name,
+                    Time::format_duration_minutes(project.total_minutes),
+                    Time::format_duration_decimal(project.total_minutes),
                 ));
 
-                if !notes.is_empty() {
-                    for note in notes {
+                if !project.notes.is_empty() {
+                    for note in &project.notes {
                         msg.push_str(&format!("    - {}\n", note));
                     }
                 }
@@ -102,7 +102,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
         }
         msg
     }
-    fn display_weekly_projects(&self, projects: &[(&String, &(u32, Vec<String>))]) {
+    fn display_weekly_projects(&self, projects: &[WeeklyProject]) {
         println!("{}", self.weekly_projects(projects));
     }
 
