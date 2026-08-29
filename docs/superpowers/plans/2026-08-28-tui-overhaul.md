@@ -1028,6 +1028,13 @@ git add -A && git commit -m "perf(tui): move data loads off the event loop with 
 
 ## Task 7: Redraw only on state change (W7)
 
+**Two items carried from Task 6's review — both are requirements of this task.**
+
+**(a) Abort superseded loads.** `spawn_load` keeps no `JoinHandle`, so a superseded load runs to completion in the background. Each one calls `find_populated_dates` over a ~90-day window, which spawns one task per date plus seven for the week — roughly 97 tasks per keypress, all contending on the single `Arc<Mutex<HashMap>>` cache. Holding `l` at key-repeat for three seconds is on the order of **7,000 live tasks**. The generation guard keeps the *result* correct; nothing bounds the *work*. Store the `JoinHandle` on `App`, `abort()` the previous one when a new load supersedes it, and log rather than silently drop a panic from the handle. (Task 10 separately collapses the 90-date fan-out into one `read_dir`, which reduces the per-load cost — but that is a smaller multiplier, not a substitute for bounding it.)
+
+**(b) Your `dirty` seam has a gap.** This task's steps set `dirty` in `handle_key_events`, in `apply_sync_event`, and after `apply_payload`. `handle_app_event`'s own two arms — `ReloadFromDisk` and `Edit` — sit outside all three. That is harmless today only because `go_to_date` happens to run inside `apply_sync_event`; it is exactly the seam that will silently stop repainting when someone moves it. Set `dirty` there too, or set it centrally in the event-dispatch path rather than at each call site.
+
+
 `run()` calls `terminal.draw` at the top of every loop iteration (`app.rs:78`) and the loop turns once per event, so the 30 FPS tick at `event.rs:9` forces thirty full re-renders per second forever with zero input and no animation. Each render rebuilds a `CalendarEventStore` from up to ninety dates and reallocates a `String` per project and per note bullet.
 
 **Files:**
@@ -1568,7 +1575,13 @@ async fn a_failed_load_surfaces_on_the_status_line() {
 Run: `cargo test --lib tui::`
 Expected: FAIL — `set_status` does not exist and `Enter` still performs I/O.
 
-**Carried from Task 6 — a user-visible regression it introduced and this task must close.** Moving loads off the event loop means startup now draws the empty state *before* the first load lands, so a cold cache shows a flash of "no data" before the day appears. `App.loading` is already set by `spawn_load`; rendering it is this task's job, and it is the reason `set_status` has been a no-op stub since Task 6. Make sure the loading indicator actually covers the startup window, not just subsequent navigations — a test that only exercises a keypress-triggered load would miss it.
+**Carried from Task 6 — a user-visible regression it introduced and this task must close. Task 6's review found it is worse than first described, so read this whole paragraph.**
+
+It is not only a startup flash. `go_to_date` moves `active_date` and `week_dates` immediately, while `data`, `populated_dates` and `weekly_data` only move when the payload lands. So on **every date change** the day pane renders the *previous* date's project list underneath the *new* date's header — stale data presented as current, which reads worse than an empty state — and across a week boundary the bar chart draws the new `week_dates` against the old `weekly_data`, i.e. all-zero bars. Before loads went async this mismatch lasted a single frame; now it lasts the whole load.
+
+Setting `status = "Loading…"` only *labels* the stale content. Decide deliberately whether to suppress the mismatched pane while a load is in flight rather than annotate it, and pin whichever you choose with a test that changes date and asserts on the frame drawn *before* the payload arrives. A test that only exercises startup, or only asserts after the payload lands, misses this entirely.
+
+**The original startup note follows.** Moving loads off the event loop means startup now draws the empty state *before* the first load lands, so a cold cache shows a flash of "no data" before the day appears. `App.loading` is already set by `spawn_load`; rendering it is this task's job, and it is the reason `set_status` has been a no-op stub since Task 6. Make sure the loading indicator actually covers the startup window, not just subsequent navigations — a test that only exercises a keypress-triggered load would miss it.
 
 - [ ] **Step 3: Implement**
 
