@@ -245,6 +245,7 @@ mod tests {
         let week = week();
         let mut data = HashMap::new();
         data.insert(date!(2026 - 08 - 24), 480u32); // 8h on the third day
+        data.insert(date!(2026 - 08 - 23), 3u32); // 3 tracked minutes: floors to a zero bar
         let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
         chart.set_weekly_data(&data);
 
@@ -254,8 +255,17 @@ mod tests {
         assert_eq!(values[2].date, date!(2026 - 08 - 24));
         assert_eq!(values[2].tenths, 80, "8h in tenths of an hour");
         assert_eq!(
+            values[2].minutes, 480,
+            "bar_values must carry the raw minutes through, not just the scaled value"
+        );
+        assert_eq!(
             values[0].tenths, 0,
             "a day with no data is a zero bar, not absent"
+        );
+        assert_eq!(values[1].tenths, 0, "3 minutes floors to a zero-height bar");
+        assert_eq!(
+            values[1].minutes, 3,
+            "but the raw minutes must survive the floor, for style_for to read"
         );
     }
 
