@@ -13,6 +13,7 @@ Week of Saturday 2026-08-22 to Friday 2026-08-28
 
 ⚠️  WEEKLY WARNINGS
   ⚠ Saturday 2026-08-22: Time period 1:00-10:00 appears to be longer than 8 hours. Input may not be in correct order.
+  ⚠ Sunday 2026-08-23: Error parsing time range '25:99-30:00': Hour failed the predicate test.
   ⚠ Monday 2026-08-24: Gap from 1:30 to 8:00 appears to be longer than 6 hours. Input may not be in correct order.
 
 📋 WEEKLY PROJECTS SUMMARY
@@ -59,7 +60,7 @@ DAILY BREAKDOWNS
 📅 Sunday 2026-08-23
 ============================================================
 
-  📄 No time tracking file found
+  💤 No time tracking data found
 
 📅 Monday 2026-08-24
 ============================================================
