@@ -14,7 +14,7 @@ webapp = ["time-tracking-cli/webapp"]
 tui = ["time-tracking-cli/tui"]
 
 [dependencies]
-time-tracking-cli = { path = "..", features = ["webapp", "tui"] }
+time-tracking-cli = { path = "..", default-features = false }
 anyhow = "1.0.100"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1.41"
