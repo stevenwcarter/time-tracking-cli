@@ -75,6 +75,13 @@ const NOTHING_TO_COPY: &str = "Nothing to copy";
 /// instead, the same way `ui.rs` withholds the bar chart in this window.
 const WEEK_STILL_LOADING: &str = "Week still loading";
 
+/// The day-axis twin of [`WEEK_STILL_LOADING`], shown when `y` is pressed in
+/// the window [`App::day_is_stale`] names. Same stakes, same reason for its
+/// own message rather than [`NOTHING_TO_COPY`]: there *is* something to
+/// copy, it just describes the wrong date, and saying "nothing to copy"
+/// about a day the screen is showing hours for would read as a bug.
+const DAY_STILL_LOADING: &str = "Day still loading";
+
 /// Somewhere [`AppEvent::CopyToClipboard`] can put a payload.
 ///
 /// A trait rather than [`ClipboardContext`] directly so the failure that makes
@@ -1003,7 +1010,7 @@ impl App {
 
     /// What the day pane should draw; see [`DayPane`].
     pub fn day_pane(&self) -> DayPane {
-        if self.loaded_date != Some(self.active_date) {
+        if self.day_is_stale() {
             // Nothing on hand describes the date on screen. Suppressing the
             // pane is deliberate: labelling the previous date's projects
             // "Loading…" would still present them as this date's, and once
@@ -1073,6 +1080,21 @@ impl App {
             .is_some_and(|date| self.week_dates.contains(&date))
     }
 
+    /// Do `data` and `raw_content` describe a different date than the one on
+    /// screen?
+    ///
+    /// [`App::week_is_stale`] on the day axis, and the gate every reader of
+    /// date-bearing state owes its reader. `go_to_date` moves `active_date`
+    /// synchronously but only *queues* the reload, and
+    /// [`AppEvent::LoadFailed`] clears `loading` without touching
+    /// `loaded_date`, so this window is neither brief nor self-healing: it
+    /// stays open for as long as the user stands on a date whose load
+    /// failed. Named rather than open-coded because the two readers that
+    /// went without it — `y` and the raw pane — both looked locally correct.
+    pub fn day_is_stale(&self) -> bool {
+        self.loaded_date != Some(self.active_date)
+    }
+
     /// The footer's text: a status message if one is up, the loading marker
     /// while a load is in flight, and the help hint otherwise.
     ///
@@ -1097,7 +1119,19 @@ impl App {
     /// rendering (all "N/A" and an empty projects section), and copying that
     /// boilerplate over whatever the user already had would be worse than
     /// doing nothing.
+    ///
+    /// Gated on [`App::day_is_stale`] before that, exactly as
+    /// [`App::yank_week`] is gated on [`App::week_is_stale`]: `data` and
+    /// `raw_content` describe `loaded_date`, not `active_date`, so pressing
+    /// `l` then `y` used to copy the *previous* date's hours under "Copied
+    /// day summary" while the header already showed the new date — and
+    /// after a failed load it kept doing so indefinitely. Wrong hours in a
+    /// billing artefact are worse than no hours because they look right.
     fn yank_day(&mut self) {
+        if self.day_is_stale() {
+            self.set_status(DAY_STILL_LOADING);
+            return;
+        }
         if self.data.is_none() {
             self.set_status(NOTHING_TO_COPY);
             return;
@@ -3136,6 +3170,62 @@ mod tests {
         assert_eq!(status_text(&app), Some(WEEK_STILL_LOADING));
     }
 
+    /// The day-axis twin of the test above, and of the bug it pins.
+    /// `go_to_date` moves `active_date` synchronously and only *queues* the
+    /// reload, so `data` and `raw_content` still describe the *previous*
+    /// date for as long as that reload sits unapplied. `y` guarded only on
+    /// `data.is_none()`, so pressing `l` then `y` put yesterday's hours on
+    /// the clipboard under "Copied day summary" while the header already
+    /// showed today's date.
+    #[test]
+    fn yanking_a_stale_day_reports_rather_than_copying_the_previous_date() {
+        let mut app = day_app().with_raw_content("9:00-10:00 admin\n- standup\n");
+
+        // Queues `NextDate`, applies it (moving the date on and queuing
+        // `ReloadFromDisk`), then applies that reload's no-op arm — never
+        // `handle_app_event`, so no load is spawned and the day's data has
+        // no way to catch up.
+        app.handle_key_events(key('l')).unwrap();
+        app.drain_pending_events();
+        assert!(app.day_is_stale(), "the reload must not have landed yet");
+
+        app.handle_key_events(key('y')).unwrap();
+
+        assert_eq!(
+            app.take_pending_copy(),
+            None,
+            "a stale day must not be copied"
+        );
+        assert_eq!(status_text(&app), Some(DAY_STILL_LOADING));
+    }
+
+    /// And it is not a one-frame race. `AppEvent::LoadFailed` clears
+    /// `loading` but touches neither `data` nor `loaded_date`, so without
+    /// the freshness gate `y` keeps copying the previous date's summary,
+    /// reporting success, for as long as the user stays on this one.
+    #[test]
+    fn a_failed_load_does_not_leave_y_copying_the_previous_date() {
+        let mut app = day_app().with_raw_content("9:00-10:00 admin\n- standup\n");
+        app.handle_key_events(key('l')).unwrap();
+        app.drain_pending_events();
+        app.apply_sync_event(AppEvent::LoadFailed(app.load_gen, "boom".to_owned()));
+
+        assert!(!app.loading, "the failure cleared the in-flight flag");
+        assert!(
+            app.day_is_stale(),
+            "but nothing describes the date on screen"
+        );
+
+        app.handle_key_events(key('y')).unwrap();
+
+        assert_eq!(
+            app.take_pending_copy(),
+            None,
+            "a date whose load failed must not be copied from its predecessor"
+        );
+        assert_eq!(status_text(&app), Some(DAY_STILL_LOADING));
+    }
+
     /// The week yank's half of the invariant
     /// `yanking_an_empty_day_reports_rather_than_copying_nothing` pins for
     /// `y`: a week with no tracked projects has nothing worth pasting into
@@ -3157,9 +3247,15 @@ mod tests {
     /// pins for `Enter`: a day with no file, or no projects, has nothing
     /// worth pasting into a standup note, and copying `day_summary`'s own
     /// boilerplate over the clipboard would be worse than doing nothing.
+    ///
+    /// `loaded_date` is set explicitly so this stays the *empty* case rather
+    /// than sliding into the stale one `DAY_STILL_LOADING` covers: the two
+    /// report different things on purpose, and a fixture that never loaded
+    /// anything would be testing the wrong one.
     #[tokio::test]
     async fn yanking_an_empty_day_reports_rather_than_copying_nothing() {
         let mut app = App::new(TuiContext::for_test());
+        app.loaded_date = Some(app.active_date);
 
         app.handle_key_events(key('y')).unwrap();
 

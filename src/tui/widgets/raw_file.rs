@@ -10,6 +10,31 @@ use crate::tui::theme::Theme;
 /// cannot tell apart from a load still in flight.
 const NO_FILE_TEXT: &str = "No file for this date yet.";
 
+/// Shown in place of the content when nothing on hand describes the date in
+/// the title — a load still in flight, or one that failed.
+///
+/// Distinct from [`NO_FILE_TEXT`] on purpose. This pane's whole contract is
+/// "this file, exactly as it sits on disk", so it is the one pane that must
+/// not guess: it cannot claim the date has no file when it has not managed
+/// to look. The status line below already carries `Loading…` or the load's
+/// error, so this says only what the pane itself knows.
+const UNKNOWN_TEXT: &str = "Nothing loaded for this date yet.";
+
+/// What the raw pane has to draw for the date in its title.
+///
+/// An enum rather than an `Option<&str>` because there are three states and
+/// only two of them are "some text": conflating "no file" with "not loaded"
+/// is how the previous date's bytes came to be drawn under this date's path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RawFileContent<'a> {
+    /// The file's text, exactly as it sits on disk.
+    Text(&'a str),
+    /// A load landed for this date and found no file.
+    Missing,
+    /// Nothing on hand describes this date yet.
+    Unknown,
+}
+
 /// The active date's file exactly as it sits on disk.
 ///
 /// The escape hatch for the prefix/suffix fencing feature: a day file can be
@@ -18,8 +43,8 @@ const NO_FILE_TEXT: &str = "No file for this date yet.";
 pub struct RawFileView<'a> {
     /// The file's path, shown as the pane's title.
     path: &'a Path,
-    /// The file's content, or `None` when it does not exist on disk.
-    content: Option<&'a str>,
+    /// What there is to draw for that path; see [`RawFileContent`].
+    content: RawFileContent<'a>,
     /// Lines scrolled past the top, as [`App::scroll_raw_file`] clamps it.
     ///
     /// [`App::scroll_raw_file`]: crate::tui::app::App::scroll_raw_file
@@ -28,7 +53,7 @@ pub struct RawFileView<'a> {
 }
 
 impl<'a> RawFileView<'a> {
-    pub fn new(path: &'a Path, content: Option<&'a str>, scroll: u16, theme: &'a Theme) -> Self {
+    pub fn new(path: &'a Path, content: RawFileContent<'a>, scroll: u16, theme: &'a Theme) -> Self {
         Self {
             path,
             content,
@@ -65,15 +90,20 @@ impl Widget for RawFileView<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        match self.content {
-            Some(content) => Paragraph::new(content)
-                .scroll((self.scroll, 0))
-                .render(inner, buf),
-            None => Paragraph::new(NO_FILE_TEXT)
-                .style(self.theme.warning)
-                .alignment(Alignment::Center)
-                .render(inner, buf),
-        }
+        let notice = match self.content {
+            RawFileContent::Text(content) => {
+                Paragraph::new(content)
+                    .scroll((self.scroll, 0))
+                    .render(inner, buf);
+                return;
+            }
+            RawFileContent::Missing => NO_FILE_TEXT,
+            RawFileContent::Unknown => UNKNOWN_TEXT,
+        };
+        Paragraph::new(notice)
+            .style(self.theme.warning)
+            .alignment(Alignment::Center)
+            .render(inner, buf);
     }
 }
 
@@ -103,7 +133,7 @@ mod tests {
         let theme = Theme::none();
         let path = PathBuf::from("/tmp/2026-08-27.md");
         let screen = rendered(
-            RawFileView::new(&path, Some("8-10 admin"), 0, &theme),
+            RawFileView::new(&path, RawFileContent::Text("8-10 admin"), 0, &theme),
             40,
             10,
         );
@@ -121,7 +151,11 @@ mod tests {
             .join("\n");
         let theme = Theme::none();
         let path = PathBuf::from("/tmp/2026-08-27.md");
-        let screen = rendered(RawFileView::new(&path, Some(&content), 0, &theme), 40, 10);
+        let screen = rendered(
+            RawFileView::new(&path, RawFileContent::Text(&content), 0, &theme),
+            40,
+            10,
+        );
 
         // Each row also carries the block's left border character, so a
         // content row reads e.g. "│line 3" rather than starting with it.

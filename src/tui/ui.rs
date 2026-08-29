@@ -13,7 +13,7 @@ use super::project_list::MIN_ROWS_FOR_TWO_PROJECTS;
 use super::theme::Theme;
 use super::week_list::WeekListWidget;
 use super::widgets::HelpPopup;
-use super::widgets::{Calendar, DatePrompt, RawFileView, WeeklyBarChart};
+use super::widgets::{Calendar, DatePrompt, RawFileContent, RawFileView, WeeklyBarChart};
 
 /// The narrowest terminal width the day view can lay out at all.
 ///
@@ -125,7 +125,11 @@ impl App {
         // `Compact` drops the calendar/chart header entirely: on a short
         // terminal the project list is what the user opened the app to
         // read, and a header it can't afford is worse than no header.
-        let header_height = if bp == Breakpoint::Compact { 0 } else { 12 };
+        let header_height = if bp == Breakpoint::Compact {
+            0
+        } else {
+            HEADER_BAND_ROWS
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(header_height), Constraint::Min(9)].as_ref())
@@ -268,13 +272,16 @@ impl App {
         self.raw_visible_lines = RawFileView::visible_lines(area);
         self.clamp_raw_scroll();
         let path = raw_file_path(&self.ctx.data_dir, self.active_date);
-        RawFileView::new(
-            &path,
-            self.raw_content.as_deref(),
-            self.raw_scroll,
-            &self.ctx.theme,
-        )
-        .render(area, buf);
+        // The title comes from `active_date` and `raw_content` describes
+        // `loaded_date`, so the gate every other pane applies is owed here
+        // too — and owed hardest, because this is the pane a user reaches
+        // for to establish ground truth about a file. See `App::day_is_stale`.
+        let content = match self.raw_content.as_deref() {
+            _ if self.day_is_stale() => RawFileContent::Unknown,
+            Some(text) => RawFileContent::Text(text),
+            None => RawFileContent::Missing,
+        };
+        RawFileView::new(&path, content, self.raw_scroll, &self.ctx.theme).render(area, buf);
     }
 
     /// Draw the modal layer, if one is open, over whatever the mode drew.
@@ -826,8 +833,38 @@ mod tests {
         let mut app = App::new(TuiContext::for_test());
         app.raw_content = Some("```timetracking\n8-10 admin\n```".into());
         app.mode = Mode::RawFile;
+        // The content has to describe the date in the title before the pane
+        // will draw it; see `the_raw_pane_does_not_show_the_previous_dates_file`.
+        app.loaded_date = Some(app.active_date);
         let screen = render_to_string(&mut app, 80, 20);
         assert!(screen.contains("8-10 admin"), "got:\n{screen}");
+    }
+
+    /// The raw pane is the diagnostic escape hatch — its whole contract is
+    /// "this file, exactly as it sits on disk" — so it is the worst place to
+    /// draw one date's bytes under another date's path. The title came from
+    /// `active_date` and the body from `raw_content`, which describes
+    /// `loaded_date`; `l` in `Mode::RawFile` put them out of step, and a
+    /// failed load left them that way. Nor may it claim the file is missing:
+    /// it does not know yet.
+    #[tokio::test]
+    async fn the_raw_pane_does_not_show_the_previous_dates_file() {
+        let mut app = day_app();
+        app.raw_content = Some("9:00-10:00 admin\n".to_owned());
+        app.mode = Mode::RawFile;
+        app.loaded_date = Some(app.active_date);
+        app.active_date = app.active_date.next_day().expect("a next day exists");
+        app.loading = true;
+
+        let screen = render_to_string(&mut app, 80, 24);
+        assert!(
+            !screen.contains("admin"),
+            "the previous date's file must not be drawn under the new date's path:\n{screen}"
+        );
+        assert!(
+            !screen.contains("No file"),
+            "nor may an unloaded date be reported as a file-less one:\n{screen}"
+        );
     }
 
     /// A missing file is not the same as a load still in flight, and the
@@ -837,6 +874,9 @@ mod tests {
         let mut app = App::new(TuiContext::for_test());
         app.raw_content = None;
         app.mode = Mode::RawFile;
+        // A load that landed and found nothing, not one that never ran —
+        // only the first of those may be reported as a missing file.
+        app.loaded_date = Some(app.active_date);
         let screen = render_to_string(&mut app, 80, 20);
         assert!(screen.contains("No file"), "got:\n{screen}");
     }

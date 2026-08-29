@@ -9,5 +9,5 @@ pub use calendar::Calendar;
 pub use date_prompt::DatePrompt;
 pub use help_popup::HelpPopup;
 pub use popup::Popup;
-pub use raw_file::RawFileView;
+pub use raw_file::{RawFileContent, RawFileView};
 pub use weekly_bar_chart::WeeklyBarChart;
