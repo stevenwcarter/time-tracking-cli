@@ -97,6 +97,61 @@ impl Theme {
         }
     }
 
+    /// The 16-colour counterpart to [`Theme::dark`].
+    ///
+    /// Every field is stated directly rather than derived from `dark()` by a
+    /// nearest-colour search: a distance metric over the raw RGB values maps
+    /// both `row_bg` (`SLATE.c950`) and `alt_row_bg` (`SLATE.c900`) to the
+    /// same `Black`, and the near-black `selection` background to the same
+    /// neighbourhood too — which erases the zebra striping and the selection
+    /// highlight in precisely the low-colour terminal this palette exists
+    /// for. Stating the ANSI colours directly lets the roles that must stay
+    /// visually distinct (`row_bg` vs `alt_row_bg` vs `selection`) actually
+    /// do so.
+    fn dark_ansi16() -> Self {
+        Self {
+            populated_date: Style::new()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+            active_date: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            inactive_date: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+            row_bg: Style::new().bg(Color::Black),
+            alt_row_bg: Style::new().bg(Color::DarkGray),
+            list_header: Style::new().fg(Color::White).bg(Color::Cyan),
+            selection: Style::new().bg(Color::Blue).add_modifier(Modifier::BOLD),
+            warning: Style::new().fg(Color::Yellow),
+            error: Style::new().fg(Color::Red),
+            goal_marker: Style::new().fg(Color::DarkGray),
+            status: Style::new().fg(Color::White),
+        }
+    }
+
+    /// The 16-colour counterpart to [`Theme::light`], for the same reason
+    /// [`Theme::dark_ansi16`] exists: `row_bg` (`SLATE.c50`), `alt_row_bg`
+    /// (`SLATE.c100`) and `selection` (`BLUE.c100`) are all pale enough that
+    /// a nearest-colour search collapses every one of them to `White`,
+    /// leaving the selected row indistinguishable from the list background
+    /// except for `BOLD`.
+    fn light_ansi16() -> Self {
+        Self {
+            populated_date: Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD),
+            active_date: Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
+            inactive_date: Style::new()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+            row_bg: Style::new().bg(Color::White),
+            alt_row_bg: Style::new().bg(Color::Gray),
+            list_header: Style::new().fg(Color::Black).bg(Color::Cyan),
+            selection: Style::new().bg(Color::Blue).add_modifier(Modifier::BOLD),
+            warning: Style::new().fg(Color::Yellow),
+            error: Style::new().fg(Color::Red),
+            goal_marker: Style::new().fg(Color::DarkGray),
+            status: Style::new().fg(Color::Black),
+        }
+    }
+
     /// Resolves the palette to draw with from the config file's `theme` key
     /// plus the terminal's environment, in precedence order:
     ///
@@ -107,9 +162,10 @@ impl Theme {
     ///    without erroring, so a typo in the config file can't stop the TUI
     ///    from starting.
     /// 3. Unless that preset is `"none"`, a `COLORTERM` that isn't
-    ///    `truecolor`/`24bit` downgrades every role to its nearest
-    ///    16-colour ANSI approximation, so the palette survives an 8/16
-    ///    colour `TERM` over SSH.
+    ///    `truecolor`/`24bit` switches to the preset's fixed 16-colour
+    ///    variant ([`Theme::dark_ansi16`]/[`Theme::light_ansi16`]) so the
+    ///    palette survives an 8/16-colour `TERM` over SSH without losing the
+    ///    relationships between roles that must stay visually distinct.
     pub fn resolve(configured: Option<&str>, env: &ThemeEnv) -> Self {
         if env.no_color {
             return Self::none();
@@ -118,35 +174,14 @@ impl Theme {
         let preset = configured
             .map(|name| name.parse().unwrap_or(Preset::Dark))
             .unwrap_or(Preset::Dark);
+        let truecolor = supports_truecolor(env.colorterm.as_deref());
 
-        let theme = match preset {
-            Preset::Dark => Self::dark(),
-            Preset::Light => Self::light(),
-            Preset::None => return Self::none(),
-        };
-
-        if supports_truecolor(env.colorterm.as_deref()) {
-            theme
-        } else {
-            theme.into_ansi16()
-        }
-    }
-
-    /// Downgrades every role's `fg`/`bg` to the nearest of the 16 named ANSI
-    /// colours, for a terminal whose `COLORTERM` doesn't advertise truecolor.
-    fn into_ansi16(self) -> Self {
-        Self {
-            populated_date: downgrade(self.populated_date),
-            active_date: downgrade(self.active_date),
-            inactive_date: downgrade(self.inactive_date),
-            row_bg: downgrade(self.row_bg),
-            alt_row_bg: downgrade(self.alt_row_bg),
-            list_header: downgrade(self.list_header),
-            selection: downgrade(self.selection),
-            warning: downgrade(self.warning),
-            error: downgrade(self.error),
-            goal_marker: downgrade(self.goal_marker),
-            status: downgrade(self.status),
+        match (preset, truecolor) {
+            (Preset::None, _) => Self::none(),
+            (Preset::Dark, true) => Self::dark(),
+            (Preset::Dark, false) => Self::dark_ansi16(),
+            (Preset::Light, true) => Self::light(),
+            (Preset::Light, false) => Self::light_ansi16(),
         }
     }
 }
@@ -177,55 +212,6 @@ impl FromStr for Preset {
 /// Whether `COLORTERM` advertises 24-bit colour support.
 fn supports_truecolor(colorterm: Option<&str>) -> bool {
     matches!(colorterm, Some("truecolor") | Some("24bit"))
-}
-
-/// Replaces a style's `fg`/`bg` with their nearest 16-colour ANSI
-/// approximation, leaving modifiers untouched.
-fn downgrade(style: Style) -> Style {
-    Style {
-        fg: style.fg.map(ansi16),
-        bg: style.bg.map(ansi16),
-        ..style
-    }
-}
-
-/// The 16 named ANSI colours, paired with a representative RGB value used
-/// only to find the closest match for a truecolor value.
-const ANSI16: [(Color, (u8, u8, u8)); 16] = [
-    (Color::Black, (0, 0, 0)),
-    (Color::Red, (128, 0, 0)),
-    (Color::Green, (0, 128, 0)),
-    (Color::Yellow, (128, 128, 0)),
-    (Color::Blue, (0, 0, 128)),
-    (Color::Magenta, (128, 0, 128)),
-    (Color::Cyan, (0, 128, 128)),
-    (Color::Gray, (192, 192, 192)),
-    (Color::DarkGray, (128, 128, 128)),
-    (Color::LightRed, (255, 0, 0)),
-    (Color::LightGreen, (0, 255, 0)),
-    (Color::LightYellow, (255, 255, 0)),
-    (Color::LightBlue, (0, 0, 255)),
-    (Color::LightMagenta, (255, 0, 255)),
-    (Color::LightCyan, (0, 255, 255)),
-    (Color::White, (255, 255, 255)),
-];
-
-/// Maps a truecolor value to its nearest ANSI-16 neighbour by squared
-/// Euclidean distance. Any colour that isn't `Rgb` (already a named ANSI
-/// colour, `Indexed`, or `Reset`) passes through unchanged.
-fn ansi16(color: Color) -> Color {
-    let Color::Rgb(r, g, b) = color else {
-        return color;
-    };
-    let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
-
-    ANSI16
-        .into_iter()
-        .min_by_key(|&(_, (cr, cg, cb))| {
-            let (cr, cg, cb) = (i32::from(cr), i32::from(cg), i32::from(cb));
-            (r - cr).pow(2) + (g - cg).pow(2) + (b - cb).pow(2)
-        })
-        .map_or(color, |(named, _)| named)
 }
 
 /// The environment signals that affect colour resolution, captured once so
@@ -373,5 +359,31 @@ mod tests {
         // The NO_COLOR convention is "present and non-empty".
         assert!(!ThemeEnv::parse(Some(""), None).no_color);
         assert!(ThemeEnv::parse(Some("1"), None).no_color);
+    }
+
+    /// Regression: a naive nearest-RGB-neighbour downgrade mapped both
+    /// `row_bg` (`SLATE.c950`) and `alt_row_bg` (`SLATE.c900`) to `Black`,
+    /// erasing the zebra stripe in exactly the low-colour terminal this
+    /// palette exists to serve. Assert the *relationship*, not a specific
+    /// colour — pinning exact ANSI values would pass even if a future change
+    /// collapsed them back together under a different shared colour.
+    #[test]
+    fn a_non_truecolor_dark_theme_keeps_rows_and_selection_distinguishable() {
+        let t = Theme::resolve(Some("dark"), &env(false, None));
+        assert_ne!(t.row_bg.bg, t.alt_row_bg.bg);
+        assert_ne!(t.selection.bg, t.row_bg.bg);
+        assert_ne!(t.selection.bg, t.alt_row_bg.bg);
+    }
+
+    /// Same regression as above, for the light preset: `row_bg` (`SLATE.c50`),
+    /// `alt_row_bg` (`SLATE.c100`) and `selection` (`BLUE.c100`) are all pale
+    /// enough that a nearest-neighbour search collapsed every one of them to
+    /// `White`, leaving the selected row with no colour cue at all.
+    #[test]
+    fn a_non_truecolor_light_theme_keeps_rows_and_selection_distinguishable() {
+        let t = Theme::resolve(Some("light"), &env(false, None));
+        assert_ne!(t.row_bg.bg, t.alt_row_bg.bg);
+        assert_ne!(t.selection.bg, t.row_bg.bg);
+        assert_ne!(t.selection.bg, t.alt_row_bg.bg);
     }
 }
