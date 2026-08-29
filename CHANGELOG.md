@@ -1,4 +1,11 @@
 Here are some recent changes:
+
+## Unreleased
+
+### ⚠ BREAKING CHANGES
+
+* an invalid `week_start_day` in the config file now makes `ttcli --tui` fail to start with an error instead of silently falling back to Saturday ([a5e5a7c](https://github.com/stevenwcarter/time-tracking-cli/commits/a5e5a7c79bec1659f3e44e57ab27828f9356a8a6))
+
 ## [0.8.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.7.0...v0.8.0) (2025-11-26)
 
 

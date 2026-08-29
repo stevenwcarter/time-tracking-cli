@@ -113,11 +113,11 @@ fn missing_day_still_renders_no_file_found() {
     );
 }
 
-/// Pins the `⚠️  WEEKLY WARNINGS` block, which no other fixture triggers.
-/// `week_with_warnings` has one day with a single entry over
-/// `MAX_ENTRY_DURATION_MINUTES` (8h) and another with a gap between
-/// consecutive entries over `MAX_GAP_DURATION_MINUTES` (6h), so both
-/// `time-tracking-parser` warning message shapes are covered.
+/// Pins three things: the `⚠️  WEEKLY WARNINGS` block itself (which no
+/// other fixture triggers), and both `time-tracking-parser` warning
+/// message shapes it can contain. `week_with_warnings` has one day with a
+/// single entry over `MAX_ENTRY_DURATION_MINUTES` (8h) and another with a
+/// gap between consecutive entries over `MAX_GAP_DURATION_MINUTES` (6h).
 #[test]
 fn weekly_summary_includes_warnings_section() {
     let dir = staged("week_with_warnings");

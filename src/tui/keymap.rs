@@ -315,9 +315,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding {
         keys: &[(KeyCode::Down, NONE), (KeyCode::Char('j'), NONE)],
         event: AppEvent::ScrollRawFileDown,
-        // Disjoint from the Day-only list-navigation row above: same keys,
-        // different mode, different meaning. `no_duplicate_key_within_a_mode`
-        // is what keeps that honest.
+        // Disjoint from the Day-only and Week-only project-navigation rows
+        // above: same keys, different mode, different meaning.
+        // `no_duplicate_key_within_a_mode` is what keeps that honest.
         modes: ModeMask::RAW,
         group: Group::View,
         description: "scroll the raw file down",
