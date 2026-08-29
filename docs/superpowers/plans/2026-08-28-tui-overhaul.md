@@ -1581,6 +1581,8 @@ It is not only a startup flash. `go_to_date` moves `active_date` and `week_dates
 
 Setting `status = "Loading…"` only *labels* the stale content. Decide deliberately whether to suppress the mismatched pane while a load is in flight rather than annotate it, and pin whichever you choose with a test that changes date and asserts on the frame drawn *before* the payload arrives. A test that only exercises startup, or only asserts after the payload lands, misses this entirely.
 
+**One more thing carried from Task 7.** `App::tick` is currently `pub fn tick(&self) {}` — it takes `&self`, so it **structurally cannot** set `dirty` or mutate the status. That was deliberate in Task 7 (it guarantees a tick can never force a repaint, which is what takes idle cost to zero). Your status-expiry work needs it to become `&mut self`, and when you change it you must set `dirty` **only when a status actually expired** — not on every tick, or you reinstate the 4-per-second repaint Task 7 just removed. Pin that with a test: a tick with no expiring status must leave `dirty` false.
+
 **The original startup note follows.** Moving loads off the event loop means startup now draws the empty state *before* the first load lands, so a cold cache shows a flash of "no data" before the day appears. `App.loading` is already set by `spawn_load`; rendering it is this task's job, and it is the reason `set_status` has been a no-op stub since Task 6. Make sure the loading indicator actually covers the startup window, not just subsequent navigations — a test that only exercises a keypress-triggered load would miss it.
 
 - [ ] **Step 3: Implement**
