@@ -2809,6 +2809,14 @@ gate:
 
 **Do NOT add or modify a CI workflow.** That is an outward-facing change to what runs on the user's PRs and it is theirs to decide — surface it in the final summary instead. Note in the recipe's comment that the last line is the only thing exercising the webapp-only arm.
 
+- [ ] **Step 2c: Add the leap-year clamp test (carried from Task 15's review)**
+
+`shift_months` clamps the day to the target month's length via `Month::length(year)`, which is leap-year aware. The non-leap case is pinned (Jan 31 → Feb 28 in 2026); the leap case is not. The logic is provably correct by inspection — same call, already exercised — so this is a coverage gap, not a suspected bug. It is a five-line test in a date-handling application:
+
+```rust
+// Jan 31 2028 → `]` → Feb 29 2028 (2028 is a leap year)
+```
+
 - [ ] **Step 3: Verify the whole suite and the lints**
 
 ```bash
