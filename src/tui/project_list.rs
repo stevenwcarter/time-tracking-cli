@@ -28,11 +28,16 @@ const BULLET_INDENT: usize = 5;
 /// the same file.
 const DEAD_TIME_ERROR_THRESHOLD_MINUTES: u32 = 90;
 
+/// Visual gap between the "Working Time" and "Dead Time" halves of the
+/// header's busiest row, used both to build the shared-row line and to
+/// measure whether it fits — one literal, so the two can never drift apart.
+const WORKING_DEAD_SEPARATOR: &str = "    ";
+
 #[derive(Debug)]
 pub struct ProjectListWidget {
     start_time: String,
     end_time: String,
-    total_minutes: u32,
+    total_decimal: String,
     dead_time_minutes: u32,
     dead_time: String,
     dead_decimal: String,
@@ -145,7 +150,7 @@ impl ProjectListWidget {
         Self {
             start_time: data.formatted_start_time(),
             end_time: data.formatted_end_time(),
-            total_minutes: data.total_minutes,
+            total_decimal: data.formatted_total_decimal(),
             dead_time_minutes: data.dead_time_minutes,
             dead_time: data.formatted_dead_time_minutes(),
             dead_decimal: data.formatted_dead_decimal(),
@@ -262,39 +267,50 @@ impl Widget for &mut ProjectListWidget {
         // No footer row: the status line is drawn by `App`, across the whole
         // width and in every mode, so the help hint survives a day with no
         // project list at all.
+        //
+        // The working/dead-time row is measured once, at the real render
+        // width, and threaded into both the height calculation and the
+        // render itself so the two can never disagree about how many rows
+        // it took.
+        let working_time_lines = self.working_time_lines(area.width);
         let [header_area, main_area] = Layout::vertical([
-            Constraint::Length(self.header_height()),
+            Constraint::Length(self.header_height(&working_time_lines)),
             Constraint::Fill(1),
         ])
         .areas(area);
 
-        self.render_header(header_area, buf);
+        self.render_header(header_area, working_time_lines, buf);
         self.render_list(main_area, buf);
     }
 }
 
 impl ProjectListWidget {
-    /// Rows the header needs: four for the start/end/working-time block,
-    /// which is always present, plus a blank separator and one row per
-    /// warning when there are any. A clean day — no warnings — never pays
-    /// for a block it doesn't show, so the list below keeps every row it
-    /// had before this feature existed.
-    fn header_height(&self) -> u16 {
-        const BASE_ROWS: u16 = 4;
-        if self.warnings.is_empty() {
-            return BASE_ROWS;
-        }
-        let extra = 1 + self.warnings.len();
-        BASE_ROWS + u16::try_from(extra).unwrap_or(u16::MAX)
+    /// Rows the header needs given the already-measured
+    /// `working_time_lines` ([`working_time_lines`](Self::working_time_lines)):
+    /// three for the start/end block, which is always present, plus however
+    /// many rows the working/dead-time row took, plus a blank separator and
+    /// one row per warning when there are any. A clean day on a
+    /// wide-enough terminal — no dead time, no warnings — never pays for a
+    /// block it doesn't show, so the list below keeps every row it had
+    /// before this feature existed.
+    fn header_height(&self, working_time_lines: &[Line<'static>]) -> u16 {
+        const FIXED_ROWS: u16 = 3;
+        let working_rows = u16::try_from(working_time_lines.len()).unwrap_or(u16::MAX);
+        let warning_rows = if self.warnings.is_empty() {
+            0
+        } else {
+            1 + u16::try_from(self.warnings.len()).unwrap_or(u16::MAX)
+        };
+        FIXED_ROWS + working_rows + warning_rows
     }
 
-    fn render_header(&self, area: Rect, buf: &mut Buffer) {
+    fn render_header(&self, area: Rect, working_time_lines: Vec<Line<'static>>, buf: &mut Buffer) {
         let mut lines = vec![
             Line::from(format!("Start Time: {}", self.start_time)),
             Line::from(format!("  End Time: {}", self.end_time)),
             Line::from(""),
-            self.working_time_line(),
         ];
+        lines.extend(working_time_lines);
 
         if !self.warnings.is_empty() {
             lines.push(Line::from(""));
@@ -308,16 +324,20 @@ impl ProjectListWidget {
         Paragraph::new(lines).bold().centered().render(area, buf);
     }
 
-    /// The "Working Time" line, with a "Dead Time" span appended whenever
-    /// the day has any — styled `theme.warning` below
-    /// [`DEAD_TIME_ERROR_THRESHOLD_MINUTES`] and `theme.error` at or above
-    /// it, matching `format_day_summary_impl` in `src/display/mod.rs` so
-    /// the TUI and the CLI never disagree about the same file. A day with
-    /// no dead time renders nothing extra, so it costs no header width.
-    fn working_time_line(&self) -> Line<'static> {
-        let working = format!("Working Time: {} hours", self.total_minutes as f32 / 60.);
+    /// The "Working Time" line, plus a "Dead Time" line whenever the day
+    /// has any. The two share a single row when `width` has room for both
+    /// — styled `theme.warning` below [`DEAD_TIME_ERROR_THRESHOLD_MINUTES`]
+    /// and `theme.error` at or above it, matching `format_day_summary_impl`
+    /// in `src/display/mod.rs` so the TUI and the CLI never disagree about
+    /// the same file — and fall back to two rows when they don't: this
+    /// `Paragraph` has no wrapping, so without the fallback the shared row
+    /// silently truncates mid-word for the majority of non-round-hour
+    /// working days at the 60-column floor. A day with no dead time
+    /// renders nothing extra, so it costs no header width or height.
+    fn working_time_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let working = format!("Working Time: {} hours", self.total_decimal);
         if self.dead_time_minutes == 0 {
-            return Line::from(working);
+            return vec![Line::from(working)];
         }
 
         let style = if self.dead_time_minutes < DEAD_TIME_ERROR_THRESHOLD_MINUTES {
@@ -325,16 +345,20 @@ impl ProjectListWidget {
         } else {
             self.theme.error
         };
-        Line::from(vec![
-            Span::raw(format!("{working}    ")),
-            Span::styled(
-                format!(
-                    "Dead Time: {} ({} hours)",
-                    self.dead_time, self.dead_decimal
-                ),
-                style,
-            ),
-        ])
+        let dead = format!(
+            "Dead Time: {} ({} hours)",
+            self.dead_time, self.dead_decimal
+        );
+
+        let combined_width = working.width() + WORKING_DEAD_SEPARATOR.len() + dead.width();
+        if combined_width <= usize::from(width) {
+            return vec![Line::from(vec![
+                Span::raw(format!("{working}{WORKING_DEAD_SEPARATOR}")),
+                Span::styled(dead, style),
+            ])];
+        }
+
+        vec![Line::from(working), Line::styled(dead, style)]
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
@@ -670,6 +694,60 @@ mod tests {
         assert!(
             screen.contains("release notes"),
             "the last project's last note should still fit with no warnings to show:\n{screen}"
+        );
+    }
+
+    /// A clean day must not claim dead time exists: the label itself is
+    /// unpinned without this, unlike its presence (covered above).
+    #[tokio::test]
+    async fn a_clean_day_shows_no_dead_time_label() {
+        let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(!screen.contains("Dead Time"), "got:\n{screen}");
+    }
+
+    /// Regression: at the 60-column floor Task 24 establishes, the pane
+    /// border leaves a 58-column header. With the raw `total_minutes as
+    /// f32 / 60.` `Display` (`7.6833334 hours`) and no wrapping on the
+    /// header `Paragraph`, an ordinary non-round-hour working day
+    /// silently truncated mid-word — no ellipsis, no indicator. This pair
+    /// is the exact one that was found truncating.
+    #[tokio::test]
+    async fn an_awkward_working_and_dead_time_pair_is_not_truncated_at_60_columns() {
+        let mut data = fixture_day();
+        data.total_minutes = 461;
+        data.dead_time_minutes = 95;
+        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let screen = render_to_string(&mut app, 60, 30);
+        assert!(
+            screen.contains("Working Time: 7.68 hours"),
+            "got:\n{screen}"
+        );
+        assert!(
+            screen.contains("Dead Time: 1:35 (1.58 hours)"),
+            "the dead-time figure must survive whole, not cut off mid-word:\n{screen}"
+        );
+    }
+
+    /// Worst case over the realistic `(total_minutes, dead_time_minutes)`
+    /// space: both halves at their widest (a double-digit hour count on
+    /// each side) no longer fit on one 58-column row even with bounded
+    /// `{:.2}` formatting, so `working_time_lines` must fall back to two
+    /// rows rather than truncate the shared one.
+    #[tokio::test]
+    async fn the_widest_pair_falls_back_to_two_rows_instead_of_truncating() {
+        let mut data = fixture_day();
+        data.total_minutes = 600;
+        data.dead_time_minutes = 600;
+        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let screen = render_to_string(&mut app, 60, 30);
+        assert!(
+            screen.contains("Working Time: 10.00 hours"),
+            "got:\n{screen}"
+        );
+        assert!(
+            screen.contains("Dead Time: 10:00 (10.00 hours)"),
+            "got:\n{screen}"
         );
     }
 }
