@@ -24,12 +24,28 @@ fn staged(fixture: &str) -> tempfile::TempDir {
     dir
 }
 
+/// Run `ttcli` against `data_dir` and return its stdout.
+///
+/// `HOME` and `XDG_CONFIG_HOME` are pointed at a throwaway directory so the
+/// child cannot read the developer's own
+/// `~/.config/time-tracking-cli/config.toml`. That matters because `prefix`,
+/// `suffix` and `template_file` have no CLI flag and no env override, so both
+/// parse paths take them from the ambient config: a developer whose config
+/// sets the `prefix = "```timetracking"` that the shipped config and the
+/// README both suggest would otherwise see every fixture fenced out, every
+/// total collapse to zero, and every golden here fail on a clean checkout.
+/// `Config::load` creates its own default config under the scratch dir, which
+/// is deterministic. (`dirs::config_dir` reads `XDG_CONFIG_HOME` on Linux and
+/// derives from `HOME` on macOS, hence both.)
 fn run_ttcli(args: &[&str], data_dir: &Path) -> String {
+    let cfg_home = tempfile::tempdir().expect("config tempdir");
     let out = Command::new(env!("CARGO_BIN_EXE_ttcli"))
         .args(args)
         .arg("--data-directory")
         .arg(data_dir)
         .env("NO_COLOR", "1")
+        .env("HOME", cfg_home.path())
+        .env("XDG_CONFIG_HOME", cfg_home.path())
         .output()
         .expect("failed to run ttcli");
     assert!(
