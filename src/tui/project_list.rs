@@ -352,6 +352,10 @@ fn take_within_width(s: &str, room: usize) -> &str {
 /// silently dropping part of one at the right edge is not an option.
 fn wrap_note(note: &str, width: u16, hanging_indent: usize) -> Vec<String> {
     let width = usize::from(width).max(1);
+    // Cap the indent itself so a pathologically narrow width (a terminal a
+    // few columns wide) can't make a continuation line's indent alone
+    // overshoot `width` before any content is even added.
+    let hanging_indent = hanging_indent.min(width.saturating_sub(1));
     let mut has_word = false;
 
     let indent_for = |lines: &[String]| -> String {
@@ -424,6 +428,40 @@ mod tests {
     }
 
     #[test]
+    fn ascii_name_longer_than_cols_truncates_to_exact_width() {
+        let padded = pad_display_width("abcdefghijklmnopqrstuvwxyz", 10);
+        assert_eq!(padded.width(), 10);
+        assert!(
+            padded.ends_with('…'),
+            "should end with an ellipsis: {padded:?}"
+        );
+    }
+
+    #[test]
+    fn cjk_name_longer_than_cols_truncates_to_exact_width() {
+        // Each glyph is 2 columns wide, so the last one that fits can land
+        // one column short of the ellipsis; the arithmetic must pad that
+        // column rather than assume every glyph is 1 column wide.
+        let padded = pad_display_width("日本語のプログラミング入門", 10);
+        assert_eq!(padded.width(), 10);
+        assert!(
+            padded.contains('…'),
+            "should contain an ellipsis: {padded:?}"
+        );
+    }
+
+    #[test]
+    fn emoji_name_longer_than_cols_truncates_to_exact_width() {
+        // Emoji are also 2 columns wide; same boundary concern as CJK.
+        let padded = pad_display_width("🎉🎉🎉🎉🎉🎉", 10);
+        assert_eq!(padded.width(), 10);
+        assert!(
+            padded.contains('…'),
+            "should contain an ellipsis: {padded:?}"
+        );
+    }
+
+    #[test]
     fn wraps_long_notes_with_a_hanging_indent() {
         let lines = wrap_note("alpha beta gamma delta epsilon", 16, 5);
         assert!(lines.len() > 1, "a 30-char note must wrap at width 16");
@@ -462,5 +500,15 @@ mod tests {
         let b = item.body(40);
         assert_eq!(a, b);
         assert_eq!(item.rebuild_count(), 1, "same width must not rebuild");
+    }
+
+    #[test]
+    fn hanging_indent_never_exceeds_a_pathologically_narrow_width() {
+        // At width 3 an uncapped 5-space hanging indent would overshoot
+        // every continuation line before any content is even added.
+        let lines = wrap_note("alpha beta gamma", 3, 5);
+        for l in &lines {
+            assert!(l.width() <= 3, "line {l:?} exceeds width 3");
+        }
     }
 }
