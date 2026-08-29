@@ -1,11 +1,26 @@
+#[cfg(test)]
+use std::cell::Cell;
+use std::cell::RefCell;
+
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use time_tracking_parser::TimeTrackingData;
 
 use super::event::AppEvent;
 use super::mode::Handled;
 use super::theme::Theme;
+
+/// Columns reserved for the project name in the header line before the hours
+/// column starts.
+const NAME_COLS: usize = 25;
+
+/// Width of the `"   - "` bullet marker in front of a project's first note
+/// line, in display columns. Continuation lines produced by [`wrap_note`]
+/// are indented by the same amount so wrapped text stays aligned under the
+/// first line rather than under the marker.
+const BULLET_INDENT: usize = 5;
 
 #[derive(Debug)]
 pub struct ProjectListWidget {
@@ -27,22 +42,90 @@ struct ProjectItem {
     name: String,
     total_hours: f32,
     tasks: Vec<String>,
+    /// The wrapped body, memoized per width so scrolling and re-renders at
+    /// an unchanged terminal size don't re-wrap every note on every frame.
+    rendered: RefCell<Option<(u16, Text<'static>)>>,
+    /// Counts real cache-miss rebuilds. Test-only: it is what turns "is this
+    /// actually memoized?" into a falsifiable assertion instead of something
+    /// merely assumed from two calls returning equal output.
+    #[cfg(test)]
+    rebuild_count: Cell<usize>,
+}
+
+impl ProjectItem {
+    fn new(name: String, total_hours: f32, tasks: Vec<String>) -> Self {
+        Self {
+            name,
+            total_hours,
+            tasks,
+            rendered: RefCell::new(None),
+            #[cfg(test)]
+            rebuild_count: Cell::new(0),
+        }
+    }
+
+    /// The rendered body for a list area `width` columns wide, rebuilding
+    /// and caching it only when `width` differs from the last call.
+    fn body(&self, width: u16) -> Text<'static> {
+        if let Some((cached_width, text)) = self.rendered.borrow().as_ref()
+            && *cached_width == width
+        {
+            return text.clone();
+        }
+
+        let text = self.render_body(width);
+        #[cfg(test)]
+        self.rebuild_count.set(self.rebuild_count.get() + 1);
+        *self.rendered.borrow_mut() = Some((width, text.clone()));
+        text
+    }
+
+    #[cfg(test)]
+    fn rebuild_count(&self) -> usize {
+        self.rebuild_count.get()
+    }
+
+    /// Builds the header line plus wrapped bullet lines from scratch for the
+    /// given `width`. Never truncates a note away: a word wider than `width`
+    /// is hard-broken rather than dropped.
+    fn render_body(&self, width: u16) -> Text<'static> {
+        let name = pad_display_width(&self.name, NAME_COLS);
+        let hour_word = if self.total_hours == 1. {
+            "hour"
+        } else {
+            "hours"
+        };
+        let mut lines = vec![Line::from(format!(
+            " {name}{} {hour_word}",
+            self.total_hours
+        ))];
+
+        for task in &self.tasks {
+            let wrapped = wrap_note(task, width, BULLET_INDENT);
+            let mut wrapped = wrapped.into_iter();
+            if let Some(first) = wrapped.next() {
+                lines.push(Line::from(format!("   - {first}")));
+            }
+            lines.extend(wrapped.map(Line::from));
+        }
+
+        Text::from(lines)
+    }
 }
 
 impl ProjectListWidget {
     pub fn new(data: &TimeTrackingData, theme: &Theme) -> Self {
-        let mut items: Vec<ProjectItem> = Vec::new();
-        for project in &data.projects {
-            let name = project.name.clone();
-            let total_hours = project.total_minutes as f32 / 60.;
-            let tasks = project.notes.clone();
-
-            items.push(ProjectItem {
-                name,
-                total_hours,
-                tasks,
-            });
-        }
+        let items: Vec<ProjectItem> = data
+            .projects
+            .iter()
+            .map(|project| {
+                ProjectItem::new(
+                    project.name.clone(),
+                    project.total_minutes as f32 / 60.,
+                    project.notes.clone(),
+                )
+            })
+            .collect();
 
         let mut state = ListState::default();
         if !items.is_empty() {
@@ -183,13 +266,15 @@ impl ProjectListWidget {
             .border_set(symbols::border::EMPTY)
             .border_style(self.theme.list_header);
 
+        let body_width = area.width.saturating_sub(4);
         let items: Vec<ListItem> = self
             .project_list
             .items
             .iter()
             .enumerate()
             .map(|(i, project_item)| {
-                ListItem::from(project_item).style(alternate_row_style(&self.theme, i))
+                ListItem::new(project_item.body(body_width))
+                    .style(alternate_row_style(&self.theme, i))
             })
             .collect();
 
@@ -214,18 +299,168 @@ fn alternate_row_style(theme: &Theme, i: usize) -> Style {
     }
 }
 
-impl From<&ProjectItem> for ListItem<'_> {
-    fn from(value: &ProjectItem) -> Self {
-        let mut text = String::new();
-        if value.total_hours == 1. {
-            text.push_str(&format!(" {:<25}{} hour\n", value.name, value.total_hours));
+/// Pad `name` with spaces to `cols` display columns, truncating with `…`
+/// if it is wider. Uses display width, not char count, so CJK and emoji
+/// keep the hours column aligned.
+fn pad_display_width(name: &str, cols: usize) -> String {
+    let w = name.width();
+    if w <= cols {
+        format!("{name}{}", " ".repeat(cols - w))
+    } else {
+        let mut out = String::new();
+        let mut used = 0;
+        for c in name.chars() {
+            let cw = c.width().unwrap_or(0);
+            if used + cw > cols.saturating_sub(1) {
+                break;
+            }
+            out.push(c);
+            used += cw;
+        }
+        out.push('…');
+        out.push_str(&" ".repeat(cols.saturating_sub(used + 1)));
+        out
+    }
+}
+
+/// The longest prefix of `s` (on a char boundary) whose display width fits
+/// within `room` columns. Always takes at least one character when `s` is
+/// non-empty, even if that character alone is wider than `room`, so a
+/// single oversized glyph can never stall the wrapping loop below.
+fn take_within_width(s: &str, room: usize) -> &str {
+    let mut used = 0;
+    let mut end = 0;
+    for ch in s.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if used > 0 && used + cw > room {
+            break;
+        }
+        used += cw;
+        end += ch.len_utf8();
+        if used >= room {
+            break;
+        }
+    }
+    &s[..end]
+}
+
+/// Greedily packs the whitespace-separated words of `note` onto lines of at
+/// most `width` display columns, indenting every continuation line with
+/// `hanging_indent` spaces so wrapped text stays aligned under the first
+/// line. A word that doesn't fit even alone on an empty line is hard-broken
+/// across as many lines as it takes — notes are the payload of this tool, so
+/// silently dropping part of one at the right edge is not an option.
+fn wrap_note(note: &str, width: u16, hanging_indent: usize) -> Vec<String> {
+    let width = usize::from(width).max(1);
+    let mut has_word = false;
+
+    let indent_for = |lines: &[String]| -> String {
+        if lines.is_empty() {
+            String::new()
         } else {
-            text.push_str(&format!(" {:<25}{} hours\n", value.name, value.total_hours));
+            " ".repeat(hanging_indent)
+        }
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = indent_for(&lines);
+
+    for word in note.split_whitespace() {
+        let word_width = word.width();
+        let sep = usize::from(has_word);
+
+        if line.width() + sep + word_width <= width {
+            if has_word {
+                line.push(' ');
+            }
+            line.push_str(word);
+            has_word = true;
+            continue;
         }
 
-        for task in &value.tasks {
-            text.push_str(&format!("   - {}\n", task));
+        if has_word {
+            lines.push(std::mem::take(&mut line));
+            line = indent_for(&lines);
+            has_word = false;
         }
-        ListItem::new(text)
+
+        if line.width() + word_width <= width {
+            line.push_str(word);
+            has_word = true;
+            continue;
+        }
+
+        // Doesn't fit even alone on a fresh line: hard-break it.
+        let mut remaining = word;
+        while !remaining.is_empty() {
+            let room = width.saturating_sub(line.width()).max(1);
+            let take = take_within_width(remaining, room);
+            line.push_str(take);
+            remaining = &remaining[take.len()..];
+            if remaining.is_empty() {
+                has_word = true;
+            } else {
+                lines.push(std::mem::take(&mut line));
+                line = indent_for(&lines);
+            }
+        }
+    }
+
+    if has_word || lines.is_empty() {
+        lines.push(line);
+    }
+
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pads_by_display_width_not_char_count() {
+        // Each CJK glyph occupies two columns.
+        assert_eq!(pad_display_width("日本語", 10).width(), 10);
+        assert_eq!(pad_display_width("abc", 10).width(), 10);
+    }
+
+    #[test]
+    fn wraps_long_notes_with_a_hanging_indent() {
+        let lines = wrap_note("alpha beta gamma delta epsilon", 16, 5);
+        assert!(lines.len() > 1, "a 30-char note must wrap at width 16");
+        assert!(lines[0].len() <= 16);
+        assert!(
+            lines[1].starts_with("     "),
+            "continuation lines are indented"
+        );
+        for l in &lines {
+            assert!(l.width() <= 16, "no line may exceed the width");
+        }
+    }
+
+    #[test]
+    fn a_word_longer_than_the_width_is_hard_broken_not_dropped() {
+        let lines = wrap_note("supercalifragilisticexpialidocious", 10, 2);
+        let joined: String = lines.iter().map(|l| l.trim().to_string()).collect();
+        assert!(
+            joined.contains("supercali"),
+            "content must survive wrapping"
+        );
+    }
+
+    #[test]
+    fn body_is_rebuilt_when_the_width_changes() {
+        let item = ProjectItem::new("admin".into(), 1.0, vec!["a fairly long note here".into()]);
+        let narrow = item.body(20).height();
+        let wide = item.body(80).height();
+        assert!(narrow > wide, "a narrower pane needs more lines");
+    }
+
+    #[test]
+    fn body_is_reused_at_the_same_width() {
+        let item = ProjectItem::new("admin".into(), 1.0, vec!["note".into()]);
+        let a = item.body(40);
+        let b = item.body(40);
+        assert_eq!(a, b);
+        assert_eq!(item.rebuild_count(), 1, "same width must not rebuild");
     }
 }
