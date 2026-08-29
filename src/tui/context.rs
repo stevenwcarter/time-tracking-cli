@@ -8,8 +8,8 @@ use crate::data_svc::ParseSettings;
 use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::time_utils::parse_weekday;
 
-/// Hours of tracked time that count as a full day.
-// Task 23 will read this from the configuration file instead.
+/// Hours of tracked time that count as a full day, used when the
+/// configuration file has no `daily_target_hours` key.
 const DEFAULT_DAILY_TARGET_HOURS: f64 = 8.0;
 
 /// Everything the TUI needs from the environment, resolved once at start-up.
@@ -45,7 +45,9 @@ impl TuiContext {
             week_start_day: parse_weekday(config.get_week_start_day())
                 .context("could not parse week start day")?,
             data_dir: get_time_tracking_dir_with_override(config.get_data_directory())?,
-            daily_target_hours: DEFAULT_DAILY_TARGET_HOURS,
+            daily_target_hours: config
+                .daily_target_hours
+                .unwrap_or(DEFAULT_DAILY_TARGET_HOURS),
             formatter: config
                 .get_configured_formatter()
                 .cloned()
@@ -152,6 +154,30 @@ mod tests {
                 template_file: Some("/test/template.md".to_string()),
             }
         );
+    }
+
+    #[test]
+    fn from_config_reads_the_configured_daily_target() {
+        let config = Config {
+            daily_target_hours: Some(6.5),
+            ..Config::default()
+        };
+
+        let ctx = TuiContext::from_config(&config).expect("context from config");
+
+        assert_eq!(ctx.daily_target_hours, 6.5);
+    }
+
+    #[test]
+    fn from_config_falls_back_to_the_default_daily_target() {
+        let config = Config {
+            daily_target_hours: None,
+            ..Config::default()
+        };
+
+        let ctx = TuiContext::from_config(&config).expect("context from config");
+
+        assert_eq!(ctx.daily_target_hours, DEFAULT_DAILY_TARGET_HOURS);
     }
 
     #[test]

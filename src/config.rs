@@ -130,6 +130,9 @@ pub struct Config {
     /// TUI colour palette preset: "dark", "light", or "none". An unset or
     /// unrecognised value falls back to "dark".
     pub theme: Option<String>,
+    /// Hours of tracked time that count as a full day. Drives the TUI
+    /// weekly bar chart's y-axis ceiling and goal line. Defaults to 8.0.
+    pub daily_target_hours: Option<f64>,
     /// Whether we should read from stdin or not
     #[serde(skip)]
     pub stdin: bool,
@@ -174,6 +177,7 @@ impl Default for Config {
             prefix: None,
             suffix: None,
             theme: Some("dark".to_string()),
+            daily_target_hours: Some(8.0),
             stdin: false,
             serve: Some(false),
             date: today_date(),
@@ -411,6 +415,8 @@ fn write_config_comments(file: &mut impl Write) -> Result<()> {
     file.write_all(b"# \"none\" emits no colors so your terminal palette shows through.\n")?;
     file.write_all(b"# NO_COLOR in the environment forces \"none\".\n")?;
     file.write_all(b"#theme = \"dark\"\n")?;
+    file.write_all(b"\n# Hours of tracked time that count as a full day, for the TUI weekly bar chart's y-axis ceiling and goal line.\n")?;
+    file.write_all(b"#daily_target_hours = 8.0\n")?;
     Ok(())
 }
 
@@ -463,6 +469,26 @@ mod tests {
         assert_eq!(config.week_start_day, Some("Saturday".to_string()));
         assert!(config.data_directory.unwrap().ends_with("/.time-tracking"));
         assert_eq!(config.template_file, None);
+        assert_eq!(config.daily_target_hours, Some(8.0));
+    }
+
+    #[test]
+    fn test_daily_target_hours_roundtrip() {
+        let config = Config {
+            daily_target_hours: Some(6.5),
+            ..Config::default()
+        };
+        let toml_str = toml::to_string(&config).unwrap();
+        assert!(toml_str.contains("daily_target_hours = 6.5"));
+
+        let deserialized: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(deserialized.daily_target_hours, Some(6.5));
+    }
+
+    #[test]
+    fn test_daily_target_hours_missing_key_deserializes_to_none() {
+        let config: Config = toml::from_str(r#"week_start_day = "Tuesday""#).unwrap();
+        assert_eq!(config.daily_target_hours, None);
     }
 
     #[test]

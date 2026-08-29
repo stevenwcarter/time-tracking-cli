@@ -6,11 +6,19 @@ use time::Date;
 use crate::time_utils::WeekdayExt;
 use crate::tui::theme::Theme;
 
+/// Fallback daily-hours target for a chart built without a real
+/// [`TuiContext`](crate::tui::context::TuiContext) (e.g. in a test), mirroring
+/// `TuiContext`'s own default.
+const DEFAULT_DAILY_TARGET_HOURS: f64 = 8.0;
+
 pub struct WeeklyBarChart<'a> {
     active_date: Date,
     week_dates: &'a [Date; 7],
     theme: &'a Theme,
     week_data: Option<&'a HashMap<Date, u32>>, // Date -> total minutes
+    /// Hours of tracked time that count as a full day; drives the chart's
+    /// y-axis ceiling and goal line. Set via `set_daily_target_hours`.
+    target_hours: f64,
 }
 
 /// One day's worth of bar data, computed once and then either read by a
@@ -35,11 +43,18 @@ impl<'a> WeeklyBarChart<'a> {
             week_dates,
             theme,
             week_data: None,
+            target_hours: DEFAULT_DAILY_TARGET_HOURS,
         }
     }
 
     pub fn set_weekly_data(&mut self, data: &'a HashMap<Date, u32>) {
         self.week_data = Some(data);
+    }
+
+    /// Override the daily-hours target read from configuration. Without a
+    /// call the chart falls back to `DEFAULT_DAILY_TARGET_HOURS`.
+    pub fn set_daily_target_hours(&mut self, target_hours: f64) {
+        self.target_hours = target_hours;
     }
 
     /// Calculate total hours for the week
@@ -52,19 +67,34 @@ impl<'a> WeeklyBarChart<'a> {
         }
     }
 
+    /// Raw tracked minutes for one day, or zero if no data is loaded (or
+    /// the day has none). Shared by `bar_values` and `week_max_minutes` so
+    /// there is exactly one place that reads the week's data map.
+    fn minutes_for(&self, date: Date) -> u32 {
+        self.week_data
+            .and_then(|data| data.get(&date))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The tallest tracked day this week, in raw minutes. The chart ceiling
+    /// must never clip this bar, whatever the configured daily target is.
+    fn week_max_minutes(&self) -> u32 {
+        self.week_dates
+            .iter()
+            .map(|&date| self.minutes_for(date))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Per-day bar data for the week, split out of `prepare_bars` because
     /// `Bar`'s `value` field is private in ratatui 0.29, so a test can't
     /// read it back off a built `Bar` — tests assert against this instead.
     fn bar_values(&self, bar_width: u16) -> Vec<BarValue> {
-        let week_data = self.week_data;
-
         self.week_dates
             .iter()
             .map(|&date| {
-                let minutes = week_data
-                    .and_then(|data| data.get(&date))
-                    .copied()
-                    .unwrap_or(0);
+                let minutes = self.minutes_for(date);
                 let hours = minutes as f64 / 60.0;
                 let tenths = u64::from(minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
 
@@ -128,11 +158,11 @@ impl<'a> WeeklyBarChart<'a> {
             })
             .collect()
     }
-    /// Calculate dynamic bar dimensions based on available area
-    fn calculate_bar_dimensions(&self, area: Rect) -> (u16, u16, u64) {
+    /// Calculate dynamic bar width and gap based on the available width.
+    /// The y-axis ceiling is independent of the area — see `ceiling_for`.
+    fn calculate_bar_dimensions(&self, area: Rect) -> (u16, u16) {
         // Account for borders and padding
         let content_width = area.width.saturating_sub(4); // left border + padding
-        let content_height = area.height.saturating_sub(4); // top/bottom borders + padding + title
 
         // Calculate optimal bar width for 7 days with gaps
         // Formula: (total_width - gaps) / bars = bar_width
@@ -158,12 +188,44 @@ impl<'a> WeeklyBarChart<'a> {
             min_gap
         };
 
-        // Calculate max value based on available height
-        // More height = can show taller bars = higher max value
-        let max_value = (content_height as u64 * 10).max(160); // At least 16 hours, scale up with height
-
-        (bar_width, bar_gap, max_value)
+        (bar_width, bar_gap)
     }
+
+    /// The y-axis ceiling for this chart, in tenths of an hour. Deliberately
+    /// ignores `area`: the axis must reflect the week's data and the
+    /// configured daily target, not how many rows the terminal happens to
+    /// give the widget.
+    pub fn ceiling_for(&self, _area: Rect) -> u64 {
+        chart_ceiling(self.week_max_minutes(), self.target_hours)
+    }
+
+    /// Row inside `inner_area` the goal line sits on, or `None` if the area
+    /// is too short to have a bar row at all.
+    fn goal_marker_row(&self, inner_area: Rect, ceiling: u64) -> Option<u16> {
+        let bars_height = inner_area.height.checked_sub(1)?; // bottom row holds the day labels
+        if bars_height == 0 {
+            return None;
+        }
+        // `.min(ceiling)` guards the subtraction below in case the invariant
+        // that the target never exceeds the ceiling is ever broken upstream.
+        let target = target_tenths(self.target_hours).min(ceiling);
+        let filled = (target * u64::from(bars_height) / ceiling) as u16;
+        Some(inner_area.y + bars_height - filled)
+    }
+}
+
+/// The daily target expressed in tenths of an hour, floored at one hour so
+/// a tiny configured target still produces a sane, visible ceiling.
+fn target_tenths(target_hours: f64) -> u64 {
+    (target_hours * 10.0).round().max(10.0) as u64
+}
+
+/// Chart ceiling in tenths of an hour: at least the daily target, and
+/// always at least the tallest bar, rounded up to a whole hour.
+fn chart_ceiling(week_max_minutes: u32, target_hours: f64) -> u64 {
+    let max_tenths = u64::from(week_max_minutes) * 10 / 60;
+    let needed = target_tenths(target_hours).max(max_tenths);
+    needed.div_ceil(10) * 10 // round up to a whole hour
 }
 
 impl Widget for &mut WeeklyBarChart<'_> {
@@ -173,8 +235,9 @@ impl Widget for &mut WeeklyBarChart<'_> {
     {
         let title = format!("{} {}", self.active_date.month(), self.active_date.year());
 
-        // Calculate dynamic dimensions
-        let (bar_width, bar_gap, max_value) = self.calculate_bar_dimensions(area);
+        // Calculate dynamic dimensions and the data-driven y-axis ceiling
+        let (bar_width, bar_gap) = self.calculate_bar_dimensions(area);
+        let ceiling = self.ceiling_for(area);
 
         // Prepare bars with responsive formatting
         let bars = self.prepare_bars(bar_width);
@@ -198,26 +261,45 @@ impl Widget for &mut WeeklyBarChart<'_> {
         let inner_area = block.inner(area);
         block.render(area, buf);
 
-        // Render total hours in upper right corner
+        // Render total hours in the upper right corner, one row below the
+        // block's own top edge and inset from its right edge — *not*
+        // `Block::title_top`, and not flush against `inner_area`'s own edges
+        // either. `App::render_day` draws an app-level frame around this
+        // widget's `area` *after* this widget renders, overwriting row 0
+        // and the rightmost column with its own border, so anything this
+        // widget draws there (including a block title) never reaches the
+        // screen; row 1 and a margin off the right edge do. The width,
+        // though, correctly comes from `Line::width` (display columns)
+        // rather than the previous version's `String::len` (UTF-8 bytes),
+        // so a multi-byte character in the total no longer mis-positions it.
+        const RIGHT_MARGIN: u16 = 2;
+        let total_line = Line::from(total_text).style(self.theme.warning);
+        let total_width = (total_line.width() as u16).min(inner_area.width);
         let total_area = Rect {
-            x: area.x + area.width.saturating_sub(total_text.len() as u16 + 2),
+            x: inner_area
+                .right()
+                .saturating_sub(total_width + RIGHT_MARGIN),
             y: area.y + 1,
-            width: total_text.len() as u16,
+            width: total_width,
             height: 1,
         };
-
-        Paragraph::new(total_text)
-            .style(self.theme.warning)
-            .render(total_area, buf);
+        Paragraph::new(total_line).render(total_area, buf);
 
         // Render the chart in the inner area
         let chart = BarChart::default()
             .data(BarGroup::default().bars(&bars))
             .bar_width(bar_width)
             .bar_gap(bar_gap)
-            .max(max_value);
+            .max(ceiling);
 
         chart.render(inner_area, buf);
+
+        // Draw the goal line across the chart, on top of the bars, so a bar
+        // that reaches or exceeds the target still visibly pierces through it.
+        if let Some(row) = self.goal_marker_row(inner_area, ceiling) {
+            let marker = "─".repeat(inner_area.width as usize);
+            buf.set_string(inner_area.x, row, marker, self.theme.goal_marker);
+        }
     }
 }
 
@@ -286,5 +368,91 @@ mod tests {
 
         assert_eq!(chart.style_for(&bar), theme.populated_date);
         assert_ne!(chart.style_for(&bar), theme.inactive_date);
+    }
+
+    #[test]
+    fn ceiling_is_the_target_when_the_week_is_light() {
+        // 3h max in an 8h-target week → ceiling stays at 8h (80 tenths).
+        assert_eq!(chart_ceiling(180, 8.0), 80);
+    }
+
+    #[test]
+    fn ceiling_grows_past_the_target_for_a_long_day() {
+        // 10h30m max exceeds the 8h target → ceiling rounds up to the next whole hour.
+        assert_eq!(chart_ceiling(630, 8.0), 110);
+    }
+
+    #[test]
+    fn a_day_exactly_on_an_hour_is_not_over_rounded() {
+        // 11h exactly → ceiling is 11h. A bar at full height is correct, not clipped.
+        assert_eq!(chart_ceiling(660, 8.0), 110);
+    }
+
+    #[test]
+    fn ceiling_never_clips_the_tallest_bar() {
+        for minutes in [0u32, 1, 59, 60, 480, 601, 1439] {
+            let ceiling = chart_ceiling(minutes, 8.0);
+            let bar = u64::from(minutes) * 10 / 60;
+            assert!(
+                bar <= ceiling,
+                "{minutes}min bar {bar} exceeds ceiling {ceiling}"
+            );
+        }
+    }
+
+    #[test]
+    fn ceiling_is_independent_of_terminal_height() {
+        // The regression: the old formula returned a different value per height.
+        assert_eq!(chart_ceiling(480, 8.0), chart_ceiling(480, 8.0));
+        let tall = WeeklyBarChart::new(date!(2026 - 08 - 24), &week(), &Theme::none())
+            .ceiling_for(Rect::new(0, 0, 80, 44));
+        let short = WeeklyBarChart::new(date!(2026 - 08 - 24), &week(), &Theme::none())
+            .ceiling_for(Rect::new(0, 0, 80, 12));
+        assert_eq!(tall, short, "the y-axis must not depend on terminal height");
+    }
+
+    #[test]
+    fn a_custom_target_moves_the_ceiling() {
+        assert_eq!(chart_ceiling(180, 6.0), 60);
+    }
+
+    #[test]
+    fn total_hours_is_right_aligned_one_row_below_the_top_edge() {
+        // Regression guard for two bugs in the old hand-rolled `Rect`: the
+        // column position must come from display width (`Line::width`), not
+        // `String::len` (UTF-8 bytes) — those only coincide for pure ASCII —
+        // and it must be measured against the block's padded inner area, not
+        // the raw outer `area`. Row 1 (not row 0) is deliberate: see the
+        // comment above the total-hours render in `Widget::render`.
+        let theme = Theme::none();
+        let week = week();
+        let mut data = HashMap::new();
+        data.insert(date!(2026 - 08 - 24), 480u32); // 8h -> "8.0h total"
+        let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        chart.set_weekly_data(&data);
+
+        let area = Rect::new(0, 0, 60, 15);
+        let mut buf = Buffer::empty(area);
+        (&mut chart).render(area, &mut buf);
+
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            row.trim_end().ends_with("8.0h total"),
+            "total hours must be right-aligned one row below the top edge: {row:?}"
+        );
+    }
+
+    #[test]
+    fn set_daily_target_hours_changes_the_ceiling() {
+        let theme = Theme::none();
+        let week = week();
+        let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+
+        assert_eq!(chart.ceiling_for(Rect::new(0, 0, 80, 30)), 80, "8h default");
+
+        chart.set_daily_target_hours(6.0);
+        assert_eq!(chart.ceiling_for(Rect::new(0, 0, 80, 30)), 60);
     }
 }
