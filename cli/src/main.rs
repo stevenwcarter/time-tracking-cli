@@ -37,7 +37,7 @@ async fn main_impl() -> Result<()> {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     #[cfg(all(feature = "webapp", not(feature = "tui")))]
-    let (_, rx) = tokio::sync::oneshot::channel::<()>();
+    let (_tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     // Handle serve mode
     #[cfg(feature = "webapp")]
