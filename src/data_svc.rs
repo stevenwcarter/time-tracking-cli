@@ -762,16 +762,26 @@ mod tests {
         };
 
         // Wait for the parser's `read_day` to publish C1, then it is parsing.
-        loop {
-            let seen = {
-                let cache = service.cache.lock().await;
-                cache.get(&d).and_then(|e| e.data.clone())
-            };
-            if seen.as_deref() == Some(c1.as_str()) {
-                break;
+        //
+        // Bounded for the same reason `reading_a_fifo_named_like_a_day_file_
+        // does_not_block` is: the loop's exit condition is something the code
+        // under test has to make true, so a regression that stops it — a
+        // `read_day` that errors before publishing, say — would spin here
+        // forever and wedge the suite instead of failing it.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let seen = {
+                    let cache = service.cache.lock().await;
+                    cache.get(&d).and_then(|e| e.data.clone())
+                };
+                if seen.as_deref() == Some(c1.as_str()) {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("the parser's read_day must publish C1 to the cache");
 
         // C2 lands mid-parse and a concurrent reader republishes the entry.
         tokio::fs::write(&path, "8-12 admin\n").await.unwrap();
