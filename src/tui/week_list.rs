@@ -37,6 +37,15 @@ const HIGHLIGHT_COLS: u16 = HIGHLIGHT_SYMBOL.len() as u16;
 /// week.
 const NO_DEAD_TIME: &str = "None";
 
+/// Rows the warnings block may claim before it starts crowding out the
+/// hours the pane exists to show — a title plus four warnings.
+///
+/// A week can produce a warning per bad entry per day, so this is capped
+/// rather than left to grow: the block's job here is to stop a reader
+/// trusting a total that was parsed out of a malformed file, which the
+/// count in the title does even when the individual lines don't fit.
+const MAX_WARNING_ROWS: usize = 5;
+
 /// The week's projects, biggest first, with the week's totals above them.
 ///
 /// Borrows rather than owns; see the module docs.
@@ -73,9 +82,13 @@ impl<'a> WeekListWidget<'a> {
         };
 
         Paragraph::new(vec![
+            // Both spellings, the same way the dead-time line and the CLI's
+            // `--week` totals give both: `h:mm` is what a timesheet form
+            // asks for and the decimal is what an invoice does.
             Line::from(format!(
-                "Working Time: {} hours",
-                Time::format_duration_decimal(self.summary.total_minutes)
+                "Working Time: {} ({} hours)",
+                Time::format_duration_minutes(self.summary.total_minutes),
+                Time::format_duration_decimal(self.summary.total_minutes),
             )),
             Line::styled(format!("Dead Time: {dead}"), dead_style),
         ])
@@ -114,6 +127,52 @@ impl<'a> WeekListWidget<'a> {
 
         StatefulWidget::render(list, area, buf, &mut state.list);
     }
+
+    /// The week's parser warnings, under a count, or nothing when the week
+    /// parsed cleanly.
+    ///
+    /// This pane is the surface a week's hours are most likely to be pasted
+    /// into a timesheet from, and it was the only one showing them with
+    /// nothing said about the files they were parsed out of:
+    /// [`ProjectListWidget`] renders a warnings block for a *day* and the
+    /// CLI's `--week` prints `WEEKLY WARNINGS`, but from the TUI a week's
+    /// day-level warnings were otherwise reachable only by visiting all
+    /// seven days one at a time.
+    ///
+    /// Capped at [`MAX_WARNING_ROWS`]; the title carries the full count, so
+    /// a week too badly parsed to list is still unmistakably flagged
+    /// without the block eating the hours above it.
+    ///
+    /// [`ProjectListWidget`]: super::project_list::ProjectListWidget
+    fn warning_lines(&self) -> Vec<Line<'static>> {
+        let warnings = &self.summary.warnings;
+        if warnings.is_empty() {
+            return Vec::new();
+        }
+
+        // The title always costs a row. Whatever is left goes to warnings,
+        // except that overflowing costs one more row to say so — so the
+        // block is never taller than the cap either way.
+        let budget = MAX_WARNING_ROWS - 1;
+        let shown = if warnings.len() <= budget {
+            warnings.len()
+        } else {
+            budget - 1
+        };
+
+        let styled = |text: String| Line::styled(text, self.theme.error);
+        let mut lines = vec![styled(format!("Warnings ({})", warnings.len()))];
+        lines.extend(
+            warnings
+                .iter()
+                .take(shown)
+                .map(|warning| styled(format!("  {warning}"))),
+        );
+        if let Some(hidden) = warnings.len().checked_sub(shown).filter(|n| *n > 0) {
+            lines.push(styled(format!("  … and {hidden} more")));
+        }
+        lines
+    }
 }
 
 impl StatefulWidget for WeekListWidget<'_> {
@@ -125,11 +184,23 @@ impl StatefulWidget for WeekListWidget<'_> {
         // range here as well as on the way into `WeekListState::apply`.
         state.clamp(self.summary.projects.len());
 
-        let [header_area, list_area] =
-            Layout::vertical([Constraint::Length(HEADER_ROWS), Constraint::Fill(1)]).areas(area);
+        // Built once and threaded into both the layout and the render, the
+        // way `ProjectListWidget` threads its working-time rows, so the two
+        // can never disagree about how many rows the block took.
+        let warnings = self.warning_lines();
+        let warning_rows = u16::try_from(warnings.len()).unwrap_or(u16::MAX);
+        let [header_area, list_area, warning_area] = Layout::vertical([
+            Constraint::Length(HEADER_ROWS),
+            Constraint::Fill(1),
+            Constraint::Length(warning_rows),
+        ])
+        .areas(area);
 
         self.render_header(header_area, buf);
         self.render_list(list_area, buf, state);
+        if warning_rows > 0 {
+            Paragraph::new(warnings).render(warning_area, buf);
+        }
     }
 }
 
@@ -283,10 +354,54 @@ fn project_row(project: &WeeklyProject, width: u16) -> String {
     format!(" {}{}{hours}", project.name, " ".repeat(gap))
 }
 
+/// A [`WeeklyProject`] for a fixture week.
+#[cfg(test)]
+pub(crate) fn week_project(
+    name: &str,
+    total_minutes: u32,
+    notes: impl IntoIterator<Item = &'static str>,
+) -> WeeklyProject {
+    WeeklyProject {
+        name: name.to_owned(),
+        total_minutes,
+        notes: notes.into_iter().map(str::to_owned).collect(),
+    }
+}
+
+/// A week with three projects of unmistakably different sizes — client-bd
+/// 18h, internal 9.5h, admin 6h — totalling 33.5 hours, plus three quarters
+/// of an hour of dead time and one parser warning. The sizes are what make
+/// the "biggest first" ordering falsifiable rather than coincidental.
+///
+/// Module-level rather than private to the tests below, because
+/// [`crate::tui::ui`]'s no-panic sweep seeds it too: `day_app` alone leaves
+/// `weekly_summary` at `None`, which sends the sweep down the empty-state
+/// arm and leaves this widget unrendered at every degenerate size.
+#[cfg(test)]
+pub(crate) fn fixture_week_summary() -> WeeklySummary {
+    WeeklySummary {
+        total_minutes: 2010,
+        dead_time_minutes: 45,
+        projects: vec![
+            week_project(
+                "client-bd",
+                1080,
+                [
+                    "Mon 2025-06-09: discovery call",
+                    "Wed 2025-06-11: proposal draft",
+                ],
+            ),
+            week_project("internal", 570, ["Tue 2025-06-10: code review"]),
+            week_project("admin", 360, ["Mon 2025-06-09: inbox triage"]),
+        ],
+        warnings: vec!["Mon 2025-06-09: Error parsing time range '9-'".to_owned()],
+        per_day: std::collections::HashMap::new(),
+        days: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
@@ -301,44 +416,6 @@ mod tests {
 
     fn enter() -> KeyEvent {
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
-    }
-
-    fn week_project(
-        name: &str,
-        total_minutes: u32,
-        notes: impl IntoIterator<Item = &'static str>,
-    ) -> WeeklyProject {
-        WeeklyProject {
-            name: name.to_owned(),
-            total_minutes,
-            notes: notes.into_iter().map(str::to_owned).collect(),
-        }
-    }
-
-    /// A week with three projects of unmistakably different sizes —
-    /// client-bd 18h, internal 9.5h, admin 6h — totalling 33.5 hours, plus
-    /// three quarters of an hour of dead time. The sizes are what make the
-    /// "biggest first" ordering falsifiable rather than coincidental.
-    fn fixture_week_summary() -> WeeklySummary {
-        WeeklySummary {
-            total_minutes: 2010,
-            dead_time_minutes: 45,
-            projects: vec![
-                week_project(
-                    "client-bd",
-                    1080,
-                    [
-                        "Mon 2025-06-09: discovery call",
-                        "Wed 2025-06-11: proposal draft",
-                    ],
-                ),
-                week_project("internal", 570, ["Tue 2025-06-10: code review"]),
-                week_project("admin", 360, ["Mon 2025-06-09: inbox triage"]),
-            ],
-            warnings: Vec::new(),
-            per_day: HashMap::new(),
-            days: Vec::new(),
-        }
     }
 
     /// The week pane, opened on the fixture date with the fixture rollup
@@ -672,6 +749,86 @@ mod tests {
             state.selected(),
             Some(0),
             "and down from the end wraps back"
+        );
+    }
+
+    /// The defect this closes: the pane is the surface a week's hours get
+    /// pasted into a timesheet from, and it was showing them with nothing
+    /// said about a day that failed to parse. `project_list.rs` has shown a
+    /// day's warnings all along; from the TUI a *week's* were reachable
+    /// only by visiting all seven days one at a time.
+    #[tokio::test]
+    async fn the_weeks_parser_warnings_are_shown_under_the_hours() {
+        let mut app = week_app();
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Warnings (1)"), "got:\n{screen}");
+        assert!(
+            screen.contains("Error parsing time range"),
+            "the warning itself, not just a count:\n{screen}"
+        );
+        assert!(
+            screen.find("client-bd") < screen.find("Warnings (1)"),
+            "the hours come first; the warnings qualify them:\n{screen}"
+        );
+    }
+
+    /// A clean week pays no rows at all for the block, so the list keeps
+    /// every row it had before the block existed.
+    #[tokio::test]
+    async fn a_clean_week_pays_no_rows_for_a_warnings_block() {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_weekly_summary(WeeklySummary {
+                warnings: Vec::new(),
+                ..fixture_week_summary()
+            });
+        app.mode = Mode::Week;
+
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(!screen.contains("Warnings"), "got:\n{screen}");
+    }
+
+    /// A badly parsed week must not push the hours off the pane. The count
+    /// in the title is what keeps the flag honest when the lines don't fit.
+    #[tokio::test]
+    async fn a_flood_of_warnings_is_capped_but_still_counted() {
+        let warnings: Vec<String> = (0..12).map(|i| format!("Mon: bad entry {i}")).collect();
+        let summary = WeeklySummary {
+            warnings,
+            ..fixture_week_summary()
+        };
+        let rows = WeekListWidget::new(&summary, &Theme::none()).warning_lines();
+        assert_eq!(rows.len(), MAX_WARNING_ROWS, "the cap must hold");
+
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_weekly_summary(summary);
+        app.mode = Mode::Week;
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Warnings (12)"), "got:\n{screen}");
+        assert!(screen.contains("and 9 more"), "got:\n{screen}");
+        assert!(
+            screen.contains("client-bd"),
+            "the hours the pane exists for must survive the flood:\n{screen}"
+        );
+    }
+
+    /// Exactly at the budget, every warning is listed rather than the last
+    /// one being traded for a "… and 1 more" that costs the same row.
+    #[test]
+    fn a_week_that_fits_the_budget_lists_every_warning() {
+        let warnings: Vec<String> = (0..MAX_WARNING_ROWS - 1)
+            .map(|i| format!("Mon: bad entry {i}"))
+            .collect();
+        let summary = WeeklySummary {
+            warnings,
+            ..fixture_week_summary()
+        };
+        let rows = WeekListWidget::new(&summary, &Theme::none()).warning_lines();
+        assert_eq!(rows.len(), MAX_WARNING_ROWS);
+        assert!(
+            !format!("{rows:?}").contains("more"),
+            "nothing was left off, so nothing should say so"
         );
     }
 

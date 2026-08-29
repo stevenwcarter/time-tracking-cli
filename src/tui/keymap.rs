@@ -511,7 +511,7 @@ mod tests {
         assert!(lookup(j, Mode::Day).is_some());
         assert!(
             lookup(j, Mode::ZoomedWeek).is_none(),
-            "list nav is Day-only"
+            "the zoomed chart has no list to navigate"
         );
     }
 

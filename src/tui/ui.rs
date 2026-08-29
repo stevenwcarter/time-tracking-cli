@@ -205,10 +205,15 @@ impl App {
             WeekPane::Projects => {
                 let inner = block.inner(area);
                 block.render(area, buf);
-                // Field-by-field, so the borrow checker can see that the
-                // rollup being drawn and the selection being moved are two
-                // different fields of `self`.
-                if let Some(summary) = &self.weekly_summary {
+                // `week_is_stale` is re-read here rather than inferred from
+                // the arm. `WeekPane::Projects` does imply a fresh rollup,
+                // but this is the one place the rollup is read for drawing,
+                // and a read that reaches it without the guard is exactly
+                // how the previous week's hours end up under this week's
+                // header. Field-by-field so the borrow checker can see the
+                // rollup and the selection are different fields of `self`.
+                let stale = self.week_is_stale();
+                if let Some(summary) = self.weekly_summary.as_ref().filter(|_| !stale) {
                     StatefulWidget::render(
                         WeekListWidget::new(summary, &self.ctx.theme),
                         inner,
@@ -412,11 +417,18 @@ mod tests {
     use crate::tui::testing::{
         fixture_date, fixture_day, fixture_day_with_projects, render_to_string,
     };
+    use crate::tui::week_list::fixture_week_summary;
 
     fn day_app() -> App {
         App::new(TuiContext::for_test())
             .with_active_date(fixture_date())
             .with_data(fixture_day())
+    }
+
+    /// `day_app` with a week's rollup landed on top, so `Mode::Week` draws
+    /// the real pane rather than its empty state.
+    fn week_app() -> App {
+        day_app().with_weekly_summary(fixture_week_summary())
     }
 
     #[test]
@@ -487,26 +499,51 @@ mod tests {
     /// and miss the others entirely (as it did in fix round 1, where the
     /// zoomed chart's total-hours overlay had a real mislocation bug at a
     /// narrow width no test here ever rendered).
+    ///
+    /// Swept over two *fixtures* as well, and that is load-bearing rather
+    /// than thorough: `day_app` leaves `weekly_summary` at `None`, so
+    /// `Mode::Week` falls to `WeekPane::Empty` and renders a one-line
+    /// notice — which made this sweep's coverage of the weekly rollup
+    /// vacuous. `week_app` lands a rollup, so `WeekListWidget`'s own
+    /// layout — the header split, the `List` with `scroll_padding`, and
+    /// `project_row`'s width arithmetic — is what gets rendered at 1x1.
     #[tokio::test]
     async fn no_render_panics_at_any_plausible_size() {
-        for (w, h) in [
-            (1, 1),
-            (10, 3),
-            (40, 10),
-            (60, 15),
-            (80, 24),
-            (200, 60),
-            (400, 100),
-        ] {
-            for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
-                for overlay in [None, Some(Overlay::Help)] {
-                    let mut app = day_app();
-                    app.mode = mode;
-                    app.overlay = overlay;
-                    let _ = render_to_string(&mut app, w, h);
+        for build in [day_app as fn() -> App, week_app as fn() -> App] {
+            for (w, h) in [
+                (1, 1),
+                (10, 3),
+                (40, 10),
+                (60, 15),
+                (80, 24),
+                (200, 60),
+                (400, 100),
+            ] {
+                for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+                    for overlay in [None, Some(Overlay::Help)] {
+                        let mut app = build();
+                        app.mode = mode;
+                        app.overlay = overlay;
+                        let _ = render_to_string(&mut app, w, h);
+                    }
                 }
             }
         }
+    }
+
+    /// Guards the sweep above from silently going vacuous again: at a size
+    /// it actually sweeps, `week_app` has to reach `WeekListWidget` rather
+    /// than the empty-state notice `day_app` gets.
+    #[tokio::test]
+    async fn the_sweeps_week_fixture_really_renders_the_rollup() {
+        let mut app = week_app();
+        app.mode = Mode::Week;
+        let screen = render_to_string(&mut app, 80, 24);
+        assert!(screen.contains("client-bd"), "got:\n{screen}");
+        assert!(
+            !screen.contains(EMPTY_WEEK_TEXT),
+            "the sweep must not be seeded into the empty state:\n{screen}"
+        );
     }
 
     /// Pins the property `breakpoint` exists to guarantee: at exactly the
