@@ -151,7 +151,12 @@ pub struct App {
     /// available. A machine with no backend leaves this `None` and every
     /// `Enter` reports [`CLIPBOARD_UNAVAILABLE`] instead of failing silently.
     clipboard: Option<Box<dyn Clipboard + Send>>,
-    /// Is a load of the active date's data currently in flight
+    /// Is a load of the active date's data in flight *or queued*.
+    ///
+    /// Set by [`App::spawn_load`] and, crucially, by [`App::go_to_date`] —
+    /// which only queues the reload. [`App::run`] draws at the top of every
+    /// iteration, so the frame between a date change and the spawn it queued
+    /// would otherwise paint the empty state on every single navigation.
     pub loading: bool,
     /// The date `data`, `populated_dates` and `weekly_data` describe, or
     /// `None` before the first load lands.
@@ -529,6 +534,12 @@ impl App {
     fn go_to_date(&mut self, date: Date) {
         self.active_date = date;
         self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
+        // Set here and not left to `spawn_load`, which runs a loop turn
+        // later: `App::run` draws at the top of each iteration, so the frame
+        // in between would find the payload stale and no load in flight, and
+        // paint "no data" on every date change — the very flash suppressing
+        // the pane was meant to remove.
+        self.loading = true;
         self.events
             .send(AppEvent::ReloadFromDisk(Reload::Navigation));
     }
@@ -1524,7 +1535,11 @@ mod tests {
 
         assert_eq!(app.active_date, date!(2025 - 06 - 14));
         assert_eq!(app.load_gen, 0, "no load may start on the event loop");
-        assert!(!app.loading);
+        assert!(
+            app.loading,
+            "each date change marks a load pending so no frame paints the \
+             empty state before the spawn"
+        );
     }
 
     /// The predicate the memo turns on: within a month it has already
@@ -1871,6 +1886,37 @@ mod tests {
         assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
     }
 
+    /// The last frame of the flash this task set out to remove, and the one
+    /// no other test sees: `go_to_date` only *queues* the reload, while
+    /// `App::run` draws at the top of every iteration. The frame in between
+    /// found the payload stale with no load in flight and painted "No data
+    /// found for date" — on every single navigation, not just a cold start.
+    ///
+    /// The tests either side of this one dispatch both events before
+    /// rendering, which is exactly how the frame stayed invisible.
+    #[tokio::test]
+    async fn the_frame_between_a_date_change_and_its_reload_says_it_is_loading() {
+        let mut terminal = test_terminal();
+        let mut app = day_app();
+
+        app.handle_key_events(key('l')).unwrap();
+        // `NextDate` only. The reload it queued is still on the queue.
+        dispatch_next(&mut app, &mut terminal).await;
+        assert_eq!(app.load_gen, 0, "no load has started yet");
+
+        let screen = render_to_string(&mut app, 80, 40);
+
+        assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
+        assert!(
+            !screen.contains("No data found for date"),
+            "a queued reload must not render as an empty day:\n{screen}"
+        );
+        assert!(
+            !screen.contains("admin"),
+            "and the previous date's projects still must not be drawn:\n{screen}"
+        );
+    }
+
     /// The same mismatch on the week axis. The bar chart totals every value
     /// in the map, so the old week's data under the new week's dates draws
     /// the previous week's total above seven empty bars.
@@ -1882,9 +1928,11 @@ mod tests {
             .collect();
         let mut terminal = test_terminal();
         let mut app = day_app().with_weekly_data(week);
+        let before = render_to_string(&mut app, 80, 40);
         assert!(
-            render_to_string(&mut app, 80, 40).contains("Wed11"),
-            "the loaded week has to be on the chart for this test to mean anything"
+            before.contains("Wed11") && before.contains("8.0h total"),
+            "the loaded week has to be on the chart for this test to mean \
+             anything:\n{before}"
         );
 
         // 2025-06-11 is a Wednesday and the week starts on Saturday, so three
@@ -1902,6 +1950,16 @@ mod tests {
         assert_eq!(app.active_date, date!(2025 - 06 - 14));
         assert!(app.week_is_stale());
         let screen = render_to_string(&mut app, 80, 40);
+        // The symptom, and the reason this is worse than "all-zero bars": the
+        // chart totals every value in the map, so the old week's data under
+        // the new week's dates prints the *previous* week's total. The bar
+        // labels below are a weaker guard — they come from `week_dates`,
+        // which move immediately, so they pass with or without the fix.
+        assert!(
+            !screen.contains("8.0h total"),
+            "the previous week's total must not be drawn against the new \
+             week:\n{screen}"
+        );
         assert!(
             !screen.contains("Wed11"),
             "the previous week's bars must not be drawn against the new week:\n{screen}"
