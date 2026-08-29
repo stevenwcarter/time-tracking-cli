@@ -130,31 +130,35 @@ pub enum DayPane {
     Loading,
     /// The project list, which belongs to the date on screen.
     Projects,
-    /// Nothing to show: a day with no tracked time, or a load that failed and
-    /// left only another date's payload behind.
-    Empty,
+    /// Nothing to show, and why; see [`EmptyReason`].
+    Empty(EmptyReason),
 }
 
-/// Why the day on screen has nothing tracked, once [`App::day_pane`] has
-/// already ruled out `Loading`.
+/// Why [`DayPane::Empty`] has nothing to draw.
 ///
-/// Distinguishes "no file at all" from "a file that exists but the parser
-/// found no entries in it" the same way [`crate::data_svc::DataService::read_day`]
-/// distinguishes them at the disk: `Ok(None)` for a missing file versus
-/// `Ok(Some(_))` for one that exists, however it parses. `raw_content` and
-/// `project_list_widget` are written together by [`App::apply_payload`],
-/// so a file that parsed to zero projects leaves `raw_content` populated
-/// with `project_list_widget` still `None` — that pair is what tells the
-/// two states apart.
+/// Computed inside [`App::day_pane`] *after* its freshness check, never as a
+/// freestanding read of `raw_content`/`project_list_widget` — those two only
+/// reliably describe the date on screen once `loaded_date` says they do.
+/// Reading them first collapses into the bug this type exists to rule out:
+/// browse a populated day, navigate away, and let the new date's load fail.
+/// `AppEvent::LoadFailed` clears `loading` but never touches `loaded_date`
+/// or either field (see [`App::apply_sync_event`]), so at that point both
+/// still hold the *previous* date's leftovers, and a possibly genuinely
+/// file-less new date would otherwise render a verdict computed from them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DayState {
-    /// The project list, which belongs to the date on screen.
-    Populated,
-    /// A file exists for the date but the parser recognised no time
-    /// entries in it — the raw text is still there to read, via `v`.
-    FileWithNoEntries,
-    /// No file exists for the date at all.
+pub enum EmptyReason {
+    /// No file exists for the date on screen at all.
     NoFile,
+    /// A file exists for the date on screen but the parser recognised no
+    /// time entries in it — the raw text is still there to read, via `v`.
+    FileWithNoEntries,
+    /// `loaded_date` does not name the date on screen and nothing is
+    /// currently loading. The only way here is a load that failed —
+    /// [`App::go_to_date`] always sets `loading` before this could
+    /// otherwise be observed — so this is deliberately silent about the
+    /// file itself rather than guessing from another date's payload; the
+    /// status line already carries `Load failed: <message>`.
+    Unreadable,
 }
 
 /// What the weekly rollup pane has to draw, once the rollup on hand has been
@@ -1002,34 +1006,22 @@ impl App {
         if self.loaded_date != Some(self.active_date) {
             // Nothing on hand describes the date on screen. Suppressing the
             // pane is deliberate: labelling the previous date's projects
-            // "Loading…" would still present them as this date's.
+            // "Loading…" would still present them as this date's, and once
+            // a load has failed here, `raw_content` and
+            // `project_list_widget` are that previous date's leftovers too
+            // — see `EmptyReason::Unreadable`.
             return if self.loading {
                 DayPane::Loading
             } else {
-                DayPane::Empty
+                DayPane::Empty(EmptyReason::Unreadable)
             };
         }
         if self.project_list_widget.is_some() {
             DayPane::Projects
-        } else {
-            DayPane::Empty
-        }
-    }
-
-    /// Which of the three [`DayState`]s the day on screen is in.
-    ///
-    /// Deliberately not gated on `loaded_date` the way [`App::day_pane`] is:
-    /// this only has to tell `NoFile` apart from `FileWithNoEntries` once
-    /// the render path already knows it is in `DayPane::Empty`, and by then
-    /// `raw_content` and `project_list_widget` already belong to the date
-    /// on screen.
-    pub fn day_state(&self) -> DayState {
-        if self.project_list_widget.is_some() {
-            DayState::Populated
         } else if self.raw_content.is_some() {
-            DayState::FileWithNoEntries
+            DayPane::Empty(EmptyReason::FileWithNoEntries)
         } else {
-            DayState::NoFile
+            DayPane::Empty(EmptyReason::NoFile)
         }
     }
 
@@ -2881,6 +2873,42 @@ mod tests {
         assert!(message.contains("permission denied"), "got {message:?}");
     }
 
+    /// The Critical this task's review caught: `raw_content` and
+    /// `project_list_widget` are only trustworthy for the date on screen
+    /// once `loaded_date` says so. Browse a populated day, navigate away,
+    /// and let the new date's load fail — `loaded_date` never moves off the
+    /// old date, so a verdict read straight from those two fields would
+    /// present the *previous* day's projects (or its lack of a file) as
+    /// this one's. `day_pane` must report `EmptyReason::Unreadable`
+    /// instead of guessing from them.
+    #[test]
+    fn a_failed_load_after_navigating_away_does_not_claim_the_previous_days_file_state() {
+        let mut app = day_app();
+        assert_eq!(
+            app.day_pane(),
+            DayPane::Projects,
+            "the fixture day has to be on screen for this test to mean anything"
+        );
+
+        app.go_to_date(fixture_date().next_day().expect("a next day exists"));
+        app.apply_sync_event(AppEvent::LoadFailed(
+            app.load_gen,
+            "permission denied".to_owned(),
+        ));
+
+        assert_eq!(
+            app.day_pane(),
+            DayPane::Empty(EmptyReason::Unreadable),
+            "a failed load must not present the previous date's projects, or its \
+             lack of a file, as this date's"
+        );
+        let screen = render_to_string(&mut app, 80, 40);
+        assert!(
+            !screen.contains("admin"),
+            "the previous date's projects must not be drawn under the new date:\n{screen}"
+        );
+    }
+
     #[test]
     fn status_expires_after_its_ttl() {
         let mut app = App::new(TuiContext::for_test());
@@ -3126,8 +3154,8 @@ mod tests {
 
         assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
         assert!(
-            !screen.contains("No data found for date"),
-            "an in-flight load must not render as an empty day:\n{screen}"
+            !matches!(app.day_pane(), DayPane::Empty(_)),
+            "an in-flight load must not render as an empty day"
         );
     }
 
@@ -3183,8 +3211,8 @@ mod tests {
 
         assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
         assert!(
-            !screen.contains("No data found for date"),
-            "a queued reload must not render as an empty day:\n{screen}"
+            !matches!(app.day_pane(), DayPane::Empty(_)),
+            "a queued reload must not render as an empty day"
         );
         assert!(
             !screen.contains("admin"),
@@ -3251,6 +3279,10 @@ mod tests {
     #[test]
     fn the_help_hint_survives_a_day_with_no_project_list() {
         let mut app = App::new(TuiContext::for_test()).with_active_date(fixture_date());
+        // A completed load that found no file — as opposed to no load
+        // having landed at all, which `App::day_pane` reads as
+        // `EmptyReason::Unreadable` instead. See `EmptyReason`.
+        app.loaded_date = Some(app.active_date);
 
         let screen = render_to_string(&mut app, 80, 24);
 
