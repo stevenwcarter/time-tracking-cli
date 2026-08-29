@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
@@ -9,7 +11,7 @@ use super::app::{App, DayPane, LOADING_MESSAGE};
 use super::mode::{Mode, Overlay};
 use super::theme::Theme;
 use super::widgets::HelpPopup;
-use super::widgets::{Calendar, WeeklyBarChart};
+use super::widgets::{Calendar, RawFileView, WeeklyBarChart};
 
 /// The narrowest terminal width the day view can lay out at all.
 ///
@@ -81,9 +83,9 @@ impl Widget for &mut App {
             // resized to, actually clears the gate.
             Mode::Day => self.render_day(breakpoint(area), main_area, buf),
             Mode::ZoomedWeek => self.render_zoomed_week(main_area, buf),
-            // Tasks 20 and 16 replace these with the real views.
+            // Task 20 replaces this with the real view.
             Mode::Week => render_placeholder("Week view", &self.ctx.theme, main_area, buf),
-            Mode::RawFile => render_placeholder("Raw file view", &self.ctx.theme, main_area, buf),
+            Mode::RawFile => self.render_raw_file(main_area, buf),
         }
         self.render_status(status_area, buf);
         // Drawn last, and in every mode: the help popup used to be skipped
@@ -183,6 +185,24 @@ impl App {
     /// The weekly bar chart, full screen.
     fn render_zoomed_week(&mut self, area: Rect, buf: &mut Buffer) {
         self.weekly_bar_chart().render(area, buf);
+    }
+
+    /// The active date's file exactly as it sits on disk.
+    ///
+    /// Records `raw_visible_lines` from `area` before drawing, computed the
+    /// same way [`RawFileView::render`] lays the pane out — see
+    /// [`RawFileView::visible_lines`] — so `App::scroll_raw_file`'s clamp
+    /// never drifts from what is actually on screen.
+    fn render_raw_file(&mut self, area: Rect, buf: &mut Buffer) {
+        self.raw_visible_lines = RawFileView::visible_lines(area);
+        let path = raw_file_path(&self.ctx.data_dir, self.active_date);
+        RawFileView::new(
+            &path,
+            self.raw_content.as_deref(),
+            self.raw_scroll,
+            &self.ctx.theme,
+        )
+        .render(area, buf);
     }
 
     /// Draw the modal layer, if one is open, over whatever the mode drew.
@@ -296,6 +316,21 @@ fn format_pane_title(date: Date) -> String {
         .format(DATE_FORMAT)
         .unwrap_or_else(|_| date.to_string());
     format!("{} {iso}", date.weekday().short_name())
+}
+
+/// The path `date`'s file would have under `data_dir`, for
+/// [`RawFileView`]'s title.
+///
+/// Mirrors `DataService::get_file_path` rather than calling it: that method
+/// is `async` for symmetry with the disk-touching paths on `DataService`,
+/// but resolves nothing beyond what is already sitting in `data_dir` for a
+/// TUI service — always built with a fixed directory — so recomputing here
+/// keeps the render path synchronous.
+fn raw_file_path(data_dir: &Path, date: Date) -> PathBuf {
+    let date_str = date
+        .format(DATE_FORMAT)
+        .unwrap_or_else(|_| date.to_string());
+    data_dir.join(format!("{date_str}.md"))
 }
 
 fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
@@ -474,13 +509,33 @@ mod tests {
     }
 
     #[test]
-    fn the_unbuilt_modes_say_so_rather_than_rendering_nothing() {
-        for (mode, expected) in [(Mode::Week, "Week view"), (Mode::RawFile, "Raw file view")] {
-            let mut app = day_app();
-            app.mode = mode;
-            let screen = render_to_string(&mut app, 100, 30);
-            assert!(screen.contains(expected), "{mode:?} rendered:\n{screen}");
-        }
+    fn the_unbuilt_week_mode_says_so_rather_than_rendering_nothing() {
+        let mut app = day_app();
+        app.mode = Mode::Week;
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Week view"), "got:\n{screen}");
+    }
+
+    /// The point of the task: a day file that fences or parses to zero
+    /// entries is no longer a dead end — the raw text is right there.
+    #[tokio::test]
+    async fn v_enters_raw_mode_and_shows_the_file_text() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = Some("```timetracking\n8-10 admin\n```".into());
+        app.mode = Mode::RawFile;
+        let screen = render_to_string(&mut app, 80, 20);
+        assert!(screen.contains("8-10 admin"), "got:\n{screen}");
+    }
+
+    /// A missing file is not the same as a load still in flight, and the
+    /// raw view has to say so rather than drawing an empty box.
+    #[tokio::test]
+    async fn a_missing_file_says_so_rather_than_rendering_blank() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = None;
+        app.mode = Mode::RawFile;
+        let screen = render_to_string(&mut app, 80, 20);
+        assert!(screen.contains("No file"), "got:\n{screen}");
     }
 
     /// This is the test that catches the bug: the block carrying the active

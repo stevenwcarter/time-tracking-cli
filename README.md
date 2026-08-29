@@ -204,6 +204,9 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 | ] / PageDown | go forward a month                                    |
 | t / T        | go to today                                           |
 | f            | toggle zooming into the weekly bar chart              |
+| v            | view the active date's file as it sits on disk        |
+| ↓ / j        | scroll the raw file down                              |
+| ↑ / k        | scroll the raw file up                                |
 | r            | reload the current date from disk                     |
 | e            | edit the current date's notes in $EDITOR              |
 | y            | copy the day's summary (with hours) to the clipboard  |

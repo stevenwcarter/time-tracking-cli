@@ -19,7 +19,9 @@ pub enum Mode {
     Week,
     /// The weekly bar chart, full screen.
     ZoomedWeek,
-    /// The active date's file as it sits on disk. Task 16 builds the view.
+    /// The active date's file exactly as it sits on disk, scrollable — the
+    /// escape hatch for a file that fences or parses to zero entries with
+    /// nothing on screen to say why.
     RawFile,
 }
 

@@ -95,6 +95,17 @@ pub enum AppEvent {
     ReloadFromDisk(Reload),
     /// Go to today's date
     Today,
+    /// Toggle between `Mode::Day` and `Mode::RawFile`.
+    ToggleRawFile,
+    /// Scroll the raw-file pane down a line.
+    ScrollRawFileDown,
+    /// Scroll the raw-file pane up a line.
+    ScrollRawFileUp,
+    /// The background read `App::toggle_raw_file` started for the raw-file
+    /// pane finished; carries the date it was read for, so a result that
+    /// lands after the user has moved to another date can be dropped rather
+    /// than applied under the wrong header.
+    RawFileLoaded(Date, Option<String>),
     /// A background load finished; carries the generation it was started with.
     ///
     /// The payload is boxed because it dwarfs every other variant, and every

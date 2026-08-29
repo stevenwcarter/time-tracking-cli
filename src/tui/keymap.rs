@@ -216,6 +216,32 @@ pub const BINDINGS: &[Binding] = &[
         description: "toggle zooming into the weekly bar chart",
     },
     Binding {
+        keys: &[(KeyCode::Char('v'), NONE)],
+        event: AppEvent::ToggleRawFile,
+        // Live in Day (to enter) and RawFile (to leave again); disjoint from
+        // Week/ZoomedWeek, which have no raw file of their own to show.
+        modes: ModeMask::DAY.or(ModeMask::RAW),
+        group: Group::View,
+        description: "view the active date's file as it sits on disk",
+    },
+    Binding {
+        keys: &[(KeyCode::Down, NONE), (KeyCode::Char('j'), NONE)],
+        event: AppEvent::ScrollRawFileDown,
+        // Disjoint from the Day-only list-navigation row above: same keys,
+        // different mode, different meaning. `no_duplicate_key_within_a_mode`
+        // is what keeps that honest.
+        modes: ModeMask::RAW,
+        group: Group::View,
+        description: "scroll the raw file down",
+    },
+    Binding {
+        keys: &[(KeyCode::Up, NONE), (KeyCode::Char('k'), NONE)],
+        event: AppEvent::ScrollRawFileUp,
+        modes: ModeMask::RAW,
+        group: Group::View,
+        description: "scroll the raw file up",
+    },
+    Binding {
         keys: &[(KeyCode::Char('r'), NONE)],
         event: AppEvent::ReloadFromDisk(Reload::Rescan),
         modes: ModeMask::ALL,
@@ -501,15 +527,36 @@ mod tests {
     }
 
     /// The day view's list keys must reach the day view and nowhere else, so
-    /// Tasks 16 and 20 are free to bind them in the modes they build.
+    /// Task 20 is free to bind them in the mode it builds. `j` is excluded
+    /// here — Task 16 legitimately reuses it in `RawFile`, under a disjoint
+    /// mask and a different event; see `j_reaches_only_day_and_raw_file`.
     #[test]
     fn day_only_bindings_reach_no_other_mode() {
-        for key in [KeyCode::Char('j'), KeyCode::Char('G'), KeyCode::Enter] {
+        for key in [KeyCode::Char('G'), KeyCode::Enter] {
             let key = KeyEvent::new(key, KeyModifiers::NONE);
             assert!(lookup(key, Mode::Day).is_some(), "{key:?} is a day key");
             for mode in [Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
                 assert!(lookup(key, mode).is_none(), "{key:?} leaked into {mode:?}");
             }
+        }
+    }
+
+    /// `j` is the one day-only list key Task 16 reuses: bound again in
+    /// `RawFile` for scrolling, under a disjoint `ModeMask` and a different
+    /// event, so it still must not reach `Week` or `ZoomedWeek`.
+    #[test]
+    fn j_reaches_only_day_and_raw_file() {
+        let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
+        assert_eq!(
+            lookup(j, Mode::Day).map(|b| &b.event),
+            Some(&AppEvent::NextProject)
+        );
+        assert_eq!(
+            lookup(j, Mode::RawFile).map(|b| &b.event),
+            Some(&AppEvent::ScrollRawFileDown)
+        );
+        for mode in [Mode::Week, Mode::ZoomedWeek] {
+            assert!(lookup(j, mode).is_none(), "j leaked into {mode:?}");
         }
     }
 

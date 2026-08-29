@@ -196,12 +196,29 @@ pub struct App {
     /// Time tracking data for current date
     pub data: Option<TimeTrackingData>,
     /// `data`'s date exactly as its file is on disk, for `y`'s day-summary
-    /// yank.
+    /// yank and for [`Mode::RawFile`]'s pane.
     ///
     /// [`crate::display::DisplayFormatter::day_summary`] reparses its own
     /// `content` argument, so only the raw text will do; `data` alone cannot
-    /// reconstruct it. Private: [`App::yank_day`] is the only reader.
-    raw_content: Option<String>,
+    /// reconstruct it.
+    pub raw_content: Option<String>,
+    /// Vertical scroll offset for [`Mode::RawFile`]'s pane, in lines.
+    ///
+    /// Clamped by [`App::scroll_raw_file`] against the content's line count
+    /// and `raw_visible_lines` below — never a fixed number, since a day file
+    /// long enough to need paging is exactly the case a fixed clamp would
+    /// break.
+    pub raw_scroll: u16,
+    /// Lines [`Mode::RawFile`]'s pane could show at its last render, for
+    /// [`App::scroll_raw_file`]'s upper clamp.
+    ///
+    /// Set by [`crate::tui::ui`]'s render pass rather than recomputed at
+    /// scroll time, so the clamp and the layout it clamps against can never
+    /// drift apart. Zero until the first frame renders the pane, which
+    /// briefly leaves scrolling unclamped on the tall side — harmless, since
+    /// nothing can call [`App::handle_key_events`] before `App::run`'s first
+    /// `terminal.draw`.
+    pub raw_visible_lines: u16,
     /// Project list widget
     pub project_list_widget: Option<ProjectListWidget>,
     /// Populated dates (have hours)
@@ -280,6 +297,8 @@ impl App {
             events: EventHandler::new(),
             data: None,
             raw_content: None,
+            raw_scroll: 0,
+            raw_visible_lines: 0,
             project_list_widget: None,
             populated_dates: Vec::new(),
             month_memo: HashMap::new(),
@@ -467,6 +486,10 @@ impl App {
             | AppEvent::CopyToClipboard(..)
             | AppEvent::YankDay
             | AppEvent::YankWeek
+            | AppEvent::ToggleRawFile
+            | AppEvent::ScrollRawFileDown
+            | AppEvent::ScrollRawFileUp
+            | AppEvent::RawFileLoaded(..)
             | AppEvent::DataLoaded(..)
             | AppEvent::LoadFailed(..)
             | AppEvent::Quit) => self.apply_sync_event(e),
@@ -501,6 +524,7 @@ impl App {
             AppEvent::PreviousWeek => self.go_to_date(shift_days(self.active_date, -7)),
             AppEvent::NextMonth => self.step_month(1),
             AppEvent::PreviousMonth => self.step_month(-1),
+            AppEvent::ToggleRawFile => self.toggle_raw_file(),
             AppEvent::Quit => self.quit(),
             // Latest-wins: a load only lands while it is still the current
             // one. Holding `h` starts a load per key press, and the earlier
@@ -516,6 +540,14 @@ impl App {
             // Superseded: a newer load is still in flight, so `loading` stays
             // set and the stale results are dropped.
             AppEvent::DataLoaded(..) | AppEvent::LoadFailed(..) => {}
+            // The read `App::toggle_raw_file` started, reporting back. Dropped
+            // when the user has since moved to another date, the same guard
+            // `App::apply_payload` uses for the heavier day load.
+            AppEvent::RawFileLoaded(date, content) => {
+                if date == self.active_date {
+                    self.raw_content = content;
+                }
+            }
             // The day view's project list owns these. They normally never
             // reach the queue — `handle_mode_key` hands them straight to the
             // widget — but a day with no list lets them fall through.
@@ -533,6 +565,12 @@ impl App {
                     self.events.send(emitted);
                 }
             }
+            // `Mode::RawFile`'s own keys. `App::handle_mode_key` consumes
+            // these directly, the same way the project list's keys above
+            // normally never reach the queue either; kept here purely for
+            // exhaustiveness, calling the very same helper.
+            AppEvent::ScrollRawFileDown => self.scroll_raw_file(1),
+            AppEvent::ScrollRawFileUp => self.scroll_raw_file(-1),
             AppEvent::CopyToClipboard(payload, message) => {
                 self.copy_to_clipboard(payload, message);
             }
@@ -597,6 +635,61 @@ impl App {
         } else {
             Some(Overlay::Help)
         };
+    }
+
+    /// Flip between `Mode::Day` and `Mode::RawFile`.
+    ///
+    /// Entering `RawFile` spawns a background read of the active date's file,
+    /// reported back as `AppEvent::RawFileLoaded` — the same off-loop pattern
+    /// [`App::spawn_load`] uses for the heavier day load, so a large file
+    /// cannot stall the event loop the way awaiting `read_day` right here
+    /// would. `raw_scroll` resets to the top: whatever position was scrolled
+    /// to belonged to the content on screen before this toggle, not to
+    /// whatever is about to replace it.
+    fn toggle_raw_file(&mut self) {
+        self.mode = if self.mode == Mode::RawFile {
+            Mode::Day
+        } else {
+            Mode::RawFile
+        };
+        if self.mode != Mode::RawFile {
+            return;
+        }
+        self.raw_scroll = 0;
+        let tx = self.events.sender();
+        let data_svc = self.data_svc.clone();
+        let date = self.active_date;
+        tokio::spawn(async move {
+            let content = data_svc.read_day(&date).await.unwrap_or_else(|e| {
+                tracing::warn!("could not read the raw file: {e}");
+                None
+            });
+            tx.send(AppEvent::RawFileLoaded(date, content));
+        });
+    }
+
+    /// Scroll the raw-file pane by `delta` lines, clamped so the first line
+    /// never scrolls below zero and the last line never scrolls above the
+    /// top of the pane.
+    ///
+    /// The upper bound reads `raw_visible_lines`, which is only ever as
+    /// stale as the last frame — no worse than `week_is_stale`'s own
+    /// look-behind, and harmless here for the same reason: a resize sets
+    /// `dirty` and repaints before another key can be handled.
+    fn scroll_raw_file(&mut self, delta: i16) {
+        let max_scroll = self.raw_line_count().saturating_sub(self.raw_visible_lines);
+        self.raw_scroll = self.raw_scroll.saturating_add_signed(delta).min(max_scroll);
+    }
+
+    /// `raw_content`'s line count, capped at `u16::MAX` — far more lines
+    /// than a day file could plausibly hold, and all `Paragraph::scroll`'s
+    /// offset can represent anyway.
+    fn raw_line_count(&self) -> u16 {
+        self.raw_content
+            .as_deref()
+            .map_or(0, |content| content.lines().count())
+            .try_into()
+            .unwrap_or(u16::MAX)
     }
 
     /// Move to `date` and queue a reload of its data.
@@ -1008,9 +1101,26 @@ impl App {
                 // Nothing to navigate; the key belongs to the layer behind.
                 None => Handled::Ignored,
             },
-            // Tasks 16 and 20 give these modes keys of their own.
-            Mode::Week | Mode::ZoomedWeek | Mode::RawFile => Handled::Ignored,
+            Mode::RawFile => self.apply_raw_file_key(&binding.event),
+            // Task 20 gives this mode keys of its own.
+            Mode::Week | Mode::ZoomedWeek => Handled::Ignored,
         }
+    }
+
+    /// `Mode::RawFile`'s own keys: scrolling.
+    ///
+    /// Anything else `keymap::lookup` resolved for this mode — `v` to leave
+    /// it again, or one of the bindings valid everywhere — answers `Ignored`
+    /// here so it falls through to [`App::handle_global_key`], the same way
+    /// [`ProjectListWidget::apply`] answers for an event the day view's list
+    /// does not own.
+    fn apply_raw_file_key(&mut self, event: &AppEvent) -> Handled {
+        match event {
+            AppEvent::ScrollRawFileDown => self.scroll_raw_file(1),
+            AppEvent::ScrollRawFileUp => self.scroll_raw_file(-1),
+            _ => return Handled::Ignored,
+        }
+        Handled::Consumed
     }
 
     /// The global layer: whatever the mode did not claim, straight from the
@@ -1227,7 +1337,14 @@ async fn mtime(path: &Path) -> Option<SystemTime> {
 fn changes_key_routing(app_event: &AppEvent) -> bool {
     match app_event {
         // Changes which layer reads the next key, or what it resolves to.
-        AppEvent::ToggleHelp | AppEvent::CloseOverlay | AppEvent::ToggleZoomBar => true,
+        // `ToggleRawFile` belongs here for the same reason `ToggleZoomBar`
+        // does: applied through the queue instead, a key typed right after
+        // `v` would resolve against the mode just left rather than the one
+        // just entered.
+        AppEvent::ToggleHelp
+        | AppEvent::CloseOverlay
+        | AppEvent::ToggleZoomBar
+        | AppEvent::ToggleRawFile => true,
         // Leaves the active mode and overlay exactly as they were.
         AppEvent::NextProject
         | AppEvent::PreviousProject
@@ -1246,10 +1363,13 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::PreviousMonth
         | AppEvent::ReloadFromDisk(_)
         | AppEvent::Today
+        | AppEvent::ScrollRawFileDown
+        | AppEvent::ScrollRawFileUp
         // Never reach this function at all — a load reports back, it is not
         // emitted by a key — and they touch neither mode nor overlay.
         | AppEvent::DataLoaded(..)
         | AppEvent::LoadFailed(..)
+        | AppEvent::RawFileLoaded(..)
         | AppEvent::Quit => false,
     }
 }
@@ -1537,6 +1657,98 @@ mod tests {
 
         assert_eq!(app.mode, Mode::Day);
         assert_eq!(selection(&app), Some(1));
+    }
+
+    /// `v` is the raw file view's escape hatch, both ways.
+    #[tokio::test]
+    async fn v_toggles_between_day_and_raw_file_mode() {
+        let mut app = day_app();
+        assert_eq!(app.mode, Mode::Day);
+
+        app.handle_key_events(key('v')).unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.mode, Mode::RawFile);
+
+        app.handle_key_events(key('v')).unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.mode, Mode::Day);
+    }
+
+    /// The same rule the zoom key pins above, for `v`: `ToggleRawFile` has to
+    /// sit on the `true` side of `changes_key_routing`, or a key typed right
+    /// after it would resolve against the mode just left rather than the one
+    /// just entered.
+    #[tokio::test]
+    async fn a_key_typed_straight_after_v_resolves_in_the_new_mode() {
+        let mut app = day_app();
+        app.raw_content = Some(
+            (0..10)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        app.handle_key_events(key('v')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(app.mode, Mode::RawFile);
+        assert_eq!(
+            app.raw_scroll, 1,
+            "j is bound in RawFile mode and must scroll it, not move the day's (hidden) list"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_mode_scrolls_with_j_and_k() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = Some(
+            (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.mode = Mode::RawFile;
+
+        app.handle_key_events(key('j')).unwrap();
+        assert_eq!(app.raw_scroll, 1);
+        app.handle_key_events(key('k')).unwrap();
+        assert_eq!(app.raw_scroll, 0);
+    }
+
+    #[tokio::test]
+    async fn raw_scroll_does_not_go_negative() {
+        let mut app = App::new(TuiContext::for_test());
+        app.mode = Mode::RawFile;
+
+        app.handle_key_events(key('k')).unwrap();
+        assert_eq!(app.raw_scroll, 0);
+    }
+
+    /// The upper half of the clamp: `j` held past the end of a short file
+    /// must stop at the last screenful rather than keep counting past it —
+    /// the clamp has to read the actual line count and the pane's actual
+    /// height, not a fixed number.
+    #[tokio::test]
+    async fn raw_scroll_clamps_to_the_last_screenful() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = Some(
+            (0..10)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.mode = Mode::RawFile;
+        // 8 rows total: 1 for the status line, 2 for the pane's border,
+        // leaving 5 visible — so the top can scroll no further than line 5
+        // of the 10-line file.
+        render_to_string(&mut app, 80, 8);
+
+        for _ in 0..20 {
+            app.handle_key_events(key('j')).unwrap();
+        }
+
+        assert_eq!(app.raw_scroll, 5);
     }
 
     /// The project-list events are only meaningful against a list; a day with
