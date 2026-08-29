@@ -47,6 +47,15 @@ pub trait DisplayFormatter: Debug + Send + Sync {
     fn weekly_totals(&self, total_minutes: u32, dead_minutes: u32) -> String;
     fn display_weekly_totals(&self, total_minutes: u32, dead_minutes: u32);
 
+    /// Display the weekly warnings block.
+    ///
+    /// Each formatter renders this, rather than the shared weekly renderer
+    /// printing one hardcoded shape: `plain` exists to emit no emoji, and this
+    /// block was the last part of the weekly output that ignored that.
+    /// Mirrors the day path's `warnings_header` / `warning_bullet` styles.
+    fn weekly_warnings(&self, warnings: &[String]) -> String;
+    fn display_weekly_warnings(&self, warnings: &[String]);
+
     /// Display weekly projects summary
     fn weekly_projects(&self, projects: &[WeeklyProject]) -> String;
     fn display_weekly_projects(&self, projects: &[WeeklyProject]);
@@ -227,10 +236,7 @@ pub async fn show_weekly_summary_with(
     formatter.display_weekly_totals(summary.total_minutes, summary.dead_time_minutes);
 
     if !summary.warnings.is_empty() {
-        println!("\n⚠️  WEEKLY WARNINGS");
-        for warning in &summary.warnings {
-            println!("  ⚠ {}", warning);
-        }
+        formatter.display_weekly_warnings(&summary.warnings);
     }
 
     if !summary.projects.is_empty() {
@@ -397,6 +403,11 @@ mod tests {
                 .expect("spy lock")
                 .push((total_minutes, dead_minutes));
         }
+
+        fn weekly_warnings(&self, _warnings: &[String]) -> String {
+            String::new()
+        }
+        fn display_weekly_warnings(&self, _warnings: &[String]) {}
 
         fn weekly_projects(&self, _projects: &[WeeklyProject]) -> String {
             String::new()

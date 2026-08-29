@@ -81,6 +81,20 @@ impl DisplayFormatter for DefaultDisplayFormatter {
         println!("{}", self.weekly_totals(total_minutes, dead_minutes));
     }
 
+    fn weekly_warnings(&self, warnings: &[String]) -> String {
+        let mut msg = String::new();
+        if !warnings.is_empty() {
+            msg.push_str("\n⚠️  WEEKLY WARNINGS");
+            for warning in warnings {
+                msg.push_str(&format!("\n  ⚠ {warning}"));
+            }
+        }
+        msg
+    }
+    fn display_weekly_warnings(&self, warnings: &[String]) {
+        println!("{}", self.weekly_warnings(warnings));
+    }
+
     fn weekly_projects(&self, projects: &[WeeklyProject]) -> String {
         let mut msg = String::new();
         if !projects.is_empty() {

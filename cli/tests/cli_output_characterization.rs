@@ -164,6 +164,41 @@ fn weekly_summary_includes_warnings_section() {
     compare_golden("weekly_with_warnings_default", &got);
 }
 
+/// The `plain` formatter exists to emit no emoji, and the weekly warnings
+/// block is the one part of the weekly render that used to be printed by the
+/// shared renderer rather than by the formatter — so `plain` emitted `\u{26a0}\u{fe0f}` and
+/// `\u{26a0}` here regardless. Nothing covered `plain` + warnings, so the
+/// inconsistency went unpinned.
+#[test]
+fn plain_weekly_warnings_carry_no_emoji() {
+    let dir = staged("week_with_warnings");
+    let got = run_ttcli(
+        &[
+            "--week",
+            "--date",
+            "2026-08-24",
+            "--formatter",
+            "plain",
+            "--week-start-day",
+            "Saturday",
+        ],
+        dir.path(),
+    );
+    assert!(
+        got.contains("WEEKLY WARNINGS"),
+        "expected a warnings section in:\n{got}"
+    );
+    let stray: Vec<char> = got
+        .chars()
+        .filter(|c| !c.is_ascii() && !c.is_alphanumeric())
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "the plain formatter must emit no emoji, found {stray:?} in:\n{got}"
+    );
+    compare_golden("weekly_with_warnings_plain", &got);
+}
+
 /// Ties are broken by project name, so this asserts a property rather than
 /// exact bytes: repeated runs over the same fixture must agree.
 #[test]
