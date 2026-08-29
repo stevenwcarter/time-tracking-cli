@@ -174,6 +174,34 @@ pub const BINDINGS: &[Binding] = &[
         description: "go to the next day",
     },
     Binding {
+        keys: &[(KeyCode::Char('H'), NONE)],
+        event: AppEvent::PreviousWeek,
+        modes: ModeMask::ALL,
+        group: Group::Date,
+        description: "go back a week",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('L'), NONE)],
+        event: AppEvent::NextWeek,
+        modes: ModeMask::ALL,
+        group: Group::Date,
+        description: "go forward a week",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('['), NONE), (KeyCode::PageUp, NONE)],
+        event: AppEvent::PreviousMonth,
+        modes: ModeMask::ALL,
+        group: Group::Date,
+        description: "go back a month",
+    },
+    Binding {
+        keys: &[(KeyCode::Char(']'), NONE), (KeyCode::PageDown, NONE)],
+        event: AppEvent::NextMonth,
+        modes: ModeMask::ALL,
+        group: Group::Date,
+        description: "go forward a month",
+    },
+    Binding {
         keys: &[(KeyCode::Char('t'), NONE), (KeyCode::Char('T'), NONE)],
         event: AppEvent::Today,
         modes: ModeMask::ALL,
@@ -493,6 +521,23 @@ mod tests {
         let g = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
         let binding = lookup(g, Mode::Day).expect("G is bound in the day view");
         assert_eq!(binding.event, AppEvent::LastProject);
+    }
+
+    /// `H`/`L` arrive with `SHIFT` set on most terminals — Shift is what
+    /// makes them capital in the first place — so both modifier states must
+    /// resolve to the same row.
+    #[test]
+    fn shifted_week_keys_match_their_unmodified_row() {
+        for (c, event) in [('H', &AppEvent::PreviousWeek), ('L', &AppEvent::NextWeek)] {
+            for modifiers in [KeyModifiers::NONE, KeyModifiers::SHIFT] {
+                let key = KeyEvent::new(KeyCode::Char(c), modifiers);
+                assert_eq!(
+                    lookup(key, Mode::Day).map(|b| &b.event),
+                    Some(event),
+                    "{c} with {modifiers:?} must trigger {event:?}"
+                );
+            }
+        }
     }
 
     /// A binding whose mask does not include the mode must not fire, and a

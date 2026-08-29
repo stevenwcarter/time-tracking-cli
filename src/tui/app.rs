@@ -417,6 +417,10 @@ impl App {
             | AppEvent::Today
             | AppEvent::NextDate
             | AppEvent::PreviousDate
+            | AppEvent::NextWeek
+            | AppEvent::PreviousWeek
+            | AppEvent::NextMonth
+            | AppEvent::PreviousMonth
             | AppEvent::NextProject
             | AppEvent::PreviousProject
             | AppEvent::FirstProject
@@ -453,6 +457,10 @@ impl App {
             AppEvent::PreviousDate => {
                 self.go_to_date(self.active_date.previous_day().unwrap_or(self.active_date));
             }
+            AppEvent::NextWeek => self.go_to_date(shift_days(self.active_date, 7)),
+            AppEvent::PreviousWeek => self.go_to_date(shift_days(self.active_date, -7)),
+            AppEvent::NextMonth => self.step_month(1),
+            AppEvent::PreviousMonth => self.step_month(-1),
             AppEvent::Quit => self.quit(),
             // Latest-wins: a load only lands while it is still the current
             // one. Holding `h` starts a load per key press, and the earlier
@@ -542,6 +550,23 @@ impl App {
         self.loading = true;
         self.events
             .send(AppEvent::ReloadFromDisk(Reload::Navigation));
+    }
+
+    /// Go to `offset` months from the active date (`-1`/`1`), by way of
+    /// [`go_to_date`](Self::go_to_date).
+    ///
+    /// `shift_months` only fails on a year past what [`time::Date`] can
+    /// represent, which no real calendar year reaches; reported on the
+    /// status line rather than threaded back as a `Result`, since every
+    /// caller in [`App::apply_sync_event`] is infallible by construction.
+    fn step_month(&mut self, offset: i32) {
+        match shift_months(self.active_date, offset) {
+            Ok(date) => self.go_to_date(date),
+            Err(e) => {
+                tracing::warn!("could not step by a month: {e}");
+                self.set_status(format!("Could not step by a month: {e}"));
+            }
+        }
     }
 
     pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -1012,6 +1037,10 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::Edit
         | AppEvent::NextDate
         | AppEvent::PreviousDate
+        | AppEvent::NextWeek
+        | AppEvent::PreviousWeek
+        | AppEvent::NextMonth
+        | AppEvent::PreviousMonth
         | AppEvent::ReloadFromDisk(_)
         | AppEvent::Today
         // Never reach this function at all — a load reports back, it is not
@@ -1040,38 +1069,68 @@ fn today() -> Date {
         .date()
 }
 
-/// Return the first day of the month `offset` months from `date` (negative = previous).
+/// Return the first day of the month `offset` months from `date` (negative =
+/// previous).
+///
+/// Only ever asked to step by one month — every caller passes `-1` or `1` —
+/// so only `offset`'s sign is consulted.
 fn month_offset(date: Date, offset: i32) -> Result<Date> {
     if offset == 0 {
         return Ok(date);
     }
-    // Try the simple replace_month path first (works when the month cycle doesn't cross a year)
-    let next_month = if offset > 0 {
+    let steps_forward = offset > 0;
+    let target_month = if steps_forward {
         date.month().next()
     } else {
         date.month().previous()
     };
-    match date.replace_month(next_month) {
-        Ok(d) => Ok(d),
-        Err(_) => {
-            // Month wrapped around the year boundary; adjust the year too
-            let new_year = if offset > 0 {
-                date.year().checked_add(1)
-            } else {
-                date.year().checked_sub(1)
-            }
-            .context("year out of range computing adjacent month")?;
-            let boundary_month = if offset > 0 {
-                time::Month::January
-            } else {
-                time::Month::December
-            };
-            date.replace_year(new_year)
-                .context("replace_year")?
-                .replace_month(boundary_month)
-                .context("replace_month at year boundary")
-        }
-    }
+    // `Date::replace_month` only ever replaces the month, never the year, so
+    // it cannot be used to detect a year boundary by matching on its error:
+    // stepping from December to January would silently return January of
+    // *this* year instead of erroring. The wrap has to be detected from the
+    // month being crossed instead.
+    let wraps_year = date.month()
+        == if steps_forward {
+            time::Month::December
+        } else {
+            time::Month::January
+        };
+    let target_year = if wraps_year {
+        let delta = if steps_forward { 1 } else { -1 };
+        date.year()
+            .checked_add(delta)
+            .context("year out of range computing adjacent month")?
+    } else {
+        date.year()
+    };
+    date.replace_year(target_year)
+        .context("replace_year")?
+        .replace_month(target_month)
+        .context("replace_month")
+}
+
+/// Move `date` by `days`, staying put rather than producing an invalid date
+/// at either end of the representable range — the policy
+/// `Date::next_day`/`previous_day` already use for a single day.
+fn shift_days(date: Date, days: i64) -> Date {
+    // Qualified rather than imported: `time::Duration` would otherwise clash
+    // with the `std::time::Duration` this module already imports for
+    // `STATUS_TTL`.
+    date.checked_add(time::Duration::days(days)).unwrap_or(date)
+}
+
+/// Move `date` a whole month forward or backward (`offset` = `-1`/`1`),
+/// keeping the same day of the month where the target month has one and
+/// clamping to its last day otherwise — so Jan 31 steps to Feb 28 rather
+/// than failing or silently staying put.
+fn shift_months(date: Date, offset: i32) -> Result<Date> {
+    let day = date.day();
+    let first_of_month = date.replace_day(1).context("could not set day to 1")?;
+    let target_month = month_offset(first_of_month, offset)?;
+    let last_day_of_target = target_month.month().length(target_month.year());
+    target_month
+        .replace_day(day.min(last_day_of_target))
+        .context("could not clamp to the target month's length")
 }
 
 #[cfg(test)]
@@ -1673,6 +1732,111 @@ mod tests {
         assert!(
             app.month_memo.is_empty(),
             "`r` means read the disk again, calendar markers included"
+        );
+    }
+
+    #[tokio::test]
+    async fn shift_l_advances_a_week() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2026 - 08 - 31));
+    }
+
+    #[tokio::test]
+    async fn shift_h_goes_back_a_week() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2026 - 08 - 17));
+    }
+
+    #[tokio::test]
+    async fn bracket_steps_a_month_and_clamps_at_a_short_month_end() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 01 - 31));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        // February has no 31st — land on the last valid day rather than failing.
+        assert_eq!(app.active_date, date!(2026 - 02 - 28));
+    }
+
+    #[tokio::test]
+    async fn open_bracket_steps_back_a_month_and_clamps_at_a_short_month_end() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 03 - 31));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        // The same clamp applies stepping backward: February is short too.
+        assert_eq!(app.active_date, date!(2026 - 02 - 28));
+    }
+
+    #[tokio::test]
+    async fn page_down_is_an_alias_for_next_month() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.handle_key_events(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2026 - 09 - 24));
+    }
+
+    #[tokio::test]
+    async fn page_up_is_an_alias_for_previous_month() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.handle_key_events(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2026 - 07 - 24));
+    }
+
+    /// `month_offset` used to detect a year boundary by matching on
+    /// `replace_month`'s error — but `replace_month` never changes the year,
+    /// so it never actually errors there, and stepping forward from December
+    /// silently landed in January of the *same* year instead of the next
+    /// one. Pinning both directions here so a regression fails loudly rather
+    /// than only showing up once a year.
+    #[tokio::test]
+    async fn month_step_crosses_a_year_boundary() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 12 - 15));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2027 - 01 - 15));
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(app.active_date, date!(2026 - 11 - 15));
+    }
+
+    /// Week and month motions are navigation, not a rescan: the calendar's
+    /// month memo has to survive them the same way it survives `NextDate`.
+    #[tokio::test]
+    async fn week_and_month_motions_keep_the_month_memo() {
+        let mut terminal = test_terminal();
+        let mut app = day_app();
+        app.month_memo.insert((2025, 6), vec![fixture_date()]);
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT))
+            .unwrap();
+        dispatch_next(&mut app, &mut terminal).await;
+        dispatch_next(&mut app, &mut terminal).await;
+        assert!(
+            app.month_memo.contains_key(&(2025, 6)),
+            "a week step must not rescan the ninety-day window"
+        );
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        dispatch_next(&mut app, &mut terminal).await;
+        dispatch_next(&mut app, &mut terminal).await;
+        assert!(
+            app.month_memo.contains_key(&(2025, 6)),
+            "a month step must not rescan the ninety-day window"
         );
     }
 

@@ -72,6 +72,16 @@ pub enum AppEvent {
     NextDate,
     /// Go to the previous date
     PreviousDate,
+    /// Go forward a week
+    NextWeek,
+    /// Go back a week
+    PreviousWeek,
+    /// Go forward a month, clamping to the target month's last day when it
+    /// is shorter than the current one
+    NextMonth,
+    /// Go back a month, clamping to the target month's last day when it is
+    /// shorter than the current one
+    PreviousMonth,
     /// Reload the current date from disk, keeping or dropping the calendar's
     /// month memo according to why the reload was asked for.
     ReloadFromDisk(Reload),

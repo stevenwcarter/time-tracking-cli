@@ -189,22 +189,26 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 
 #### TUI Keybinds
 
-| Keys        | Action                                             |
-| ----------- | -------------------------------------------------- |
-| ↓ / j       | select the next project                            |
-| ↑ / k       | select the previous project                        |
-| g           | jump to the first project                          |
-| G           | jump to the last project                           |
-| Enter       | copy the selected project's notes to the clipboard |
-| ← / h       | go to the previous day                             |
-| → / l       | go to the next day                                 |
-| t / T       | go to today                                        |
-| f           | toggle zooming into the weekly bar chart           |
-| r           | reload the current date from disk                  |
-| e           | edit the current date's notes in $EDITOR           |
-| ?           | show the help popup                                |
-| Esc / q     | quit                                               |
-| ? / Esc / q | close the help popup                               |
+| Keys         | Action                                             |
+| ------------ | -------------------------------------------------- |
+| ↓ / j        | select the next project                            |
+| ↑ / k        | select the previous project                        |
+| g            | jump to the first project                          |
+| G            | jump to the last project                           |
+| Enter        | copy the selected project's notes to the clipboard |
+| ← / h        | go to the previous day                             |
+| → / l        | go to the next day                                 |
+| H            | go back a week                                     |
+| L            | go forward a week                                  |
+| [ / PageUp   | go back a month                                    |
+| ] / PageDown | go forward a month                                 |
+| t / T        | go to today                                        |
+| f            | toggle zooming into the weekly bar chart           |
+| r            | reload the current date from disk                  |
+| e            | edit the current date's notes in $EDITOR           |
+| ?            | show the help popup                                |
+| Esc / q      | quit                                               |
+| ? / Esc / q  | close the help popup                               |
 
 ### Example Output
 
