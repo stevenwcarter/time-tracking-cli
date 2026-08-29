@@ -741,6 +741,10 @@ git add -A && git commit -m "refactor(tui): replace view booleans with a mode en
 
 The real keymap lives in three places that have already drifted by four bindings: the `match` at `app.rs:227`, the second match in `ProjectListWidget::handle_key_event`, the hardcoded string at `help_popup.rs:14-19`, and the README table at `README.md:192-199`. `app.rs` implements nine bindings; the popup and README document six.
 
+**Carried from Task 4's review — read this with R1 below.** `handle_mode_key` currently delegates to `ProjectListWidget::handle_key_event`, and *that widget's internal `match`* is the second private keymap copy R1 exists to eliminate. Replacing `handle_global_key` with a `lookup()` call is therefore only half the job — you must also hollow out the widget's match so list navigation is driven by `BINDINGS` rows carrying `ModeMask::DAY`. If you finish and `ProjectListWidget` still owns a `match key_event.code`, R1 is not satisfied.
+
+**Also carried from Task 4's review (Minor, cheap to fix here).** Opening an overlay is asynchronous — `?` queues `AppEvent::ToggleHelp` — while closing one is synchronous, mutating `self.overlay` directly inside `handle_overlay_key`. That leaves a one-iteration window after `?` in which `overlay` is still `None` and a following `j` reaches the project list behind the popup that is about to open. Not reachable by human typing at 30fps, but it is the same bug class Task 4 just fixed. Since you own the keymap, make open and close use the same mechanism.
+
 **Pre-flight Ruling R1 — read before implementing.** `BINDINGS` carries *every* binding, list navigation and raw-file scrolling included. A key may appear in more than one row **provided their `ModeMask`s are disjoint**: `j` is one row with `ModeMask::DAY` (select next project) and a separate row with `ModeMask::RAW` (scroll down, added in Task 16). The mode layer dispatches by calling `lookup(key, mode)` and matching the resulting `AppEvent` — it does **not** keep a second private `match`. This is what keeps the `no_duplicate_key_within_a_mode` test meaningful while letting the same physical key mean different things in different modes, and it is what removes the third drifted copy of the keymap rather than merely adding a fourth.
 
 **Files:**
@@ -903,6 +907,27 @@ fn sender_can_be_cloned_and_used_without_mut() {
 
 Run: `cargo test --lib tui::app`
 Expected: FAIL — `AppEventSender` does not exist.
+
+- [ ] **Step 2a: Restore exhaustiveness in `handle_app_event` (carried from Task 4's review — Important)**
+
+Task 4 left `handle_app_event` with a catch-all `sync_event => self.apply_sync_event(sync_event)` arm, so it no longer fails to compile when a new `AppEvent` variant appears. On its own that would be tolerable — every variant the plan still adds is synchronous. The problem is the arm sitting directly below it in `apply_sync_event`:
+
+```rust
+AppEvent::ReloadFromDisk | AppEvent::Edit => {}   // "Both await; handle_app_event owns them."
+```
+
+That is an active template for `AppEvent::MyNewThing => {}`, at which point the event is silently dropped in *both* functions and nothing fails. Replace the catch-all with an explicit alternation:
+
+```rust
+e @ (AppEvent::ToggleZoomBar
+    | AppEvent::ToggleHelp
+    | AppEvent::Today
+    | AppEvent::NextDate
+    | AppEvent::PreviousDate
+    | AppEvent::Quit) => self.apply_sync_event(e),
+```
+
+Add your own new variants (`DataLoaded`, `LoadFailed`) to whichever side owns them. This task rewrites this function anyway, which is why the fix lands here rather than as a Task 4 fix round.
 
 - [ ] **Step 2b: Add the missing structural guard on `start()` (carried from Task 2's re-review)**
 
@@ -1906,6 +1931,11 @@ The fourth test is the one that proves Task 4's dispatch ordering is real: `l`, 
 
 Run: `cargo test --lib tui::`
 Expected: FAIL — `parse_prompt` does not exist.
+
+**Two hazards found during Task 4's review — handle both.**
+
+1. `handle_overlay_key`'s `Overlay::DatePrompt(_)` arm currently returns `Handled::Consumed` for *every* key including `Esc`, and `render_overlay` draws nothing for it. Today that is unreachable because nothing constructs the variant — but the moment you make `:` construct it, an invisible modal that only Ctrl-C escapes becomes reachable. Wire `Esc` to clear the overlay as part of making the prompt real, not afterwards.
+2. `is_ctrl_c` is checked *before* the overlay match, so Ctrl-C quits the application rather than cancelling your prompt. Conventionally Ctrl-C cancels a prompt. Decide deliberately which behaviour you want and pin it with a test either way — do not leave it to fall out of dispatch ordering.
 
 - [ ] **Step 3: Implement**
 
