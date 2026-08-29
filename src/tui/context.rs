@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 use time::Weekday;
 
-use super::theme::Theme;
+use super::theme::{Theme, ThemeEnv};
 use crate::config::{Config, Formatter};
 use crate::data_svc::ParseSettings;
 use crate::file_utils::get_time_tracking_dir_with_override;
@@ -53,8 +53,7 @@ impl TuiContext {
             prefix: config.get_prefix().map(str::to_owned),
             suffix: config.get_suffix().map(str::to_owned),
             template_file: config.get_template_file().map(str::to_owned),
-            // Task 22 resolves the theme from the config plus NO_COLOR/COLORTERM.
-            theme: Theme::dark(),
+            theme: Theme::resolve(config.theme.as_deref(), &ThemeEnv::from_env()),
         })
     }
 

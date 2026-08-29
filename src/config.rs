@@ -127,6 +127,9 @@ pub struct Config {
     pub prefix: Option<String>,
     /// Optional suffix to search for, after which stop parsing time entries (e.g. ``` )
     pub suffix: Option<String>,
+    /// TUI colour palette preset: "dark", "light", or "none". An unset or
+    /// unrecognised value falls back to "dark".
+    pub theme: Option<String>,
     /// Whether we should read from stdin or not
     #[serde(skip)]
     pub stdin: bool,
@@ -170,6 +173,7 @@ impl Default for Config {
             template_file: None,
             prefix: None,
             suffix: None,
+            theme: Some("dark".to_string()),
             stdin: false,
             serve: Some(false),
             date: today_date(),
@@ -403,6 +407,10 @@ fn write_config_comments(file: &mut impl Write) -> Result<()> {
     file.write_all(b"#prefix = \"```timetracking\"\n")?;
     file.write_all(b"\n# Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too\n")?;
     file.write_all(b"#suffix = \"```\"\n")?;
+    file.write_all(b"\n# TUI theme preset: \"dark\", \"light\", or \"none\".\n")?;
+    file.write_all(b"# \"none\" emits no colors so your terminal palette shows through.\n")?;
+    file.write_all(b"# NO_COLOR in the environment forces \"none\".\n")?;
+    file.write_all(b"#theme = \"dark\"\n")?;
     Ok(())
 }
 
