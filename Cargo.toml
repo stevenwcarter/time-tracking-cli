@@ -51,6 +51,10 @@ time = { version = "0.3.44", features = [
     "formatting",
     "local-offset",
     "macros",
+    # `data_svc` parses day-file names back into dates, and it is compiled
+    # under every feature set. Enabled transitively today by `tracing-appender`;
+    # declared here so it does not turn into a build break if that changes.
+    "parsing",
 ] }
 
 # Web server dependencies (optional, behind webapp feature)

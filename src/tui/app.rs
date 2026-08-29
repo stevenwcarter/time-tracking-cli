@@ -71,6 +71,16 @@ pub struct App {
     pub project_list_widget: Option<ProjectListWidget>,
     /// Populated dates (have hours)
     pub populated_dates: Vec<Date>,
+    /// Calendar markers already scanned, keyed by `(year, month)` of the month
+    /// that was *on screen* when the scan ran.
+    ///
+    /// The calendar covers the month either side of the displayed one, so one
+    /// entry holds the whole ninety-day window and a date change inside the
+    /// same month can reuse it outright — twenty-nine days out of thirty the
+    /// rescan would return the same list. See [`App::month_scan_needed`] for
+    /// the lookup and [`App::run_editor`]/[`App::queue_or_apply`] for the two
+    /// places it is dropped.
+    pub month_memo: HashMap<(i32, u8), Vec<Date>>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
     /// Reader for the day files under `ctx.data_dir`
@@ -108,6 +118,7 @@ impl App {
             data: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
+            month_memo: HashMap::new(),
             weekly_data: HashMap::new(),
             data_svc,
             ctx,
@@ -161,6 +172,13 @@ impl App {
     /// set, so an idle terminal costs the tick rate in wakeups a second and no
     /// rendering at all.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        // Reads no longer create the data directory (see
+        // `DataService::get_file_path`), so this is where a fresh install gets
+        // one. Not fatal if it fails: every read still answers "no file", and
+        // pressing `e` reports the real error when it tries to write.
+        if let Err(e) = self.data_svc.ensure_data_dir().await {
+            tracing::warn!("could not create the data directory: {e}");
+        }
         // Nothing polls the terminal until now; see `EventHandler::start`.
         self.events.start();
         // Off the loop, so the first frame is drawn from the empty state
@@ -358,6 +376,9 @@ impl App {
 
         // Invalidate cache since we just edited the file
         self.data_svc.invalidate_date(&self.active_date).await;
+        // The edit may have added time to an empty day or taken the last of it
+        // away, either of which moves a calendar marker.
+        self.month_memo.clear();
 
         // Restore the TUI after editor exits
         stdout().execute(EnterAlternateScreen)?;
@@ -396,9 +417,16 @@ impl App {
         self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
         let week_dates = self.week_dates;
         self.loading = true;
+        let memoized = match self.month_scan_needed(date) {
+            // A month the calendar has not scanned yet: the load does it.
+            Some(_) => None,
+            // Already scanned, and neither an edit nor an `r` has dropped it
+            // since, so the ninety-day window would return this same list.
+            None => self.month_memo.get(&month_key(date)).cloned(),
+        };
 
         let handle = tokio::spawn(async move {
-            match load_payload(&data_svc, date, &week_dates).await {
+            match load_payload(&data_svc, date, &week_dates, memoized).await {
                 Ok(payload) => tx.send(AppEvent::DataLoaded(generation, Box::new(payload))),
                 Err(e) => tx.send(AppEvent::LoadFailed(generation, e.to_string())),
             }
@@ -417,8 +445,27 @@ impl App {
             weekly,
         } = payload;
         self.set_day_data(day);
+        // The generation guard has already established that this payload is
+        // the active date's: every date change goes through `spawn_load`,
+        // which bumps `load_gen`. So the month on screen is the month these
+        // markers were scanned for.
+        self.month_memo
+            .insert(month_key(self.active_date), populated.clone());
         self.populated_dates = populated;
         self.weekly_data = weekly;
+    }
+
+    /// The month key `date` needs a populated-dates scan for, or `None` when
+    /// [`App::month_memo`] already holds that month's markers.
+    ///
+    /// One entry covers the displayed month and the one either side of it —
+    /// the whole window the calendar draws — which is why moving to another
+    /// date in the same month needs no scan at all. The scan is the expensive
+    /// half of a load, so this is the difference between an arrow key costing
+    /// a directory listing and costing nothing.
+    fn month_scan_needed(&self, date: Date) -> Option<(i32, u8)> {
+        let key = month_key(date);
+        (!self.month_memo.contains_key(&key)).then_some(key)
     }
 
     /// Record a one-line message for the user.
@@ -472,6 +519,15 @@ impl App {
     /// by `j` would move the project list behind the popup that is about to
     /// open.
     fn queue_or_apply(&mut self, app_event: AppEvent) {
+        // `r` is the only key bound straight to a reload, and it means "read
+        // the disk again" — so it has to drop the calendar's month memo too,
+        // or the one gesture a user has for picking up an outside edit would
+        // be answered from it. Moving between dates emits `NextDate` /
+        // `PreviousDate` and reaches `ReloadFromDisk` through `go_to_date`
+        // instead, which is exactly what keeps arrow keys off the scan.
+        if matches!(app_event, AppEvent::ReloadFromDisk) {
+            self.month_memo.clear();
+        }
         if changes_key_routing(&app_event) {
             self.apply_sync_event(app_event);
         } else {
@@ -578,6 +634,7 @@ async fn load_payload(
     data_svc: &DataService,
     date: Date,
     week_dates: &[Date; 7],
+    memoized: Option<Vec<Date>>,
 ) -> Result<LoadPayload> {
     // The calendar scans the previous, current and next month, so paging a
     // month either way already has its markers.
@@ -588,11 +645,20 @@ async fn load_payload(
         .replace_day(next_month.month().length(next_month.year()))
         .unwrap_or(next_month);
 
+    // Markers the caller has already scanned for this month stand in for the
+    // scan entirely; see `App::month_memo`.
+    let populated = async {
+        match memoized {
+            Some(dates) => Ok(dates),
+            None => data_svc.find_populated_dates(start_date, end_date).await,
+        }
+    };
+
     // All three concurrently; the day file is usually cached, the two scans
     // are not.
     let (day, populated, weekly) = tokio::join!(
         data_svc.parse_day(&date),
-        data_svc.find_populated_dates(start_date, end_date),
+        populated,
         data_svc.get_weekly_data(week_dates),
     );
 
@@ -665,6 +731,11 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
 fn is_ctrl_c(key_event: KeyEvent) -> bool {
     key_event.modifiers == KeyModifiers::CONTROL
         && matches!(key_event.code, KeyCode::Char('c' | 'C'))
+}
+
+/// The `(year, month)` [`App::month_memo`] keys a date's calendar under.
+fn month_key(date: Date) -> (i32, u8) {
+    (date.year(), u8::from(date.month()))
 }
 
 /// Today's date in the local timezone, falling back to UTC.
@@ -1066,5 +1137,115 @@ mod tests {
         assert_eq!(app.active_date, date!(2025 - 06 - 14));
         assert_eq!(app.load_gen, 0, "no load may start on the event loop");
         assert!(!app.loading);
+    }
+
+    /// The predicate the memo turns on: within a month it has already
+    /// scanned there is nothing to do, and a month it has not is a scan.
+    #[test]
+    fn same_month_navigation_reuses_the_memo() {
+        let mut app = App::new(TuiContext::for_test());
+        app.month_memo
+            .insert((2026, 8), vec![date!(2026 - 08 - 24)]);
+
+        assert!(app.month_scan_needed(date!(2026 - 08 - 25)).is_none());
+        assert_eq!(
+            app.month_scan_needed(date!(2026 - 09 - 01)),
+            Some((2026, 9))
+        );
+    }
+
+    /// A day directory that the app can then read from, holding one populated
+    /// day. The `TempDir` must outlive the app or the directory goes away.
+    async fn app_on_a_seeded_dir() -> (App, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        tokio::fs::write(dir.path().join("2025-06-11.md"), "9:00-10:30 admin\n")
+            .await
+            .expect("write the fixture day file");
+        let ctx = TuiContext {
+            data_dir: dir.path().to_path_buf(),
+            ..TuiContext::for_test()
+        };
+        (App::new(ctx).with_active_date(fixture_date()), dir)
+    }
+
+    /// Run one load to completion, the way `App::run` would.
+    ///
+    /// Skips past anything else already queued — pressing `r` leaves a
+    /// `ReloadFromDisk` behind, which the real loop turns into the spawn this
+    /// helper makes by hand.
+    async fn load_once(app: &mut App) {
+        app.spawn_load();
+        loop {
+            let event = next_app_event(app).await;
+            let landed = matches!(event, AppEvent::DataLoaded(..) | AppEvent::LoadFailed(..));
+            app.apply_sync_event(event);
+            if landed {
+                return;
+            }
+        }
+    }
+
+    /// The whole point of the memo, asserted on behaviour rather than on a
+    /// counter: a file that appears after the month has been scanned must not
+    /// show up on a same-month date change, because no scan happened.
+    #[tokio::test]
+    async fn a_same_month_date_change_reuses_the_memoized_markers() {
+        let (mut app, dir) = app_on_a_seeded_dir().await;
+
+        load_once(&mut app).await;
+        assert_eq!(app.populated_dates, vec![fixture_date()]);
+
+        // A second populated day appears behind the memo's back.
+        tokio::fs::write(dir.path().join("2025-06-12.md"), "9:00-10:30 admin\n")
+            .await
+            .expect("write the second day file");
+        app.active_date = date!(2025 - 06 - 13);
+        load_once(&mut app).await;
+
+        assert_eq!(
+            app.populated_dates,
+            vec![fixture_date()],
+            "a same-month date change must not rescan the ninety-day window"
+        );
+    }
+
+    /// ... and the memo has to be droppable, or it is just a stale cache. `r`
+    /// means "read the disk again", so it clears the markers as well.
+    #[tokio::test]
+    async fn an_explicit_reload_drops_the_memo_and_rescans() {
+        let (mut app, dir) = app_on_a_seeded_dir().await;
+
+        load_once(&mut app).await;
+        tokio::fs::write(dir.path().join("2025-06-12.md"), "9:00-10:30 admin\n")
+            .await
+            .expect("write the second day file");
+
+        app.handle_key_events(key('r')).unwrap();
+        assert!(
+            app.month_memo.is_empty(),
+            "an explicit reload must drop the month markers"
+        );
+        load_once(&mut app).await;
+
+        assert_eq!(
+            app.populated_dates,
+            vec![fixture_date(), date!(2025 - 06 - 12)]
+        );
+    }
+
+    /// Moving between dates emits `NextDate`/`PreviousDate` and reaches
+    /// `ReloadFromDisk` only through `go_to_date` — which is exactly what
+    /// keeps arrow keys off the scan. If navigation ever emitted the reload
+    /// event directly, the memo would be cleared on every key press and this
+    /// task would silently undo itself.
+    #[test]
+    fn moving_between_dates_does_not_drop_the_memo() {
+        let mut app = day_app();
+        app.month_memo.insert((2025, 6), vec![fixture_date()]);
+
+        app.handle_key_events(key('l')).unwrap();
+        app.drain_pending_events();
+
+        assert!(app.month_memo.contains_key(&(2025, 6)));
     }
 }

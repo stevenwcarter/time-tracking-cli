@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    ffi::OsStr,
+    io::ErrorKind,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
     time::SystemTime,
@@ -231,19 +233,34 @@ impl DataService {
         cache.clear();
     }
 
-    /// Get the file path for a given date and config
+    /// Create the data directory if it is not there yet.
+    ///
+    /// The one place a [`DataService`] creates anything on disk that is not a
+    /// day file. Creation used to happen inside [`Self::get_file_path`], which
+    /// sits on *every* read path in the CLI, the web server and the TUI — so a
+    /// report that only ever looked at files brought the directory into being
+    /// as a side effect, and paid a resolve plus a stat plus a create for each
+    /// of the ninety dates the calendar asks about. Callers that are about to
+    /// write call this first; callers that only read no longer touch it.
+    pub async fn ensure_data_dir(&self) -> Result<()> {
+        let dir = self.data_dir.resolve()?;
+        // `create_dir_all` is already a no-op on an existing directory, so
+        // there is nothing for an `exists()` check to save.
+        fs::create_dir_all(&dir)
+            .await
+            .with_context(|| format!("could not create data directory {}", dir.display()))
+    }
+
+    /// The path `date`'s day file has, whether or not anything is there.
+    ///
+    /// Pure: it resolves the directory and joins a name, and creates and stats
+    /// nothing. A caller that needs the directory to exist calls
+    /// [`Self::ensure_data_dir`] itself.
     pub async fn get_file_path(&self, date: Date) -> Result<PathBuf> {
         let time_tracking_dir = self.data_dir.resolve()?;
-
-        // Create directory if it doesn't exist
-        if !time_tracking_dir.exists() {
-            fs::create_dir_all(&time_tracking_dir).await?;
-        }
-
         let date_str = date.format(&DATE_FORMAT).context("could not format date")?;
-        let filename = format!("{}.md", date_str);
 
-        Ok(time_tracking_dir.join(filename))
+        Ok(time_tracking_dir.join(format!("{date_str}.md")))
     }
 
     /// Read a day's content from file, using cache when possible
@@ -311,6 +328,9 @@ impl DataService {
 
     /// Create a new day file with template content if it doesn't exist
     pub async fn create_day_file_if_not_exists(&self, date: &Date) -> Result<PathBuf> {
+        // This is a write, so it is one of the two places that materialises
+        // the directory; `get_file_path` no longer does it on the way past.
+        self.ensure_data_dir().await?;
         let file_path = self.get_file_path(*date).await?;
 
         if !file_path.exists() {
@@ -347,26 +367,69 @@ impl DataService {
         }
     }
 
-    /// Find all populated dates within a date range
+    /// The dates in `start..=end` that have a day file on disk, ascending.
+    ///
+    /// One `read_dir` of the whole directory rather than a `stat` per date:
+    /// the TUI's calendar asks about ninety consecutive days on every arrow
+    /// key, and all ninety live in the same directory, so listing it once is
+    /// both fewer syscalls now and a cost that stops growing with the window.
+    ///
+    /// A directory that is not there yields an empty `Vec` rather than an
+    /// error — it holds no day files, which is the answer the caller wants,
+    /// and reads no longer create it (see [`Self::ensure_data_dir`]).
+    ///
+    /// **Existing is not the same as populated.** A day file with nothing
+    /// logged in it still exists; see [`Self::find_populated_dates`].
+    pub async fn existing_dates(&self, start: Date, end: Date) -> Result<Vec<Date>> {
+        let dir = self.data_dir.resolve()?;
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(e).with_context(|| format!("could not list {}", dir.display()));
+            }
+        };
+
+        let mut dates = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .with_context(|| format!("could not read an entry of {}", dir.display()))?
+        {
+            if let Some(date) = day_file_date(&entry.file_name())
+                && (start..=end).contains(&date)
+            {
+                dates.push(date);
+            }
+        }
+        // `read_dir` hands entries back in whatever order the filesystem keeps
+        // them in, and every caller wants them in day order.
+        dates.sort_unstable();
+
+        Ok(dates)
+    }
+
+    /// Find all populated dates within a date range.
+    ///
+    /// Two stages, because they answer two different questions:
+    /// [`Self::existing_dates`] narrows the range to the days that have a file
+    /// at all with a single directory listing, and only those are parsed.
+    /// "Populated" still means exactly what it always did — projects, and time
+    /// on the clock — so a day file with nothing logged in it is not one.
     pub async fn find_populated_dates(
         &self,
         start_date: Date,
         end_date: Date,
     ) -> Result<Vec<Date>> {
-        // Collect all dates in range first
-        let mut dates = Vec::new();
-        let mut current_date = start_date;
-        while current_date <= end_date {
-            dates.push(current_date);
-            match current_date.next_day() {
-                Some(next) => current_date = next,
-                None => break,
-            }
-        }
-
-        // Check all dates in parallel
+        // The fan-out is deliberately a `JoinSet` and must stay one. Dropping
+        // a `JoinSet` aborts the tasks it owns, so these children are reachable
+        // from the single `JoinHandle` the TUI holds for the load that spawned
+        // them: `App::spawn_load` aborts that handle when a newer load
+        // supersedes it, and the abort cascades here. Detached `tokio::spawn`s
+        // would look identical and pass every test while bounding nothing — a
+        // held-down date key would pile the children up unabortably.
         let mut set = tokio::task::JoinSet::new();
-        for date in dates {
+        for date in self.existing_dates(start_date, end_date).await? {
             let svc = self.clone();
             set.spawn(async move {
                 let has_data = svc.check_date_has_data(&date).await?;
@@ -381,7 +444,7 @@ impl DataService {
                 populated_dates.push(date);
             }
         }
-        populated_dates.sort();
+        populated_dates.sort_unstable();
         Ok(populated_dates)
     }
 
@@ -560,6 +623,17 @@ impl DataService {
             entry.parsed = Some(parsed);
         }
     }
+}
+
+/// The date a day file's name encodes, or `None` for anything else that
+/// shares the directory — a template, a README, an editor's swap file.
+///
+/// `Date::parse` is the whole pattern check: it rejects any stem that is not
+/// exactly `YYYY-MM-DD`, trailing characters included, so matching
+/// `^\d{4}-\d{2}-\d{2}\.md$` needs no regex crate.
+fn day_file_date(file_name: &OsStr) -> Option<Date> {
+    let stem = file_name.to_str()?.strip_suffix(".md")?;
+    Date::parse(stem, DATE_FORMAT).ok()
 }
 
 #[cfg(test)]
@@ -879,6 +953,144 @@ mod tests {
             service.parse_count(),
             2,
             "the rewrite must trigger a real reparse, not reuse the stale cache"
+        );
+    }
+
+    /// The listing is the candidate set for every calendar scan, so it has to
+    /// recognise a day file and nothing else: a stray note, and a date-named
+    /// file with the wrong extension, both live in the same directory.
+    #[tokio::test]
+    async fn existing_dates_lists_only_files_that_are_there() {
+        let (service, dir) = hermetic_service(60);
+        std::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n").unwrap();
+        std::fs::write(dir.path().join("2026-08-26.md"), "8-10 admin\n").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "not a date\n").unwrap();
+        std::fs::write(dir.path().join("2026-08-25.txt"), "wrong extension\n").unwrap();
+
+        let got = service
+            .existing_dates(date!(2026 - 08 - 01), date!(2026 - 08 - 31))
+            .await
+            .unwrap();
+
+        assert_eq!(got, vec![date!(2026 - 08 - 24), date!(2026 - 08 - 26)]);
+    }
+
+    /// One listing covers the whole directory, so the range has to be applied
+    /// afterwards — the calendar asks for a ninety-day window out of however
+    /// many years of files have accumulated.
+    #[tokio::test]
+    async fn existing_dates_keeps_to_the_requested_range() {
+        let (service, dir) = hermetic_service(60);
+        for name in [
+            "2026-07-31.md",
+            "2026-08-01.md",
+            "2026-08-31.md",
+            "2026-09-01.md",
+        ] {
+            std::fs::write(dir.path().join(name), "8-10 admin\n").unwrap();
+        }
+
+        let got = service
+            .existing_dates(date!(2026 - 08 - 01), date!(2026 - 08 - 31))
+            .await
+            .unwrap();
+
+        assert_eq!(got, vec![date!(2026 - 08 - 01), date!(2026 - 08 - 31)]);
+    }
+
+    /// A directory that is not there holds no day files. Erroring instead
+    /// would turn a fresh install into a TUI that cannot draw a calendar.
+    #[tokio::test]
+    async fn existing_dates_of_a_missing_directory_is_empty_rather_than_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().join("does-not-exist"),
+            ParseSettings::default(),
+        );
+
+        let got = service
+            .existing_dates(date!(2026 - 08 - 01), date!(2026 - 08 - 31))
+            .await
+            .unwrap();
+
+        assert!(got.is_empty());
+    }
+
+    /// The listing narrows the candidates; it must not become the definition.
+    /// `read_dir` says the file *exists* — "populated" still means projects
+    /// with time on the clock.
+    #[tokio::test]
+    async fn an_existing_but_empty_file_is_not_populated() {
+        let (service, dir) = hermetic_service(60);
+        std::fs::write(dir.path().join("2026-08-24.md"), "# just a header\n").unwrap();
+
+        let got = service
+            .find_populated_dates(date!(2026 - 08 - 01), date!(2026 - 08 - 31))
+            .await
+            .unwrap();
+
+        assert!(
+            got.is_empty(),
+            "a file with no logged time is not a populated date"
+        );
+    }
+
+    /// Guards the test above from passing vacuously: a day that *does* have
+    /// time on it still has to survive the listing and reach the parse.
+    #[tokio::test]
+    async fn a_populated_file_is_still_found_through_the_listing() {
+        let (service, dir) = hermetic_service(60);
+        std::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n").unwrap();
+
+        let got = service
+            .find_populated_dates(date!(2026 - 08 - 01), date!(2026 - 08 - 31))
+            .await
+            .unwrap();
+
+        assert_eq!(got, vec![date!(2026 - 08 - 24)]);
+    }
+
+    /// `get_file_path` used to `create_dir_all` on the way past, so every read
+    /// in the CLI, the web server and the TUI materialised the data directory
+    /// as a side effect.
+    #[tokio::test]
+    async fn reading_does_not_create_the_data_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("does-not-exist");
+        let service = DataService::new_with_dir(60, missing.clone(), ParseSettings::default());
+
+        assert!(
+            service
+                .read_day(&date!(2026 - 08 - 24))
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        assert!(
+            !missing.exists(),
+            "a read must not create the data directory"
+        );
+    }
+
+    /// The other half of that move: creation now belongs to the write path,
+    /// which has to keep working on a machine that has never run the tool.
+    #[tokio::test]
+    async fn creating_a_day_file_creates_the_data_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("does-not-exist");
+        let service = DataService::new_with_dir(60, missing.clone(), ParseSettings::default());
+
+        let path = service
+            .create_day_file_if_not_exists(&date!(2026 - 08 - 24))
+            .await
+            .unwrap();
+
+        assert!(path.exists());
+        assert!(
+            missing.is_dir(),
+            "the write path is what materialises the directory"
         );
     }
 }
