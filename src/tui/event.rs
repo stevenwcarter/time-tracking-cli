@@ -120,10 +120,10 @@ pub enum AppEvent {
     /// Scroll the raw-file pane up a line.
     ScrollRawFileUp,
     /// The background read `App::toggle_raw_file` started for the raw-file
-    /// pane finished; carries the date it was read for, so a result that
-    /// lands after the user has moved to another date can be dropped rather
-    /// than applied under the wrong header.
-    RawFileLoaded(Date, Option<String>),
+    /// pane finished; carries the generation it was started with — dropped
+    /// the same way a superseded `DataLoaded`/`LoadFailed` is when a newer
+    /// load has since moved on — and the date it was read for.
+    RawFileLoaded(u64, Date, Option<String>),
     /// A background load finished; carries the generation it was started with.
     ///
     /// The payload is boxed because it dwarfs every other variant, and every

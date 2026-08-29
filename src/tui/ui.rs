@@ -230,10 +230,14 @@ impl App {
     ///
     /// Records `raw_visible_lines` from `area` before drawing, computed the
     /// same way [`RawFileView::render`] lays the pane out — see
-    /// [`RawFileView::visible_lines`] — so `App::scroll_raw_file`'s clamp
-    /// never drifts from what is actually on screen.
+    /// [`RawFileView::visible_lines`] — then re-clamps `raw_scroll` against
+    /// it via `App::clamp_raw_scroll`: date navigation and the mtime watcher
+    /// can both replace `raw_content` while this mode is on screen, neither
+    /// goes through `App::scroll_raw_file`, and an unclamped offset past a
+    /// shorter file's end renders as a blank pane rather than a shorter one.
     fn render_raw_file(&mut self, area: Rect, buf: &mut Buffer) {
         self.raw_visible_lines = RawFileView::visible_lines(area);
+        self.clamp_raw_scroll();
         let path = raw_file_path(&self.ctx.data_dir, self.active_date);
         RawFileView::new(
             &path,

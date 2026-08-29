@@ -607,14 +607,18 @@ impl App {
             // Superseded: a newer load is still in flight, so `loading` stays
             // set and the stale results are dropped.
             AppEvent::DataLoaded(..) | AppEvent::LoadFailed(..) => {}
-            // The read `App::toggle_raw_file` started, reporting back. Dropped
-            // when the user has since moved to another date, the same guard
-            // `App::apply_payload` uses for the heavier day load.
-            AppEvent::RawFileLoaded(date, content) => {
+            // The read `App::toggle_raw_file` started, reporting back —
+            // stamped with the same generation `DataLoaded`/`LoadFailed`
+            // above are, and dropped the same way once superseded. The date
+            // check mirrors `apply_payload`'s own: nothing today can move
+            // `active_date` without also bumping the generation, but the
+            // check is free and keeps the shape identical either way.
+            AppEvent::RawFileLoaded(generation, date, content) if generation == self.load_gen => {
                 if date == self.active_date {
                     self.raw_content = content;
                 }
             }
+            AppEvent::RawFileLoaded(..) => {}
             // The day view's project list owns these. They normally never
             // reach the queue — `handle_mode_key` hands them straight to the
             // widget — but a day with no list lets them fall through.
@@ -735,12 +739,16 @@ impl App {
     /// Flip between `Mode::Day` and `Mode::RawFile`.
     ///
     /// Entering `RawFile` spawns a background read of the active date's file,
-    /// reported back as `AppEvent::RawFileLoaded` — the same off-loop pattern
-    /// [`App::spawn_load`] uses for the heavier day load, so a large file
-    /// cannot stall the event loop the way awaiting `read_day` right here
-    /// would. `raw_scroll` resets to the top: whatever position was scrolled
-    /// to belonged to the content on screen before this toggle, not to
-    /// whatever is about to replace it.
+    /// reported back as `AppEvent::RawFileLoaded` or, on a genuine read
+    /// error, `AppEvent::LoadFailed` — the same off-loop pattern, the same
+    /// generation stamp, and the same two events [`App::spawn_load`] reports
+    /// the heavier day load with, so a large file cannot stall the event
+    /// loop the way awaiting `read_day` right here would, a read that lands
+    /// after a newer load has superseded it is dropped rather than silently
+    /// overwriting fresher content, and a permission error or bad encoding
+    /// reaches the status line instead of only the log. `raw_scroll` resets
+    /// to the top: whatever position was scrolled to belonged to the content
+    /// on screen before this toggle, not to whatever is about to replace it.
     fn toggle_raw_file(&mut self) {
         self.mode = if self.mode == Mode::RawFile {
             Mode::Day
@@ -754,26 +762,49 @@ impl App {
         let tx = self.events.sender();
         let data_svc = self.data_svc.clone();
         let date = self.active_date;
+        let generation = self.load_gen;
         tokio::spawn(async move {
-            let content = data_svc.read_day(&date).await.unwrap_or_else(|e| {
-                tracing::warn!("could not read the raw file: {e}");
-                None
-            });
-            tx.send(AppEvent::RawFileLoaded(date, content));
+            match data_svc.read_day(&date).await {
+                Ok(content) => tx.send(AppEvent::RawFileLoaded(generation, date, content)),
+                Err(e) => tx.send(AppEvent::LoadFailed(generation, e.to_string())),
+            }
         });
     }
 
     /// Scroll the raw-file pane by `delta` lines, clamped so the first line
     /// never scrolls below zero and the last line never scrolls above the
     /// top of the pane.
-    ///
-    /// The upper bound reads `raw_visible_lines`, which is only ever as
-    /// stale as the last frame — no worse than `week_is_stale`'s own
-    /// look-behind, and harmless here for the same reason: a resize sets
-    /// `dirty` and repaints before another key can be handled.
     fn scroll_raw_file(&mut self, delta: i16) {
-        let max_scroll = self.raw_line_count().saturating_sub(self.raw_visible_lines);
-        self.raw_scroll = self.raw_scroll.saturating_add_signed(delta).min(max_scroll);
+        self.raw_scroll = self
+            .raw_scroll
+            .saturating_add_signed(delta)
+            .min(self.max_raw_scroll());
+    }
+
+    /// Re-clamp `raw_scroll` against the content and pane height on hand
+    /// right now.
+    ///
+    /// `scroll_raw_file` clamps every scroll key, but scrolling is not the
+    /// only way either side of that clamp can move: ordinary date navigation
+    /// (`h`/`l`/`H`/`L`/`[`/`]`/`t`, all bound `ModeMask::ALL` and so live
+    /// while `RawFile` is on screen) and the mtime watcher can both replace
+    /// `raw_content` without going through `scroll_raw_file` at all. Left
+    /// unclamped, a scroll position left over from a long file renders
+    /// nothing at all against a much shorter one — `Paragraph::scroll`
+    /// draws past the end of its content as a blank area, not a shorter
+    /// paragraph — which reads as a crash rather than as an empty pane.
+    /// Called from [`crate::tui::ui`]'s render pass, right after
+    /// `raw_visible_lines` is refreshed for the area being drawn.
+    pub fn clamp_raw_scroll(&mut self) {
+        self.raw_scroll = self.raw_scroll.min(self.max_raw_scroll());
+    }
+
+    /// The furthest `raw_scroll` may go: the content's line count minus
+    /// `raw_visible_lines`, so the last line never scrolls above the top of
+    /// the pane. Never a fixed number — a day file long enough to need
+    /// paging is exactly the case a fixed clamp would break.
+    fn max_raw_scroll(&self) -> u16 {
+        self.raw_line_count().saturating_sub(self.raw_visible_lines)
     }
 
     /// `raw_content`'s line count, capped at `u16::MAX` — far more lines
@@ -1925,6 +1956,116 @@ mod tests {
         }
 
         assert_eq!(app.raw_scroll, 5);
+    }
+
+    /// The stale-scroll bug review round 1 caught: `raw_scroll` was only
+    /// ever re-clamped by `scroll_raw_file`, but ordinary date navigation —
+    /// bound `ModeMask::ALL`, so live while `RawFile` is on screen — reaches
+    /// `raw_content` through `App::apply_payload` instead, which never
+    /// touches `raw_scroll` at all. A scroll position left over from a long
+    /// file used to render nothing at all against a much shorter one.
+    #[tokio::test]
+    async fn raw_scroll_re_clamps_when_a_shorter_day_replaces_the_content() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = Some(
+            (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.mode = Mode::RawFile;
+        render_to_string(&mut app, 80, 20);
+        for _ in 0..50 {
+            app.handle_key_events(key('j')).unwrap();
+        }
+        assert!(
+            app.raw_scroll > 5,
+            "should have scrolled well into the long file"
+        );
+
+        // The same field an ordinary `h`/`l` reload writes on arrival.
+        app.apply_payload(LoadPayload {
+            date: app.active_date,
+            day: None,
+            raw: Some("short\nfile".to_owned()),
+            populated: Vec::new(),
+            weekly: HashMap::new(),
+            weekly_summary: WeeklySummary::default(),
+        });
+
+        let screen = render_to_string(&mut app, 80, 20);
+        assert!(screen.contains("short"), "got:\n{screen}");
+    }
+
+    /// Genuine I/O errors reading the raw file — bad permissions, invalid
+    /// UTF-8, anything past "the file does not exist" — must reach the
+    /// status line rather than only the log. `read_day` already tells the
+    /// two apart (`Ok(None)` vs `Err`), and `AppEvent::LoadFailed` already
+    /// carries a message there for the day load; reusing it is the point —
+    /// this codebase already fixed exactly this silent-failure bug class
+    /// once, for the clipboard (see `project_list.rs`).
+    #[tokio::test]
+    async fn a_raw_file_read_error_surfaces_on_the_status_line() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Not valid UTF-8, so `read_day`'s `fs::read_to_string` fails rather
+        // than returning `Ok(None)` the way a merely-missing file would.
+        std::fs::write(dir.path().join("2025-06-11.md"), [0xFF, 0xFE, 0xFD])
+            .expect("write invalid utf-8");
+        let ctx = TuiContext {
+            data_dir: dir.path().to_path_buf(),
+            ..TuiContext::for_test()
+        };
+        let mut app = App::new(ctx).with_active_date(fixture_date());
+
+        app.handle_key_events(key('v')).unwrap();
+        let event = next_app_event(&mut app).await;
+        assert!(
+            matches!(event, AppEvent::LoadFailed(..)),
+            "a genuine read error must not be folded into \"no file\": got {event:?}"
+        );
+        app.apply_sync_event(event);
+
+        let message = status_text(&app).expect("a failed raw read must set a status");
+        assert!(!message.is_empty(), "got {message:?}");
+    }
+
+    /// The generation guard `App::apply_payload`'s writes to `raw_content`
+    /// already have: a raw-file read that lands after a newer load has
+    /// superseded it must not overwrite whatever the newer load already put
+    /// there — the same latest-wins rule `DataLoaded`/`LoadFailed` follow.
+    #[test]
+    fn a_stale_raw_file_read_is_dropped_when_superseded() {
+        let mut app = App::new(TuiContext::for_test());
+        app.raw_content = Some("fresh content".to_owned());
+        app.load_gen = 3;
+
+        app.apply_sync_event(AppEvent::RawFileLoaded(
+            2,
+            app.active_date,
+            Some("stale content".to_owned()),
+        ));
+
+        assert_eq!(
+            app.raw_content.as_deref(),
+            Some("fresh content"),
+            "a read from a superseded generation must not overwrite fresher content"
+        );
+    }
+
+    /// Guards the test above from passing vacuously: a read still carrying
+    /// the current generation must still land.
+    #[test]
+    fn a_current_generation_raw_file_read_is_applied() {
+        let mut app = App::new(TuiContext::for_test());
+        app.load_gen = 3;
+
+        app.apply_sync_event(AppEvent::RawFileLoaded(
+            3,
+            app.active_date,
+            Some("fresh content".to_owned()),
+        ));
+
+        assert_eq!(app.raw_content.as_deref(), Some("fresh content"));
     }
 
     /// The project-list events are only meaningful against a list; a day with
