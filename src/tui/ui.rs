@@ -1,3 +1,4 @@
+use ratatui::layout::Flex;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use time::Date;
@@ -10,6 +11,61 @@ use super::theme::Theme;
 use super::widgets::HelpPopup;
 use super::widgets::{Calendar, WeeklyBarChart};
 
+/// The narrowest terminal width the day view can lay out at all.
+///
+/// Load-bearing outside this file: other TUI layout math is written to fit
+/// within this exact number (the day header's width budget in particular).
+/// Changing it is a cross-cutting change, not a local tweak.
+pub(crate) const MIN_COLS: u16 = 60;
+
+/// The shortest terminal height the day view can lay out at all.
+///
+/// Load-bearing, same as [`MIN_COLS`].
+pub(crate) const MIN_ROWS: u16 = 15;
+
+/// Below this many rows the calendar/chart header stops earning its space.
+const COMPACT_ROWS: u16 = 22;
+
+/// Below this many columns the calendar no longer fits next to the chart.
+const NARROW_COLS: u16 = 100;
+
+/// Columns the calendar's block claims in the header row.
+const CALENDAR_COLS: u16 = 24;
+
+/// The chart stops growing past this width on a very wide terminal; the
+/// header is centred instead of stretching edge to edge.
+const MAX_CHART_COLS: u16 = 140;
+
+/// How much room the terminal gives the day view, coarsened into the bands
+/// [`App::render_day`] branches its layout on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Breakpoint {
+    /// Narrower than [`MIN_COLS`] or shorter than [`MIN_ROWS`]: too small to
+    /// draw the day view at all.
+    TooSmall,
+    /// Wide enough, but too short for the calendar/chart header: it
+    /// collapses so the project list gets every row.
+    Compact,
+    /// Tall enough, but too narrow to fit the calendar beside the chart:
+    /// the calendar is dropped and the chart takes the header's full width.
+    Narrow,
+    /// Room for the calendar, the chart and the project list all at once.
+    Full,
+}
+
+/// Classifies `area` into the band [`App::render_day`] should lay out for.
+fn breakpoint(area: Rect) -> Breakpoint {
+    if area.width < MIN_COLS || area.height < MIN_ROWS {
+        Breakpoint::TooSmall
+    } else if area.height < COMPACT_ROWS {
+        Breakpoint::Compact
+    } else if area.width < NARROW_COLS {
+        Breakpoint::Narrow
+    } else {
+        Breakpoint::Full
+    }
+}
+
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // The status line is `App`'s, not the project list's, and it is drawn
@@ -20,7 +76,10 @@ impl Widget for &mut App {
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
         match self.mode {
-            Mode::Day => self.render_day(main_area, buf),
+            // Classified from the whole terminal, not `main_area`: the
+            // notice a `TooSmall` terminal shows names a size that, once
+            // resized to, actually clears the gate.
+            Mode::Day => self.render_day(breakpoint(area), main_area, buf),
             Mode::ZoomedWeek => self.render_zoomed_week(main_area, buf),
             // Tasks 20 and 16 replace these with the real views.
             Mode::Week => render_placeholder("Week view", &self.ctx.theme, main_area, buf),
@@ -34,31 +93,25 @@ impl Widget for &mut App {
 }
 
 impl App {
-    /// The day view: calendar and weekly bar chart above the project list.
-    fn render_day(&mut self, area: Rect, buf: &mut Buffer) {
+    /// The day view: calendar and weekly bar chart above the project list,
+    /// reshaped by `bp` to fit whatever room the terminal has.
+    fn render_day(&mut self, bp: Breakpoint, area: Rect, buf: &mut Buffer) {
+        if bp == Breakpoint::TooSmall {
+            render_too_small_notice(&self.ctx.theme, area, buf);
+            return;
+        }
+
+        // `Compact` drops the calendar/chart header entirely: on a short
+        // terminal the project list is what the user opened the app to
+        // read, and a header it can't afford is worse than no header.
+        let header_height = if bp == Breakpoint::Compact { 0 } else { 12 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(12), Constraint::Min(9)].as_ref())
+            .constraints([Constraint::Length(header_height), Constraint::Min(9)].as_ref())
             .split(area);
-        let header_area = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(24), Constraint::Fill(1)])
-            .split(chunks[0]);
-        let calendar_area = header_area[0];
-        let bar_chart_area = header_area[1];
 
-        Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
-            .render(calendar_area, buf);
-
-        // Create and render the weekly bar chart
-        self.weekly_bar_chart().render(bar_chart_area, buf);
-
-        if let Some(group_rect) = bounding_rect(&header_area) {
-            Block::default()
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .title("tt-tui")
-                .render(group_rect, buf);
+        if header_height > 0 {
+            self.render_day_header(bp, chunks[0], buf);
         }
 
         let block = Block::bordered()
@@ -88,6 +141,42 @@ impl App {
             DayPane::Empty => {
                 render_pane_message(EMPTY_TEXT, self.ctx.theme.warning, block, chunks[1], buf);
             }
+        }
+    }
+
+    /// The calendar/chart band above the project list.
+    ///
+    /// `Narrow` drops the calendar so the chart alone gets the header's full
+    /// width; otherwise the two sit side by side, the pair capped at
+    /// `CALENDAR_COLS + MAX_CHART_COLS` and centred so the chart doesn't
+    /// stretch into a smear on a very wide terminal. Only ever called with
+    /// `Narrow` or `Full` — `render_day` handles `TooSmall` and `Compact`
+    /// itself before this runs.
+    ///
+    /// Draws the surrounding `tt-tui` block last: it paints over row 0 and
+    /// the rightmost column of whatever area it's given (Task 23 hit this
+    /// with a `title_top`), so it has to come after the widgets it wraps.
+    fn render_day_header(&mut self, bp: Breakpoint, area: Rect, buf: &mut Buffer) {
+        if bp == Breakpoint::Narrow {
+            self.weekly_bar_chart().render(area, buf);
+            draw_header_border(area, buf);
+            return;
+        }
+
+        let content_area = center_capped(area, CALENDAR_COLS + MAX_CHART_COLS);
+        let header_area = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(CALENDAR_COLS), Constraint::Fill(1)])
+            .split(content_area);
+        let calendar_area = header_area[0];
+        let bar_chart_area = header_area[1];
+
+        Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
+            .render(calendar_area, buf);
+        self.weekly_bar_chart().render(bar_chart_area, buf);
+
+        if let Some(group_rect) = bounding_rect(&header_area) {
+            draw_header_border(group_rect, buf);
         }
     }
 
@@ -156,6 +245,44 @@ fn render_placeholder(name: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
         .render(area, buf);
 }
 
+/// Drawn instead of the day view when the terminal is smaller than
+/// `MIN_COLS`x`MIN_ROWS`: below that floor there isn't room to lay out the
+/// calendar, chart and project list without corrupting all three, so this
+/// says so instead of drawing a broken screen.
+fn render_too_small_notice(theme: &Theme, area: Rect, buf: &mut Buffer) {
+    const LINES: u16 = 2;
+
+    let message = format!("Terminal too small.\nResize to at least {MIN_COLS}x{MIN_ROWS}.");
+    let [notice_area] = Layout::vertical([Constraint::Length(LINES.min(area.height))])
+        .flex(Flex::Center)
+        .areas(area);
+    Paragraph::new(message)
+        .style(theme.warning)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
+        .render(notice_area, buf);
+}
+
+/// The `tt-tui` block wrapped around the calendar/chart header. Must be
+/// drawn after the widgets it surrounds — see `App::render_day_header`.
+fn draw_header_border(area: Rect, buf: &mut Buffer) {
+    Block::default()
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .title("tt-tui")
+        .render(area, buf);
+}
+
+/// Centres a `max_width`-wide (or narrower, if `area` itself is) band
+/// horizontally within `area`, leaving its height untouched.
+fn center_capped(area: Rect, max_width: u16) -> Rect {
+    let width = area.width.min(max_width);
+    let [centered] = Layout::horizontal([Constraint::Length(width)])
+        .flex(Flex::Center)
+        .areas(area);
+    centered
+}
+
 /// The project pane's title: the active date's short weekday plus its ISO
 /// form, e.g. `"Thu 2026-08-27"`. This is the only textual confirmation of
 /// which day is on screen once a `h`/`l` press has moved off the calendar's
@@ -195,12 +322,92 @@ mod tests {
 
     use super::*;
     use crate::tui::context::TuiContext;
-    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
+    use crate::tui::testing::{
+        fixture_date, fixture_day, fixture_day_with_projects, render_to_string,
+    };
 
     fn day_app() -> App {
         App::new(TuiContext::for_test())
             .with_active_date(fixture_date())
             .with_data(fixture_day())
+    }
+
+    #[test]
+    fn breakpoints_are_chosen_by_size() {
+        assert_eq!(breakpoint(Rect::new(0, 0, 50, 20)), Breakpoint::TooSmall);
+        assert_eq!(breakpoint(Rect::new(0, 0, 100, 12)), Breakpoint::TooSmall);
+        assert_eq!(breakpoint(Rect::new(0, 0, 80, 20)), Breakpoint::Compact);
+        assert_eq!(breakpoint(Rect::new(0, 0, 80, 30)), Breakpoint::Narrow);
+        assert_eq!(breakpoint(Rect::new(0, 0, 120, 30)), Breakpoint::Full);
+    }
+
+    /// Below the floor, the notice has to name the floor: a user staring at
+    /// a blank pane with no numbers on it has no idea how far to resize.
+    #[tokio::test]
+    async fn a_tiny_terminal_gets_a_notice_naming_the_required_size() {
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, 50, 10);
+        assert!(
+            screen.contains("60"),
+            "the notice names the required width:\n{screen}"
+        );
+        assert!(
+            screen.contains("15"),
+            "the notice names the required height:\n{screen}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_narrow_terminal_drops_the_calendar_for_the_chart() {
+        let mut app = day_app();
+        let narrow = render_to_string(&mut app, 80, 30);
+        let wide = render_to_string(&mut app, 140, 30);
+        // The calendar renders a " Su Mo Tu We Th Fr Sa" weekday header row;
+        // it should be gone when narrow. "Su" alone also matches "Project
+        // Summaries" in the pane title below, so match the pair of days.
+        assert!(
+            wide.contains("Su Mo"),
+            "the wide layout keeps the calendar:\n{wide}"
+        );
+        assert!(
+            !narrow.contains("Su Mo"),
+            "the narrow layout drops it:\n{narrow}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_short_terminal_keeps_the_project_list_usable() {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(fixture_day_with_projects(6));
+        let screen = render_to_string(&mut app, 100, 20);
+        let listed = ["project-00", "project-01", "project-02"]
+            .iter()
+            .filter(|p| screen.contains(**p))
+            .count();
+        assert!(
+            listed >= 3,
+            "the collapsed chart band must give the list room:\n{screen}"
+        );
+    }
+
+    /// Cheap insurance: ratatui panics on some zero-width layout arithmetic,
+    /// and this task's constraints are exactly the kind of place that can
+    /// produce it.
+    #[tokio::test]
+    async fn no_render_panics_at_any_plausible_size() {
+        for (w, h) in [
+            (1, 1),
+            (10, 3),
+            (40, 10),
+            (60, 15),
+            (80, 24),
+            (200, 60),
+            (400, 100),
+        ] {
+            let mut app = day_app();
+            let _ = render_to_string(&mut app, w, h);
+        }
     }
 
     /// Regression: `render` early-returned on the zoom branch before the help

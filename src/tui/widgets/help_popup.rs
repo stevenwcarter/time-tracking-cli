@@ -66,18 +66,28 @@ impl Widget for HelpPopup<'_> {
     }
 }
 
+/// Columns/rows of margin kept clear around the popup, so it never touches
+/// the screen edge even when the content is wide or tall enough to want to.
+const SCREEN_MARGIN: u16 = 4;
+
 /// Centre a popup just big enough for `content`, capped at the screen.
 ///
 /// Sized rather than a fixed percentage because the list grows every time a
-/// binding is added; a fixed box silently clipped the last few rows.
+/// binding is added; a fixed box silently clipped the last few rows. Capped
+/// with `Constraint::Length`, not a flat 60% square, so the popup stays
+/// readable at both extremes: a tiny terminal gets a popup no bigger than it
+/// needs, and a huge one doesn't stretch the box to some arbitrary fraction
+/// of the screen.
 fn popup_area(area: Rect, content: &str) -> Rect {
     let widest = content
         .lines()
         .map(|line| line.chars().count())
         .max()
         .unwrap_or(0);
-    let width = clamp_to_u16(widest + BORDER + SIDE_PADDING).min(area.width);
-    let height = clamp_to_u16(content.lines().count() + BORDER).min(area.height);
+    let width =
+        clamp_to_u16(widest + BORDER + SIDE_PADDING).min(area.width.saturating_sub(SCREEN_MARGIN));
+    let height = clamp_to_u16(content.lines().count() + BORDER)
+        .min(area.height.saturating_sub(SCREEN_MARGIN));
 
     let vertical = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center);
     let horizontal = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center);

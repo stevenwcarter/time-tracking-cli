@@ -110,7 +110,9 @@ mod tests {
         let mut app = App::new(TuiContext::for_test())
             .with_active_date(fixture_date())
             .with_data(fixture_day());
-        let rendered = render_to_string(&mut app, 80, 40);
+        // Wide enough to stay at the `Full` breakpoint (Task 24): below 100
+        // columns the calendar is dropped in favour of the chart.
+        let rendered = render_to_string(&mut app, 120, 40);
 
         assert!(
             rendered.contains("June 2025"),
