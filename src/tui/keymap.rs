@@ -160,6 +160,43 @@ pub const BINDINGS: &[Binding] = &[
         description: "copy the selected project's notes to the clipboard",
     },
     Binding {
+        keys: &[(KeyCode::Down, NONE), (KeyCode::Char('j'), NONE)],
+        event: AppEvent::NextWeekProject,
+        // Disjoint from the Day-only and RawFile-only rows carrying the same
+        // keys: same key, different pane, different event.
+        modes: ModeMask::WEEK,
+        group: Group::Project,
+        description: "select the next project in the weekly rollup",
+    },
+    Binding {
+        keys: &[(KeyCode::Up, NONE), (KeyCode::Char('k'), NONE)],
+        event: AppEvent::PreviousWeekProject,
+        modes: ModeMask::WEEK,
+        group: Group::Project,
+        description: "select the previous project in the weekly rollup",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('g'), NONE)],
+        event: AppEvent::FirstWeekProject,
+        modes: ModeMask::WEEK,
+        group: Group::Project,
+        description: "jump to the first project in the weekly rollup",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('G'), NONE)],
+        event: AppEvent::LastWeekProject,
+        modes: ModeMask::WEEK,
+        group: Group::Project,
+        description: "jump to the last project in the weekly rollup",
+    },
+    Binding {
+        keys: &[(KeyCode::Enter, NONE)],
+        event: AppEvent::CopyWeekProject,
+        modes: ModeMask::WEEK,
+        group: Group::Project,
+        description: "copy the selected project's week (with hours) to the clipboard",
+    },
+    Binding {
         keys: &[(KeyCode::Left, NONE), (KeyCode::Char('h'), NONE)],
         event: AppEvent::PreviousDate,
         modes: ModeMask::ALL,
@@ -214,6 +251,15 @@ pub const BINDINGS: &[Binding] = &[
         modes: ModeMask::ALL,
         group: Group::View,
         description: "toggle zooming into the weekly bar chart",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('w'), NONE)],
+        event: AppEvent::ToggleWeekMode,
+        // Live in Day (to enter) and Week (to leave again), the same pair
+        // `v` uses for the raw-file view.
+        modes: ModeMask::DAY.or(ModeMask::WEEK),
+        group: Group::View,
+        description: "toggle the week's per-project rollup",
     },
     Binding {
         keys: &[(KeyCode::Char('v'), NONE)],
@@ -526,37 +572,76 @@ mod tests {
         }
     }
 
-    /// The day view's list keys must reach the day view and nowhere else, so
-    /// Task 20 is free to bind them in the mode it builds. `j` is excluded
-    /// here — Task 16 legitimately reuses it in `RawFile`, under a disjoint
-    /// mask and a different event; see `j_reaches_only_day_and_raw_file`.
+    /// The list keys belong to the two panes that have a list — the day
+    /// view and the weekly rollup — and must mean the pane's *own* event in
+    /// each, never leak into a pane with no list, and never resolve to the
+    /// other pane's event. Getting the last part wrong is the silent case:
+    /// `Enter` in the weekly rollup resolving to `CopyNotes` would yank the
+    /// *day's* selected project into a weekly timesheet.
     #[test]
-    fn day_only_bindings_reach_no_other_mode() {
-        for key in [KeyCode::Char('G'), KeyCode::Enter] {
-            let key = KeyEvent::new(key, KeyModifiers::NONE);
-            assert!(lookup(key, Mode::Day).is_some(), "{key:?} is a day key");
-            for mode in [Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+    fn the_list_keys_mean_their_own_panes_event_in_each_pane() {
+        let rows: [(KeyCode, &AppEvent, &AppEvent); 3] = [
+            (
+                KeyCode::Char('G'),
+                &AppEvent::LastProject,
+                &AppEvent::LastWeekProject,
+            ),
+            (
+                KeyCode::Char('g'),
+                &AppEvent::FirstProject,
+                &AppEvent::FirstWeekProject,
+            ),
+            (
+                KeyCode::Enter,
+                &AppEvent::CopyNotes,
+                &AppEvent::CopyWeekProject,
+            ),
+        ];
+        for (code, day_event, week_event) in rows {
+            let key = KeyEvent::new(code, KeyModifiers::NONE);
+            assert_eq!(lookup(key, Mode::Day).map(|b| &b.event), Some(day_event));
+            assert_eq!(lookup(key, Mode::Week).map(|b| &b.event), Some(week_event));
+            for mode in [Mode::ZoomedWeek, Mode::RawFile] {
                 assert!(lookup(key, mode).is_none(), "{key:?} leaked into {mode:?}");
             }
         }
     }
 
-    /// `j` is the one day-only list key Task 16 reuses: bound again in
-    /// `RawFile` for scrolling, under a disjoint `ModeMask` and a different
-    /// event, so it still must not reach `Week` or `ZoomedWeek`.
+    /// `j` is the busiest key in the table: three modes bind it, under
+    /// disjoint masks, to three different events. Only the zoomed chart —
+    /// which has nothing to move — leaves it unbound.
     #[test]
-    fn j_reaches_only_day_and_raw_file() {
+    fn j_means_something_different_in_each_mode_that_binds_it() {
         let j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(
             lookup(j, Mode::Day).map(|b| &b.event),
             Some(&AppEvent::NextProject)
         );
         assert_eq!(
+            lookup(j, Mode::Week).map(|b| &b.event),
+            Some(&AppEvent::NextWeekProject)
+        );
+        assert_eq!(
             lookup(j, Mode::RawFile).map(|b| &b.event),
             Some(&AppEvent::ScrollRawFileDown)
         );
-        for mode in [Mode::Week, Mode::ZoomedWeek] {
-            assert!(lookup(j, mode).is_none(), "j leaked into {mode:?}");
+        assert!(
+            lookup(j, Mode::ZoomedWeek).is_none(),
+            "j leaked into the zoomed chart"
+        );
+    }
+
+    /// `w` has to work both ways round, like `v`: a rollup you can enter but
+    /// not leave is worse than no rollup at all.
+    #[test]
+    fn w_toggles_the_weekly_rollup_from_both_sides() {
+        let w = KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE);
+        for mode in [Mode::Day, Mode::Week] {
+            assert_eq!(
+                lookup(w, mode).map(|b| &b.event),
+                Some(&AppEvent::ToggleWeekMode),
+                "w must toggle the rollup from {mode:?}"
+            );
         }
     }
 

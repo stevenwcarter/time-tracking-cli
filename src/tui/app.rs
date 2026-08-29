@@ -7,7 +7,11 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::{DataService, data_svc::WeeklySummary, editor::open_in_editor};
+use crate::{
+    DataService,
+    data_svc::{WeeklyProject, WeeklySummary},
+    editor::open_in_editor,
+};
 
 use super::{
     context::TuiContext,
@@ -15,6 +19,7 @@ use super::{
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
+    week_list::WeekListState,
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
@@ -126,6 +131,28 @@ pub enum DayPane {
     Projects,
     /// Nothing to show: a day with no tracked time, or a load that failed and
     /// left only another date's payload behind.
+    Empty,
+}
+
+/// What the weekly rollup pane has to draw, once the rollup on hand has been
+/// checked against the week on screen.
+///
+/// [`DayPane`]'s check on the week axis, and for a sharper reason. Crossing a
+/// week boundary moves `week_dates` at once and `weekly_summary` only when
+/// the load lands, so between the two the pane would draw the *previous*
+/// week's per-project hours under the *new* week's header. That is the shape
+/// of the bug `Y` was found shipping into a timesheet — plausible numbers,
+/// wrong week — so this pane withholds them exactly as
+/// [`App::yank_week`] and [`crate::tui::ui`]'s bar chart do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeekPane {
+    /// A load for the week on screen is in flight and nothing on hand
+    /// describes it yet.
+    Loading,
+    /// The per-project rollup, which belongs to the week on screen.
+    Projects,
+    /// Nothing to show: a week with no tracked time, or a load that failed
+    /// and left only another week's rollup behind.
     Empty,
 }
 
@@ -243,10 +270,19 @@ pub struct App {
     pub month_memo: HashMap<(i32, u8), Vec<Date>>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
-    /// The full weekly rollup `weekly_data` is a projection of, for `Y`'s
-    /// per-project yank. `None` until the first load lands, same as
-    /// `weekly_data`. Private: [`App::yank_week`] is the only reader.
-    weekly_summary: Option<WeeklySummary>,
+    /// The full weekly rollup `weekly_data` is a projection of, read by
+    /// `Y`'s per-project yank and drawn by [`Mode::Week`]'s pane. `None`
+    /// until the first load lands, same as `weekly_data`.
+    ///
+    /// The one weekly rollup the TUI holds: the pane borrows this rather
+    /// than copying the projects into items of its own, so what is on screen
+    /// and what `Y` yanks can never disagree.
+    pub weekly_summary: Option<WeeklySummary>,
+    /// Where [`Mode::Week`]'s pane has its selection.
+    ///
+    /// Only the selection: the rows themselves are borrowed from
+    /// `weekly_summary` at render time. See [`crate::tui::week_list`].
+    pub week_list: WeekListState,
     /// Reader for the day files under `ctx.data_dir`
     pub data_svc: DataService,
     /// Environment the app runs against (week start, data dir, theme, ...)
@@ -312,6 +348,7 @@ impl App {
             month_memo: HashMap::new(),
             weekly_data: HashMap::new(),
             weekly_summary: None,
+            week_list: WeekListState::default(),
             data_svc,
             ctx,
             watch: None,
@@ -354,6 +391,21 @@ impl App {
     #[must_use]
     pub fn with_weekly_data(mut self, weekly_data: HashMap<Date, u32>) -> Self {
         self.weekly_data = weekly_data;
+        self.loaded_date = Some(self.active_date);
+        self
+    }
+
+    /// Seed the week's per-project rollup, as a disk load would.
+    ///
+    /// Sets `loaded_date` alongside it for the same reason
+    /// [`App::with_weekly_data`] does: [`App::week_is_stale`] reads that
+    /// against `week_dates`, so a rollup seeded without it is
+    /// indistinguishable from one that has not landed yet — and the pane
+    /// would draw its loading state rather than the fixture.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_weekly_summary(mut self, summary: WeeklySummary) -> Self {
+        self.weekly_summary = Some(summary);
         self.loaded_date = Some(self.active_date);
         self
     }
@@ -491,6 +543,12 @@ impl App {
             | AppEvent::FirstProject
             | AppEvent::LastProject
             | AppEvent::CopyNotes
+            | AppEvent::ToggleWeekMode
+            | AppEvent::NextWeekProject
+            | AppEvent::PreviousWeekProject
+            | AppEvent::FirstWeekProject
+            | AppEvent::LastWeekProject
+            | AppEvent::CopyWeekProject
             | AppEvent::CopyToClipboard(..)
             | AppEvent::YankDay
             | AppEvent::YankWeek
@@ -533,6 +591,7 @@ impl App {
             AppEvent::NextMonth => self.step_month(1),
             AppEvent::PreviousMonth => self.step_month(-1),
             AppEvent::ToggleRawFile => self.toggle_raw_file(),
+            AppEvent::ToggleWeekMode => self.toggle_week_mode(),
             AppEvent::Quit => self.quit(),
             // Latest-wins: a load only lands while it is still the current
             // one. Holding `h` starts a load per key press, and the earlier
@@ -570,6 +629,20 @@ impl App {
                 if let Some(widget) = &mut self.project_list_widget
                     && let Handled::Emit(emitted) = widget.apply(&app_event)
                 {
+                    self.events.send(emitted);
+                }
+            }
+            // `Mode::Week`'s own keys, reaching the queue the same way the
+            // project list's do: `handle_mode_key` normally hands them
+            // straight to the pane, and this is the path a key that fell
+            // through takes. Routed through the same helper, so the
+            // stale-week guard applies however the event arrived.
+            AppEvent::NextWeekProject
+            | AppEvent::PreviousWeekProject
+            | AppEvent::FirstWeekProject
+            | AppEvent::LastWeekProject
+            | AppEvent::CopyWeekProject => {
+                if let Handled::Emit(emitted) = self.apply_week_key(&app_event) {
                     self.events.send(emitted);
                 }
             }
@@ -642,6 +715,20 @@ impl App {
             None
         } else {
             Some(Overlay::Help)
+        };
+    }
+
+    /// Flip between `Mode::Day` and `Mode::Week`.
+    ///
+    /// Nothing to load: the rollup the pane draws arrives with every other
+    /// payload (see [`load_payload`]), so `w` is a pure view change and the
+    /// week on screen is already on hand. The selection is left where it
+    /// was — [`WeekListState`] clamps it against whatever week is drawn.
+    fn toggle_week_mode(&mut self) {
+        self.mode = if self.mode == Mode::Week {
+            Mode::Day
+        } else {
+            Mode::Week
         };
     }
 
@@ -871,6 +958,42 @@ impl App {
         } else {
             DayPane::Empty
         }
+    }
+
+    /// What the weekly rollup pane should draw; see [`WeekPane`].
+    pub fn week_pane(&self) -> WeekPane {
+        if self.week_is_stale() {
+            // Nothing on hand describes the week on screen. Suppressing the
+            // pane is deliberate, and for a sharper reason than the day's:
+            // the previous week's hours under this week's header read as
+            // this week's, and get pasted into a timesheet as such.
+            return if self.loading {
+                WeekPane::Loading
+            } else {
+                WeekPane::Empty
+            };
+        }
+        if self.week_rows().is_empty() {
+            WeekPane::Empty
+        } else {
+            WeekPane::Projects
+        }
+    }
+
+    /// The rows [`Mode::Week`]'s pane may act on right now; see
+    /// [`week_projects`].
+    fn week_rows(&self) -> &[WeeklyProject] {
+        week_projects(self.weekly_summary.as_ref(), self.week_is_stale())
+    }
+
+    /// Hand `event` to [`Mode::Week`]'s pane.
+    ///
+    /// Spelled out rather than going through [`App::week_rows`] because the
+    /// borrow checker has to see that the rollup being read and the
+    /// selection being moved are two different fields of `self`.
+    fn apply_week_key(&mut self, event: &AppEvent) -> Handled {
+        let projects = week_projects(self.weekly_summary.as_ref(), self.week_is_stale());
+        self.week_list.apply(event, projects)
     }
 
     /// Does `weekly_data` describe a different week than the one on screen?
@@ -1123,8 +1246,11 @@ impl App {
                 None => Handled::Ignored,
             },
             Mode::RawFile => self.apply_raw_file_key(&binding.event),
-            // Task 20 gives this mode keys of its own.
-            Mode::Week | Mode::ZoomedWeek => Handled::Ignored,
+            Mode::Week => self.apply_week_key(&binding.event),
+            // The zoomed chart has nothing to navigate; every key it binds
+            // means the same thing everywhere and belongs to the layer
+            // behind.
+            Mode::ZoomedWeek => Handled::Ignored,
         }
     }
 
@@ -1362,16 +1488,27 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         // does: applied through the queue instead, a key typed right after
         // `v` would resolve against the mode just left rather than the one
         // just entered.
+        // `ToggleWeekMode` is here for that same reason: the weekly rollup
+        // rebinds `j`/`k`/`g`/`G`/`Enter` to its own events under a
+        // disjoint mask, so a key typed straight after `w` would otherwise
+        // move the day's hidden project list instead of the rollup the user
+        // is now looking at.
         AppEvent::ToggleHelp
         | AppEvent::CloseOverlay
         | AppEvent::ToggleZoomBar
-        | AppEvent::ToggleRawFile => true,
+        | AppEvent::ToggleRawFile
+        | AppEvent::ToggleWeekMode => true,
         // Leaves the active mode and overlay exactly as they were.
         AppEvent::NextProject
         | AppEvent::PreviousProject
         | AppEvent::FirstProject
         | AppEvent::LastProject
         | AppEvent::CopyNotes
+        | AppEvent::NextWeekProject
+        | AppEvent::PreviousWeekProject
+        | AppEvent::FirstWeekProject
+        | AppEvent::LastWeekProject
+        | AppEvent::CopyWeekProject
         | AppEvent::CopyToClipboard(..)
         | AppEvent::YankDay
         | AppEvent::YankWeek
@@ -1393,6 +1530,24 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::RawFileLoaded(..)
         | AppEvent::Quit => false,
     }
+}
+
+/// The week's per-project rollup, or nothing when `stale` says `summary`
+/// describes a week other than the one on screen.
+///
+/// The one place [`App::week_is_stale`] is applied to the rollup, so
+/// [`App::week_pane`] and the pane's `Enter` can never disagree about
+/// whether this week has data — an `Enter` that read past this guard is
+/// exactly how `Y` came to yank the previous week's hours into a timesheet.
+///
+/// A free function rather than a method because
+/// [`App::apply_week_key`] needs the rollup borrowed while
+/// [`App::week_list`] is borrowed mutably, which a `&self` method forbids.
+fn week_projects(summary: Option<&WeeklySummary>, stale: bool) -> &[WeeklyProject] {
+    if stale {
+        return &[];
+    }
+    summary.map_or(&[], |summary| summary.projects.as_slice())
 }
 
 /// Ctrl-C, which raw mode delivers as a key event rather than as a signal.

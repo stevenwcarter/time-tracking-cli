@@ -57,6 +57,24 @@ pub enum AppEvent {
     LastProject,
     /// Copy the selected project's notes to the clipboard
     CopyNotes,
+    /// Toggle between `Mode::Day` and `Mode::Week`.
+    ToggleWeekMode,
+    /// Select the next project in the weekly rollup
+    NextWeekProject,
+    /// Select the previous project in the weekly rollup
+    PreviousWeekProject,
+    /// Select the first project in the weekly rollup
+    FirstWeekProject,
+    /// Select the last project in the weekly rollup
+    LastWeekProject,
+    /// Copy the selected project's week — its hours and its day-prefixed
+    /// notes — to the clipboard.
+    ///
+    /// Distinct from [`Self::CopyNotes`], which yanks one *day's* notes
+    /// without hours: a timesheet line needs the week's hours, and the two
+    /// panes must not share an event or a key pressed in one would move the
+    /// other's selection.
+    CopyWeekProject,
     /// Put a payload on the system clipboard, reporting `.1` on the status
     /// line once it is there.
     ///

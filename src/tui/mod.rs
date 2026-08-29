@@ -10,6 +10,7 @@ pub mod mode;
 pub mod project_list;
 pub mod theme;
 pub mod ui;
+pub mod week_list;
 pub mod widgets;
 
 #[cfg(test)]

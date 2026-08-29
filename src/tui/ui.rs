@@ -7,9 +7,10 @@ use time::Date;
 
 use crate::{DATE_FORMAT, time_utils::WeekdayExt};
 
-use super::app::{App, DayPane, LOADING_MESSAGE};
+use super::app::{App, DayPane, LOADING_MESSAGE, WeekPane};
 use super::mode::{Mode, Overlay};
 use super::theme::Theme;
+use super::week_list::WeekListWidget;
 use super::widgets::HelpPopup;
 use super::widgets::{Calendar, RawFileView, WeeklyBarChart};
 
@@ -83,8 +84,7 @@ impl Widget for &mut App {
             // resized to, actually clears the gate.
             Mode::Day => self.render_day(breakpoint(area), main_area, buf),
             Mode::ZoomedWeek => self.render_zoomed_week(main_area, buf),
-            // Task 20 replaces this with the real view.
-            Mode::Week => render_placeholder("Week view", &self.ctx.theme, main_area, buf),
+            Mode::Week => self.render_week(main_area, buf),
             Mode::RawFile => self.render_raw_file(main_area, buf),
         }
         self.render_status(status_area, buf);
@@ -187,6 +187,45 @@ impl App {
         self.weekly_bar_chart().render(area, buf);
     }
 
+    /// The week's per-project rollup: the billing question the bar chart
+    /// only teases.
+    ///
+    /// Laid out exactly like [`App::render_day`]'s project pane — one
+    /// bordered block, and either the content or a one-line reason there
+    /// isn't any — so the week the header names is always the week the
+    /// numbers under it describe. [`WeekPane`] is what decides which.
+    fn render_week(&mut self, area: Rect, buf: &mut Buffer) {
+        let block = Block::bordered()
+            .title(format_week_title(&self.week_dates))
+            .border_type(BorderType::Rounded);
+
+        // Read before the rollup is borrowed, the same ordering
+        // `render_day` uses for `DayPane`.
+        match self.week_pane() {
+            WeekPane::Projects => {
+                let inner = block.inner(area);
+                block.render(area, buf);
+                // Field-by-field, so the borrow checker can see that the
+                // rollup being drawn and the selection being moved are two
+                // different fields of `self`.
+                if let Some(summary) = &self.weekly_summary {
+                    StatefulWidget::render(
+                        WeekListWidget::new(summary, &self.ctx.theme),
+                        inner,
+                        buf,
+                        &mut self.week_list,
+                    );
+                }
+            }
+            WeekPane::Loading => {
+                render_pane_message(LOADING_MESSAGE, self.ctx.theme.status, block, area, buf);
+            }
+            WeekPane::Empty => {
+                render_pane_message(EMPTY_WEEK_TEXT, self.ctx.theme.warning, block, area, buf);
+            }
+        }
+    }
+
     /// The active date's file exactly as it sits on disk.
     ///
     /// Records `raw_visible_lines` from `area` before drawing, computed the
@@ -247,21 +286,17 @@ impl App {
 /// screen.
 const EMPTY_TEXT: &str = "No data found for date";
 
+/// What the weekly rollup says for a week that loaded and turned out to
+/// have nothing in it. Deliberately not the day pane's wording: "no data
+/// found for date" under a week's header reads as a failed load.
+const EMPTY_WEEK_TEXT: &str = "No tracked time this week";
+
 /// A one-line message where the project list would be.
 fn render_pane_message(text: &str, style: Style, block: Block<'_>, area: Rect, buf: &mut Buffer) {
     Paragraph::new(text)
         .block(block)
         .style(style)
         .alignment(Alignment::Left)
-        .render(area, buf);
-}
-
-/// Stand-in for a mode whose view has not been built yet.
-fn render_placeholder(name: &str, theme: &Theme, area: Rect, buf: &mut Buffer) {
-    Paragraph::new(format!("{name} is not implemented yet"))
-        .block(Block::bordered().border_type(BorderType::Rounded))
-        .style(theme.warning)
-        .alignment(Alignment::Center)
         .render(area, buf);
 }
 
@@ -312,10 +347,26 @@ fn center_capped(area: Rect, max_width: u16) -> Rect {
 /// Falls back to the bare ISO date if formatting ever fails, rather than
 /// unwrapping and panicking the render loop over a display string.
 fn format_pane_title(date: Date) -> String {
-    let iso = date
-        .format(DATE_FORMAT)
-        .unwrap_or_else(|_| date.to_string());
-    format!("{} {iso}", date.weekday().short_name())
+    format!("{} {}", date.weekday().short_name(), iso(date))
+}
+
+/// The weekly rollup pane's title: the week it covers, e.g.
+/// `"Week of 2026-08-22 to 2026-08-28"`.
+///
+/// The rollup is a billing artefact, so the week it belongs to has to be on
+/// screen next to the hours — `week_dates` is already ordered from the
+/// configured start-of-week, so its ends are the range.
+fn format_week_title(week_dates: &[Date; 7]) -> String {
+    let [first, .., last] = *week_dates;
+    format!("Week of {} to {}", iso(first), iso(last))
+}
+
+/// `date` in ISO form, falling back to [`Date`]'s own rendering if
+/// formatting ever fails, rather than unwrapping and panicking the render
+/// loop over a display string.
+fn iso(date: Date) -> String {
+    date.format(DATE_FORMAT)
+        .unwrap_or_else(|_| date.to_string())
 }
 
 /// The path `date`'s file would have under `data_dir`, for
@@ -327,10 +378,7 @@ fn format_pane_title(date: Date) -> String {
 /// TUI service — always built with a fixed directory — so recomputing here
 /// keeps the render path synchronous.
 fn raw_file_path(data_dir: &Path, date: Date) -> PathBuf {
-    let date_str = date
-        .format(DATE_FORMAT)
-        .unwrap_or_else(|_| date.to_string());
-    data_dir.join(format!("{date_str}.md"))
+    data_dir.join(format!("{}.md", iso(date)))
 }
 
 fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
@@ -508,12 +556,20 @@ mod tests {
         );
     }
 
+    /// The rollup takes the whole screen, the way the zoomed chart does:
+    /// the week is the question being asked, and the day's projects
+    /// alongside it would only invite reading one week's hours off the
+    /// other pane.
     #[test]
-    fn the_unbuilt_week_mode_says_so_rather_than_rendering_nothing() {
+    fn the_week_rollup_replaces_the_day_view_rather_than_sharing_it() {
         let mut app = day_app();
         app.mode = Mode::Week;
         let screen = render_to_string(&mut app, 100, 30);
-        assert!(screen.contains("Week view"), "got:\n{screen}");
+        assert!(
+            !screen.contains("Project Summaries"),
+            "the day's list must be gone:\n{screen}"
+        );
+        assert!(screen.contains("Week of "), "got:\n{screen}");
     }
 
     /// The point of the task: a day file that fences or parses to zero
