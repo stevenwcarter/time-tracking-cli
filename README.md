@@ -51,6 +51,14 @@ prefix = "```timetracking"
 
 # Corresponding closing tag to stop parsing, if you want notes after this. Must specify prefix too
 suffix = "```"
+
+# TUI theme preset: "dark", "light", or "none".
+# "none" emits no colors so your terminal palette shows through.
+# NO_COLOR in the environment forces "none".
+theme = "dark"
+
+# Hours of tracked time that count as a full day, for the TUI weekly bar chart's y-axis ceiling and goal line.
+daily_target_hours = 8.0
 ````
 
 ## Installation
@@ -185,7 +193,7 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 - **Multiple Formats**: Supports various time formats (with/without minutes, 24-hour format)
 - **Detailed Reports**: Shows start/end times, total working time, and per-project breakdowns
 - **Web Interface**: Allows you to view/edit your time tracking, view weekly roll-ups, etc. in a web view. Defaults to port 3000. Run with `ttcli --serve`
-- **TUI**: Allows you to view/edit your time tracking, view weekly roll-ups with a bar chart, etc. in a terminal interface.
+- **TUI**: Allows you to view/edit your time tracking in a terminal interface — browse a weekly per-project rollup with a bar chart, view a day's raw file as it sits on disk, jump straight to any date, and copy a day's or week's summary to the clipboard. The view auto-refreshes when the underlying file changes, and its colors follow a configurable `theme` (`dark`, `light`, or `none`).
 
 #### TUI Keybinds
 

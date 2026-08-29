@@ -44,7 +44,7 @@ All three are enabled by default. `cli/src/main.rs` uses `#[cfg(feature = ...)]`
 ### Core Library (`src/`)
 | Module | Purpose |
 |--------|---------|
-| `config.rs` | CLI args (Clap) + TOML config deserialization + path resolution |
+| `config.rs` | CLI args (Clap) + TOML config deserialization + path resolution. Includes `theme` (TUI colour preset, default `"dark"`) and `daily_target_hours` (default `8.0`) — both are TUI-only and read once into `TuiContext` (see below), never accessed elsewhere |
 | `data_svc.rs` | `DataService` — async file reader with 30-second in-memory cache |
 | `file_utils.rs` | Directory setup, template handling, file discovery |
 | `editor.rs` | Launch `$EDITOR`/`$VISUAL` for a given date file |
@@ -52,7 +52,22 @@ All three are enabled by default. `cli/src/main.rs` uses `#[cfg(feature = ...)]`
 | `display/` | `DisplayFormatter` trait + three impls: `Default` (emoji), `Plain`, `Markdown` |
 | `graphql.rs` | Juniper schema (queries + mutations) |
 | `web.rs` | Axum server with `/graphql` and static asset endpoints |
-| `tui/` | Ratatui app: `app.rs` (state + event loop), `ui.rs` (rendering), custom widgets |
+| `tui/` | Ratatui app — see the breakdown below |
+
+`tui/` submodules:
+| File | Purpose |
+|------|---------|
+| `app.rs` | `App` — state machine + the terminal event loop |
+| `ui.rs` | Rendering: breakpoints, layout, the day/week views |
+| `context.rs` | `TuiContext` — TUI config resolved once at startup and threaded through everything else. TUI code reads config through it and must never call `Config::get()` directly (only `tui()` in `mod.rs` does) |
+| `event.rs` | The terminal input + file-watch event stream |
+| `keymap.rs` | The one keybinding table; feeds the help popup and the generated README section |
+| `mode.rs` | `Mode`/`Overlay` — what's on screen and who gets first refusal on a keypress |
+| `project_list.rs` | The day view's project list widget |
+| `week_list.rs` | The weekly per-project rollup pane |
+| `theme.rs` | Colour palettes: `dark`, `light`, `none` |
+| `testing.rs` | `#[cfg(test)]` render/fixture helpers shared by the unit tests |
+| `widgets/` | `Calendar`, `DatePrompt`, `HelpPopup`, `Popup`, `RawFileView`, `WeeklyBarChart` |
 
 ### Data Flow
 1. Time entries stored as markdown files at `~/.time-tracking/YYYY-MM-DD.md` (configurable)
