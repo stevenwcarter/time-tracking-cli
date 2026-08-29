@@ -2791,6 +2791,24 @@ The keybind table is already generated (Task 25). Add to the TUI feature bullet:
 
 The module table lists `tui/` as "`app.rs` (state + event loop), `ui.rs` (rendering), custom widgets" — now stale. Replace with the real layout: `context.rs`, `theme.rs`, `keymap.rs`, `mode.rs`, `week_list.rs`, `project_list.rs`, plus `widgets/`. Add one line noting that TUI config is injected via `TuiContext` and never read from the `Config` singleton below `tui()`.
 
+- [ ] **Step 2b: Make the feature-combo tests runnable (carried from Task 26's re-review)**
+
+Task 26's regression test is gated `#[cfg(all(feature = "webapp", not(feature = "tui")))]`, which correctly targets the only vulnerable arm — but **nothing in the repo ever builds that combination.** The re-reviewer checked every path: `.github/workflows/{build,release}.yml` only run `cargo build`, the `justfile`'s `test:` recipe is a `watchexec` watch loop over default features, `.husky/pre-commit` runs only the frontend's tests, and plain `cargo test --workspace` is default-features. So a future regression of that drop-timing bug is caught by nothing automated.
+
+Add a one-shot `justfile` recipe that runs the full gate including the feature combinations, e.g.:
+
+```make
+gate:
+    SKIP_YARN=1 cargo clippy --all-targets --all-features -- -D warnings
+    SKIP_YARN=1 cargo clippy -p cli --no-default-features --features tui --all-targets -- -D warnings
+    SKIP_YARN=1 cargo clippy -p cli --no-default-features --features webapp --all-targets -- -D warnings
+    cargo fmt --all -- --check
+    SKIP_YARN=1 cargo test --workspace
+    SKIP_YARN=1 cargo test -p cli --no-default-features --features webapp
+```
+
+**Do NOT add or modify a CI workflow.** That is an outward-facing change to what runs on the user's PRs and it is theirs to decide — surface it in the final summary instead. Note in the recipe's comment that the last line is the only thing exercising the webapp-only arm.
+
 - [ ] **Step 3: Verify the whole suite and the lints**
 
 ```bash
