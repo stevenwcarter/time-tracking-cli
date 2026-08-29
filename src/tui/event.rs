@@ -34,8 +34,20 @@ pub enum Event {
 pub enum AppEvent {
     /// Toggle the help popup
     ToggleHelp,
+    /// Dismiss whatever overlay is open
+    CloseOverlay,
     /// Toggle whether the bar chart is zoomed
     ToggleZoomBar,
+    /// Select the next project in the day view's list
+    NextProject,
+    /// Select the previous project in the day view's list
+    PreviousProject,
+    /// Select the first project in the day view's list
+    FirstProject,
+    /// Select the last project in the day view's list
+    LastProject,
+    /// Copy the selected project's notes to the clipboard
+    CopyNotes,
     /// Edit the current date in $EDITOR
     Edit,
     /// Go to the next date

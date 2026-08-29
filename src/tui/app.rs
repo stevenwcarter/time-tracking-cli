@@ -6,6 +6,7 @@ use crate::{DataService, editor::open_in_editor};
 use super::{
     context::TuiContext,
     event::{AppEvent, Event, EventHandler},
+    keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
 };
@@ -191,6 +192,7 @@ impl App {
         match app_event {
             AppEvent::ToggleZoomBar => self.toggle_zoom_bar(),
             AppEvent::ToggleHelp => self.toggle_help(),
+            AppEvent::CloseOverlay => self.overlay = None,
             AppEvent::Today => self.go_to_date(today()),
             AppEvent::NextDate => {
                 self.go_to_date(self.active_date.next_day().unwrap_or(self.active_date));
@@ -199,6 +201,18 @@ impl App {
                 self.go_to_date(self.active_date.previous_day().unwrap_or(self.active_date));
             }
             AppEvent::Quit => self.quit(),
+            // The day view's project list owns these. They normally never
+            // reach the queue — `handle_mode_key` hands them straight to the
+            // widget — but a day with no list lets them fall through.
+            AppEvent::NextProject
+            | AppEvent::PreviousProject
+            | AppEvent::FirstProject
+            | AppEvent::LastProject
+            | AppEvent::CopyNotes => {
+                if let Some(widget) = &mut self.project_list_widget {
+                    widget.apply(&app_event);
+                }
+            }
             // Both await; `handle_app_event` owns them.
             AppEvent::ReloadFromDisk | AppEvent::Edit => {}
         }
@@ -316,7 +330,7 @@ impl App {
     pub fn handle_key_events(&mut self, key_event: KeyEvent) -> Result<()> {
         if self.overlay.is_some() {
             if let Handled::Emit(app_event) = self.handle_overlay_key(key_event) {
-                self.events.send(app_event);
+                self.queue_or_apply(app_event);
             }
             return Ok(());
         }
@@ -324,7 +338,7 @@ impl App {
         match self.handle_mode_key(key_event) {
             Handled::Consumed => return Ok(()),
             Handled::Emit(app_event) => {
-                self.events.send(app_event);
+                self.queue_or_apply(app_event);
                 return Ok(());
             }
             Handled::Ignored => {}
@@ -332,6 +346,22 @@ impl App {
 
         self.handle_global_key(key_event);
         Ok(())
+    }
+
+    /// Queue `app_event`, unless it decides which layer sees the next key.
+    ///
+    /// Keys and application events share one channel, so a key the user has
+    /// already typed is queued *ahead* of anything the previous key emitted.
+    /// Opening and closing an overlay therefore have to happen here rather
+    /// than on the way back out of the queue: otherwise `?` followed quickly
+    /// by `j` would move the project list behind the popup that is about to
+    /// open.
+    fn queue_or_apply(&mut self, app_event: AppEvent) {
+        if changes_key_routing(&app_event) {
+            self.apply_sync_event(app_event);
+        } else {
+            self.events.send(app_event);
+        }
     }
 
     /// The overlay layer: the only layer that sees a key while one is open.
@@ -347,10 +377,11 @@ impl App {
         }
         match self.overlay {
             Some(Overlay::Help) => {
-                if matches!(key_event.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
-                    self.overlay = None;
+                if keymap::closes_overlay(key_event) {
+                    Handled::Emit(AppEvent::CloseOverlay)
+                } else {
+                    Handled::Consumed
                 }
-                Handled::Consumed
             }
             // Task 17 gives the prompt its own editing keys; until then it is
             // unreachable, and swallowing is the safe answer either way.
@@ -361,13 +392,17 @@ impl App {
 
     /// The mode layer: keys that belong to whatever view is on screen.
     ///
-    /// Task 5 replaces the body with a lookup into the binding table keyed by
-    /// `(key, self.mode)`; the shape here — one arm per mode, delegating to
-    /// that mode's widget — is what that lookup slots into.
+    /// The key is resolved against the one binding table and the resulting
+    /// [`AppEvent`] handed to the mode's widget, which matches on the event
+    /// rather than on the key. That is what keeps the keymap in
+    /// [`keymap::BINDINGS`] instead of growing a second private copy here.
     fn handle_mode_key(&mut self, key_event: KeyEvent) -> Handled {
+        let Some(binding) = keymap::lookup(key_event, self.mode) else {
+            return Handled::Ignored;
+        };
         match self.mode {
             Mode::Day => match &mut self.project_list_widget {
-                Some(widget) => widget.handle_key_event(key_event),
+                Some(widget) => widget.apply(&binding.event),
                 // Nothing to navigate; the key belongs to the layer behind.
                 None => Handled::Ignored,
             },
@@ -376,24 +411,15 @@ impl App {
         }
     }
 
-    /// The global layer: bindings that mean the same thing in every mode.
-    ///
-    /// Task 5 replaces this match with the single binding table.
+    /// The global layer: whatever the mode did not claim, straight from the
+    /// binding table.
     fn handle_global_key(&mut self, key_event: KeyEvent) {
         if is_ctrl_c(key_event) {
             self.events.send(AppEvent::Quit);
             return;
         }
-        match key_event.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.events.send(AppEvent::Quit),
-            KeyCode::Char('e') => self.events.send(AppEvent::Edit),
-            KeyCode::Char('f') => self.events.send(AppEvent::ToggleZoomBar),
-            KeyCode::Char('r') => self.events.send(AppEvent::ReloadFromDisk),
-            KeyCode::Char('t' | 'T') => self.events.send(AppEvent::Today),
-            KeyCode::Char('l') | KeyCode::Right => self.events.send(AppEvent::NextDate),
-            KeyCode::Char('h') | KeyCode::Left => self.events.send(AppEvent::PreviousDate),
-            KeyCode::Char('?') => self.events.send(AppEvent::ToggleHelp),
-            _ => {}
+        if let Some(binding) = keymap::lookup(key_event, self.mode) {
+            self.queue_or_apply(binding.event.clone());
         }
     }
 
@@ -422,6 +448,15 @@ impl App {
             }
         }
     }
+}
+
+/// Does applying `app_event` change which layer sees the next key?
+///
+/// Only overlay changes do, and they are the reason [`App::queue_or_apply`]
+/// exists: an overlay opened or closed a queue-iteration late would let an
+/// already-typed key reach the wrong layer.
+fn changes_key_routing(app_event: &AppEvent) -> bool {
+    matches!(app_event, AppEvent::ToggleHelp | AppEvent::CloseOverlay)
 }
 
 /// Ctrl-C, which raw mode delivers as a key event rather than as a signal.
@@ -468,5 +503,94 @@ fn month_offset(date: Date, offset: i32) -> Result<Date> {
                 .replace_month(boundary_month)
                 .context("replace_month at year boundary")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::testing::{fixture_date, fixture_day};
+    use ratatui::crossterm::event::KeyCode;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn day_app() -> App {
+        App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(fixture_day())
+    }
+
+    fn selection(app: &App) -> Option<usize> {
+        app.project_list_widget.as_ref()?.selected_item()
+    }
+
+    /// Keys and application events share one channel, so a second key the
+    /// user has already typed is queued ahead of anything the first emitted.
+    /// An overlay that only opened once the queue drained would let that
+    /// second key through to the view behind the popup.
+    #[test]
+    fn a_key_typed_straight_after_the_help_key_lands_on_the_popup() {
+        let mut app = day_app();
+
+        app.handle_key_events(key('?')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(app.overlay, Some(Overlay::Help));
+        assert_eq!(
+            selection(&app),
+            Some(0),
+            "j must not move the list behind the popup"
+        );
+    }
+
+    /// The other half of the same rule: closing is synchronous too, so the
+    /// next key reaches the view rather than being swallowed by a popup that
+    /// is already gone from the user's point of view.
+    #[test]
+    fn a_key_typed_straight_after_closing_the_popup_reaches_the_view() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+
+        app.handle_key_events(key('q')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert!(app.overlay.is_none());
+        assert_eq!(selection(&app), Some(1));
+    }
+
+    /// The project-list events are only meaningful against a list; a day with
+    /// no data must not panic when one reaches the queue instead of a widget.
+    #[test]
+    fn project_events_are_harmless_when_the_day_has_no_list() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(fixture_date());
+        assert!(app.project_list_widget.is_none());
+
+        for c in ['j', 'k', 'g', 'G'] {
+            app.handle_key_events(key(c)).unwrap();
+        }
+        app.drain_pending_events();
+
+        assert!(app.running);
+        assert_eq!(selection(&app), None);
+    }
+
+    /// `g` and `G` are separate bindings, and crossterm delivers the capital
+    /// with `SHIFT` set — which a table lookup has to tolerate.
+    #[test]
+    fn shifted_g_jumps_to_the_last_project() {
+        let mut app = day_app();
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT))
+            .unwrap();
+        app.drain_pending_events();
+        assert_eq!(selection(&app), Some(2));
+
+        app.handle_key_events(key('g')).unwrap();
+        app.drain_pending_events();
+        assert_eq!(selection(&app), Some(0));
     }
 }

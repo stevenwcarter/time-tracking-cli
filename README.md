@@ -189,14 +189,22 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 
 #### TUI Keybinds
 
-| Keybinds           | Action                                                    |
-| ------------------:| --------------------------------------------------------- |
-| **↓↑** or **j/k**  | select project to copy to clipboard                       |
-| **g/G**            | go to the top or bottom                                   |
-| **r**              | reload data from disk for current date                    |
-| **e**              | edit the current date's notes in $EDITOR                  |
-| **f**              | toggle zooming into the weekly bar chart                  |
-| **Enter**          | copy the notes for the current project to your clipboard. |
+| Keys        | Action                                             |
+| ----------- | -------------------------------------------------- |
+| ↓ / j       | select the next project                            |
+| ↑ / k       | select the previous project                        |
+| g           | jump to the first project                          |
+| G           | jump to the last project                           |
+| Enter       | copy the selected project's notes to the clipboard |
+| ← / h       | go to the previous day                             |
+| → / l       | go to the next day                                 |
+| t / T       | go to today                                        |
+| f           | toggle zooming into the weekly bar chart           |
+| r           | reload the current date from disk                  |
+| e           | edit the current date's notes in $EDITOR           |
+| ?           | show the help popup                                |
+| Esc / q     | quit                                               |
+| ? / Esc / q | close the help popup                               |
 
 ### Example Output
 

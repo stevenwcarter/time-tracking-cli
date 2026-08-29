@@ -1,9 +1,9 @@
-use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use time_tracking_parser::TimeTrackingData;
 
+use super::event::AppEvent;
 use super::mode::Handled;
 use super::theme::Theme;
 
@@ -58,64 +58,44 @@ impl ProjectListWidget {
         }
     }
 
-    /// Handle keyboard events for the project list.
+    /// Apply an event, if it is one this list owns.
     ///
-    /// An empty list owns no keys at all, so `j` and friends fall through to
-    /// the layer behind it rather than being silently eaten.
-    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> Handled {
-        if self.project_list.items.is_empty() {
-            return Handled::Ignored;
+    /// Which key produced `event` is decided by
+    /// [`keymap`](super::keymap) — the list never sees a [`KeyCode`], which
+    /// is what keeps the keymap in one place.
+    ///
+    /// [`KeyCode`]: crossterm::event::KeyCode
+    pub fn apply(&mut self, event: &AppEvent) -> Handled {
+        match event {
+            AppEvent::NextProject => self.next_item(),
+            AppEvent::PreviousProject => self.previous_item(),
+            AppEvent::FirstProject => self.go_to_first(),
+            AppEvent::LastProject => self.go_to_last(),
+            // Task 12 turns this into `Handled::Emit(CopyToClipboard(..))`.
+            AppEvent::CopyNotes => self.copy_selected_notes_to_clipboard(),
+            _ => return Handled::Ignored,
         }
-
-        match key_event.code {
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.next_item();
-                Handled::Consumed
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.previous_item();
-                Handled::Consumed
-            }
-            KeyCode::Char('g') => {
-                self.go_to_first();
-                Handled::Consumed
-            }
-            KeyCode::Char('G') => {
-                self.go_to_last();
-                Handled::Consumed
-            }
-            KeyCode::Enter => {
-                // Task 12 turns this into `Handled::Emit(CopyToClipboard(..))`.
-                self.copy_selected_notes_to_clipboard();
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
-        }
+        Handled::Consumed
     }
 
     fn next_item(&mut self) {
+        let Some(last) = self.project_list.items.len().checked_sub(1) else {
+            return;
+        };
         let i = match self.project_list.state.selected() {
-            Some(i) => {
-                if i >= self.project_list.items.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
+            Some(i) if i < last => i + 1,
+            _ => 0,
         };
         self.project_list.state.select(Some(i));
     }
 
     fn previous_item(&mut self) {
+        let Some(last) = self.project_list.items.len().checked_sub(1) else {
+            return;
+        };
         let i = match self.project_list.state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.project_list.items.len() - 1
-                } else {
-                    i - 1
-                }
-            }
+            Some(i) if i > 0 => i - 1,
+            Some(_) => last,
             None => 0,
         };
         self.project_list.state.select(Some(i));
