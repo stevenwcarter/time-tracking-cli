@@ -1,12 +1,17 @@
 //! Runtime smoke tests that verify behavior which is invisible to clippy/fmt.
 //! E.g., graceful shutdown mechanics, process lifecycle.
 
-#[cfg(feature = "webapp")]
+#[cfg(all(feature = "webapp", not(feature = "tui")))]
 #[test]
-fn webapp_only_server_stays_running() {
-    use std::process::Command;
+fn webapp_only_server_shutdown_channel_stays_alive() {
+    use std::net::TcpStream;
+    use std::process::{Command, Stdio};
     use std::thread;
     use std::time::Duration;
+
+    // Use a tempdir for data, not the real data directory.
+    // This prevents the test from touching ~/.time-tracking/.
+    let data_dir = tempfile::tempdir().expect("failed to create temp dir");
 
     // Find an available port by binding to port 0 (OS assigns ephemeral port)
     let listener =
@@ -17,30 +22,42 @@ fn webapp_only_server_stays_running() {
         .port();
     drop(listener); // Release the port for the server to use
 
-    // Spawn ttcli with --serve and --port, capturing output
+    // Spawn ttcli with --serve, --port, --noedit (prevents editor hang),
+    // and --data-directory (prevents touching real data).
+    // If the oneshot sender is dropped immediately (bare `_` bug), the server
+    // will shut down within ~0.8ms and stop accepting connections.
     let mut child = Command::new(env!("CARGO_BIN_EXE_ttcli"))
-        .args(["--serve", "--port"])
-        .arg(port.to_string())
-        .env("RUST_LOG", "info")
+        .args([
+            "--serve",
+            "--port",
+            &port.to_string(),
+            "--noedit",
+            "--data-directory",
+        ])
+        .arg(data_dir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .expect("failed to spawn ttcli");
 
-    // Give the server time to start and (crucially) NOT shut down immediately.
-    // If the sender drops early (bare `_` bug), the server will shut down within ~0.8ms.
-    // 1.5 seconds is far longer than needed to detect that regression.
-    thread::sleep(Duration::from_millis(1500));
+    // Give the server time to start listening on the port.
+    // If the shutdown signal fires immediately (the bug), the port will close
+    // before we can connect. The delay here is longer than the ~0.8ms bug symptom.
+    thread::sleep(Duration::from_millis(500));
 
-    // Check that the process is still alive.
-    // try_wait() returns Ok(None) if the process is still running.
-    let status = child
-        .try_wait()
-        .expect("failed to call try_wait on child process");
-    assert!(
-        status.is_none(),
-        "ttcli --serve exited prematurely; the graceful shutdown signal is being sent too early"
-    );
+    // Probe the port: try to connect. If the connection succeeds, the server
+    // is accepting connections and the shutdown channel is still alive.
+    // If the shutdown fired immediately, the server closed the listener and
+    // connection will fail.
+    let server_is_alive = TcpStream::connect(("127.0.0.1", port)).is_ok();
 
-    // Clean up: kill the process.
+    // Kill the process. kill() signals the direct child; --noedit ensures
+    // no editor subprocess is spawned, so there's nothing to orphan.
     let _ = child.kill();
     let _ = child.wait();
+
+    assert!(
+        server_is_alive,
+        "server did not accept connections; the graceful shutdown channel was closed too early"
+    );
 }
