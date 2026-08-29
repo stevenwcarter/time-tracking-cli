@@ -14,6 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::data_svc::{WeeklyProject, WeeklySummary};
 
+use super::band;
 use super::event::AppEvent;
 use super::mode::Handled;
 use super::theme::Theme;
@@ -37,14 +38,14 @@ const HIGHLIGHT_COLS: u16 = HIGHLIGHT_SYMBOL.len() as u16;
 /// week.
 const NO_DEAD_TIME: &str = "None";
 
-/// Rows the warnings block may claim before it starts crowding out the
-/// hours the pane exists to show — a title plus four warnings.
-///
-/// A week can produce a warning per bad entry per day, so this is capped
-/// rather than left to grow: the block's job here is to stop a reader
-/// trusting a total that was parsed out of a malformed file, which the
-/// count in the title does even when the individual lines don't fit.
-const MAX_WARNING_ROWS: usize = 5;
+/// Rows the list keeps for itself whatever the warnings block asks for: its
+/// own title bar plus one project row. Paired with [`HEADER_ROWS`] as the
+/// floor passed to [`band::fit_band`] — see that module for why a band that
+/// grows with the file has to be told what it may not take.
+const MIN_LIST_ROWS: u16 = 2;
+
+/// Columns the warnings block hangs its entries under the count by.
+const WARNING_INDENT: &str = "  ";
 
 /// The week's projects, biggest first, with the week's totals above them.
 ///
@@ -139,39 +140,13 @@ impl<'a> WeekListWidget<'a> {
     /// day-level warnings were otherwise reachable only by visiting all
     /// seven days one at a time.
     ///
-    /// Capped at [`MAX_WARNING_ROWS`]; the title carries the full count, so
-    /// a week too badly parsed to list is still unmistakably flagged
-    /// without the block eating the hours above it.
+    /// Capped at [`band::MAX_WARNING_ROWS`]; the title carries the full
+    /// count, so a week too badly parsed to list is still unmistakably
+    /// flagged without the block eating the hours above it.
     ///
     /// [`ProjectListWidget`]: super::project_list::ProjectListWidget
     fn warning_lines(&self) -> Vec<Line<'static>> {
-        let warnings = &self.summary.warnings;
-        if warnings.is_empty() {
-            return Vec::new();
-        }
-
-        // The title always costs a row. Whatever is left goes to warnings,
-        // except that overflowing costs one more row to say so — so the
-        // block is never taller than the cap either way.
-        let budget = MAX_WARNING_ROWS - 1;
-        let shown = if warnings.len() <= budget {
-            warnings.len()
-        } else {
-            budget - 1
-        };
-
-        let styled = |text: String| Line::styled(text, self.theme.error);
-        let mut lines = vec![styled(format!("Warnings ({})", warnings.len()))];
-        lines.extend(
-            warnings
-                .iter()
-                .take(shown)
-                .map(|warning| styled(format!("  {warning}"))),
-        );
-        if let Some(hidden) = warnings.len().checked_sub(shown).filter(|n| *n > 0) {
-            lines.push(styled(format!("  … and {hidden} more")));
-        }
-        lines
+        band::warning_lines(&self.summary.warnings, self.theme.error, WARNING_INDENT)
     }
 }
 
@@ -188,7 +163,16 @@ impl StatefulWidget for WeekListWidget<'_> {
         // way `ProjectListWidget` threads its working-time rows, so the two
         // can never disagree about how many rows the block took.
         let warnings = self.warning_lines();
-        let warning_rows = u16::try_from(warnings.len()).unwrap_or(u16::MAX);
+        // The same rule the day pane applies to its header band, on the
+        // week's other axis: two `Length`s in one layout have equal claim,
+        // so a one-row warnings block was winning the last row off a
+        // two-row totals header and the pane's whole reason to exist —
+        // the hours — went with it. The block yields instead.
+        let warning_rows = band::fit_band(
+            u16::try_from(warnings.len()).unwrap_or(u16::MAX),
+            area.height,
+            HEADER_ROWS + MIN_LIST_ROWS,
+        );
         let [header_area, list_area, warning_area] = Layout::vertical([
             Constraint::Length(HEADER_ROWS),
             Constraint::Fill(1),
@@ -788,6 +772,28 @@ mod tests {
         assert!(!screen.contains("Warnings"), "got:\n{screen}");
     }
 
+    /// The week axis of the day pane's blank-list defect, and the same fix.
+    /// `Length(HEADER_ROWS)` and `Length(warning_rows)` have equal claim on
+    /// the pane, so on a short terminal the one-row warnings block took the
+    /// last row and the two numbers this pane exists to show went with it —
+    /// at 80x4 the only thing left on screen was `Warnings (1)`. The block
+    /// yields to the totals now, however short the terminal gets.
+    #[tokio::test]
+    async fn the_weeks_totals_outrank_its_warnings_block_on_a_short_terminal() {
+        for height in [4, 6, 8, 10] {
+            let mut app = App::new(TuiContext::for_test())
+                .with_active_date(fixture_date())
+                .with_weekly_summary(fixture_week_summary());
+            app.mode = Mode::Week;
+            let screen = render_to_string(&mut app, 80, height);
+
+            assert!(
+                screen.contains("Working Time"),
+                "80x{height} lost the week's hours to its warnings block:\n{screen}"
+            );
+        }
+    }
+
     /// A badly parsed week must not push the hours off the pane. The count
     /// in the title is what keeps the flag honest when the lines don't fit.
     #[tokio::test]
@@ -798,7 +804,7 @@ mod tests {
             ..fixture_week_summary()
         };
         let rows = WeekListWidget::new(&summary, &Theme::none()).warning_lines();
-        assert_eq!(rows.len(), MAX_WARNING_ROWS, "the cap must hold");
+        assert_eq!(rows.len(), band::MAX_WARNING_ROWS, "the cap must hold");
 
         let mut app = App::new(TuiContext::for_test())
             .with_active_date(fixture_date())
@@ -817,7 +823,7 @@ mod tests {
     /// one being traded for a "… and 1 more" that costs the same row.
     #[test]
     fn a_week_that_fits_the_budget_lists_every_warning() {
-        let warnings: Vec<String> = (0..MAX_WARNING_ROWS - 1)
+        let warnings: Vec<String> = (0..band::MAX_WARNING_ROWS - 1)
             .map(|i| format!("Mon: bad entry {i}"))
             .collect();
         let summary = WeeklySummary {
@@ -825,7 +831,7 @@ mod tests {
             ..fixture_week_summary()
         };
         let rows = WeekListWidget::new(&summary, &Theme::none()).warning_lines();
-        assert_eq!(rows.len(), MAX_WARNING_ROWS);
+        assert_eq!(rows.len(), band::MAX_WARNING_ROWS);
         assert!(
             !format!("{rows:?}").contains("more"),
             "nothing was left off, so nothing should say so"

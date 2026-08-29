@@ -3,6 +3,7 @@ use anyhow::Result;
 use crate::Config;
 
 pub mod app;
+mod band;
 pub mod context;
 pub mod event;
 pub mod keymap;

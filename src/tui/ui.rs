@@ -9,6 +9,7 @@ use crate::{DATE_FORMAT, time_utils::WeekdayExt};
 
 use super::app::{App, DayPane, EmptyReason, LOADING_MESSAGE, WeekPane};
 use super::mode::{Mode, Overlay};
+use super::project_list::MIN_ROWS_FOR_TWO_PROJECTS;
 use super::theme::Theme;
 use super::week_list::WeekListWidget;
 use super::widgets::HelpPopup;
@@ -26,8 +27,26 @@ pub(crate) const MIN_COLS: u16 = 60;
 /// Load-bearing, same as [`MIN_COLS`].
 pub(crate) const MIN_ROWS: u16 = 15;
 
+/// Rows the calendar/chart band claims in the day view when it is drawn at
+/// all. Fixed: the calendar is six week rows plus its month and weekday
+/// headers, and the chart is sized to sit beside it.
+const HEADER_BAND_ROWS: u16 = 12;
+
+/// Rows the day pane's border costs, top and bottom.
+const PANE_BORDER_ROWS: u16 = 2;
+
 /// Below this many rows the calendar/chart header stops earning its space.
-const COMPACT_ROWS: u16 = 22;
+///
+/// Derived rather than chosen, because choosing it is how this went wrong:
+/// at 22 the band cost 12 of the terminal's rows and left the project list
+/// below it too short to draw a single project, so dragging a window from
+/// 21 rows to 22 made the day's work *disappear*. The band earns its rows
+/// only once the list beneath it can still show real work — two whole
+/// projects — so that is what the number says.
+const COMPACT_ROWS: u16 = 1 // App's status line, outside the day view entirely
+    + HEADER_BAND_ROWS
+    + PANE_BORDER_ROWS
+    + MIN_ROWS_FOR_TWO_PROJECTS;
 
 /// Below this many columns the calendar no longer fits next to the chart.
 const NARROW_COLS: u16 = 100;
@@ -454,7 +473,8 @@ mod tests {
     use super::*;
     use crate::tui::context::TuiContext;
     use crate::tui::testing::{
-        fixture_date, fixture_day, fixture_day_with_projects, render_to_string,
+        fixture_date, fixture_day, fixture_day_with_notes, fixture_day_with_projects,
+        render_to_string,
     };
     use crate::tui::week_list::fixture_week_summary;
 
@@ -577,6 +597,82 @@ mod tests {
             listed >= 3,
             "the collapsed chart band must give the list room:\n{screen}"
         );
+    }
+
+    /// Regression: the chart band's `Length(12)` plus an uncapped warnings
+    /// header can starve the list below ratatui's "an item taller than the
+    /// viewport renders nothing" threshold, blanking the pane entirely.
+    ///
+    /// Three separate triggers, one root cause, and all three sit at sizes a
+    /// user actually has: 80x22 showed *less* than 80x21, and 80x24 — the
+    /// most common terminal size there is — was emptied by a single parser
+    /// warning or by a fourth note on the day's only project.
+    #[tokio::test]
+    async fn the_project_list_survives_the_sizes_a_user_actually_has() {
+        // (a) one row over `COMPACT_ROWS` must not show *less* than one row
+        // under it: the layout has to be monotonic in height.
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, 80, 22);
+        assert!(
+            screen.contains("admin"),
+            "80x22 lost the whole list:\n{screen}"
+        );
+
+        // (b) a single parser warning must not cost the entire list.
+        let mut data = fixture_day();
+        data.warnings = vec!["Error parsing time range '9-'".to_owned()];
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(data);
+        let screen = render_to_string(&mut app, 80, 24);
+        assert!(
+            screen.contains("admin"),
+            "one warning blanked the list:\n{screen}"
+        );
+
+        // (c) a project with four notes is an ordinary day, not an overflow.
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(fixture_day_with_notes("solo", 4));
+        let screen = render_to_string(&mut app, 80, 24);
+        assert!(
+            screen.contains("solo"),
+            "a 4-note project blanked the list:\n{screen}"
+        );
+    }
+
+    /// Pins what [`COMPACT_ROWS`] is derived from, rather than the number
+    /// it currently works out to: wherever the calendar/chart band is drawn,
+    /// the pane below it must still afford its whole header *and* two
+    /// projects. A band that costs more than it leaves behind is a band that
+    /// should have collapsed — which is exactly what a hand-picked
+    /// `COMPACT_ROWS = 22` did, turning a window drag from 21 rows to 22
+    /// into a day's work disappearing.
+    #[tokio::test]
+    async fn wherever_the_band_is_drawn_the_list_still_shows_two_projects() {
+        for height in COMPACT_ROWS..=COMPACT_ROWS + 4 {
+            let mut app = day_app();
+            let screen = render_to_string(&mut app, 80, height);
+
+            // Without this the loop would pass vacuously if the band ever
+            // stopped being drawn at its own threshold.
+            assert!(
+                screen.contains("tt-tui"),
+                "80x{height} is at or above COMPACT_ROWS, so the band is drawn:\n{screen}"
+            );
+            assert!(
+                screen.contains("Working Time"),
+                "80x{height} clipped the header the band was preferred over:\n{screen}"
+            );
+            let visible = ["admin", "client-bd", "internal"]
+                .iter()
+                .filter(|name| screen.contains(**name))
+                .count();
+            assert!(
+                visible >= 2,
+                "80x{height} shows {visible} projects under the band:\n{screen}"
+            );
+        }
     }
 
     /// Cheap insurance: ratatui panics on some zero-width layout arithmetic,

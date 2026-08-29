@@ -83,6 +83,27 @@ pub fn fixture_day_with_projects(n: usize) -> TimeTrackingData {
     }
 }
 
+/// A day with one project carrying `n` notes.
+///
+/// A `ListItem` in the project pane is one row per note plus its header row,
+/// so this is the knob that makes a single item taller than the list's
+/// viewport — the shape ratatui 0.29 renders as *nothing at all* rather than
+/// as a clipped row. Four notes on one project is an ordinary day.
+pub fn fixture_day_with_notes(name: &str, n: usize) -> TimeTrackingData {
+    TimeTrackingData {
+        total_minutes: 480,
+        dead_time_minutes: 0,
+        projects: vec![ProjectSummary {
+            name: name.to_owned(),
+            total_minutes: 480,
+            notes: (0..n).map(|i| format!("note {i}")).collect(),
+        }],
+        warnings: Vec::new(),
+        start_time: Some(time_at(9, 0)),
+        end_time: Some(time_at(5, 0)),
+    }
+}
+
 fn project(name: &str, total_minutes: u32, notes: [impl Into<String>; 2]) -> ProjectSummary {
     ProjectSummary {
         name: name.to_owned(),

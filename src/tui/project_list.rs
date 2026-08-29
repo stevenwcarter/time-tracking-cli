@@ -8,6 +8,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use time_tracking_parser::TimeTrackingData;
 
+use super::band;
 use super::event::AppEvent;
 use super::mode::Handled;
 use super::theme::Theme;
@@ -32,6 +33,43 @@ const DEAD_TIME_ERROR_THRESHOLD_MINUTES: u32 = 90;
 /// header's busiest row, used both to build the shared-row line and to
 /// measure whether it fits — one literal, so the two can never drift apart.
 const WORKING_DEAD_SEPARATOR: &str = "    ";
+
+/// The row the list's own `Borders::TOP` title bar costs, outside the
+/// viewport its items are laid out in.
+const LIST_TITLE_ROWS: u16 = 1;
+
+/// A typical list item's height: a project's header line and two notes.
+const TYPICAL_ITEM_ROWS: u16 = 3;
+
+/// The header's height on a clean day: the start/end block plus a single
+/// working-time row, with no dead time and no warnings to pay for.
+const CLEAN_HEADER_ROWS: u16 = 4;
+
+/// Rows the list keeps for itself however tall the header above it wants to
+/// be: its title bar plus one whole item.
+///
+/// The floor handed to [`band::fit_band`] — see that module for why the
+/// header is the part that yields. Paired with [`clamp_item_rows`]: the
+/// floor guarantees the list *has* a viewport, and the clamp guarantees the
+/// first item fits inside it, which is what ratatui 0.29 needs before it
+/// will draw any item at all.
+const LIST_FLOOR_ROWS: u16 = LIST_TITLE_ROWS + TYPICAL_ITEM_ROWS;
+
+/// The inner height at which this pane can show two whole projects on a
+/// clean day.
+///
+/// Exported for [`ui`](super::ui)'s `COMPACT_ROWS`, which is what decides
+/// whether the calendar/chart band above the pane is drawn at all: the band
+/// is worth its twelve rows only when the pane below it still has this many.
+/// Keeping the threshold derived from the pane's own measurements is the
+/// point — the blank-list bug was a hand-picked `COMPACT_ROWS` that had
+/// silently fallen below the band's own cost.
+pub(super) const MIN_ROWS_FOR_TWO_PROJECTS: u16 =
+    CLEAN_HEADER_ROWS + LIST_TITLE_ROWS + 2 * TYPICAL_ITEM_ROWS;
+
+/// Stands in for the notes a clamped item could not show. Indented to line
+/// up under the bullets it replaces.
+const OVERFLOW_MARKER_INDENT: &str = "   ";
 
 #[derive(Debug)]
 pub struct ProjectListWidget {
@@ -273,38 +311,79 @@ impl Widget for &mut ProjectListWidget {
         // render itself so the two can never disagree about how many rows
         // it took.
         let working_time_lines = self.working_time_lines(area.width);
-        let [header_area, main_area] = Layout::vertical([
-            Constraint::Length(self.header_height(&working_time_lines)),
-            Constraint::Fill(1),
-        ])
-        .areas(area);
+        let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
+        // The header is a `Length` against the list's `Fill(1)`, so it wins
+        // every tie and used to win the list's last row outright — see
+        // `band` for the whole failure. It yields to the list's floor here.
+        let header_rows = band::fit_band(
+            header_height(&working_time_lines, &warning_lines),
+            area.height,
+            LIST_FLOOR_ROWS,
+        );
+        let [header_area, main_area] =
+            Layout::vertical([Constraint::Length(header_rows), Constraint::Fill(1)]).areas(area);
 
-        self.render_header(header_area, working_time_lines, buf);
+        self.render_header(header_area, working_time_lines, warning_lines, buf);
         self.render_list(main_area, buf);
     }
 }
 
-impl ProjectListWidget {
-    /// Rows the header needs given the already-measured
-    /// `working_time_lines` ([`working_time_lines`](Self::working_time_lines)):
-    /// three for the start/end block, which is always present, plus however
-    /// many rows the working/dead-time row took, plus a blank separator and
-    /// one row per warning when there are any. A clean day on a
-    /// wide-enough terminal — no dead time, no warnings — never pays for a
-    /// block it doesn't show, so the list below keeps every row it had
-    /// before this feature existed.
-    fn header_height(&self, working_time_lines: &[Line<'static>]) -> u16 {
-        const FIXED_ROWS: u16 = 3;
-        let working_rows = u16::try_from(working_time_lines.len()).unwrap_or(u16::MAX);
-        let warning_rows = if self.warnings.is_empty() {
-            0
-        } else {
-            1 + u16::try_from(self.warnings.len()).unwrap_or(u16::MAX)
-        };
-        FIXED_ROWS + working_rows + warning_rows
+/// Rows the header needs given its already-measured `working_time_lines`
+/// ([`working_time_lines`](ProjectListWidget::working_time_lines)) and
+/// `warning_lines` ([`band::warning_lines`]): three for the start/end block,
+/// which is always present, plus however many rows the working/dead-time row
+/// took, plus a blank separator and the warnings block when the day has any.
+///
+/// A clean day on a wide-enough terminal — no dead time, no warnings — never
+/// pays for a block it doesn't show, so the list below keeps every row it
+/// had before either feature existed.
+fn header_height(working_time_lines: &[Line<'static>], warning_lines: &[Line<'static>]) -> u16 {
+    const FIXED_ROWS: u16 = 3;
+    let rows = |lines: &[Line<'static>]| u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let warning_rows = if warning_lines.is_empty() {
+        0
+    } else {
+        1 + rows(warning_lines)
+    };
+    FIXED_ROWS + rows(working_time_lines) + warning_rows
+}
+
+/// `body` cut down to at most `max_rows` rows, the notes that were dropped
+/// replaced by a line counting them.
+///
+/// This is the amplifier in the blank-pane failure, defused at its source:
+/// ratatui 0.29's `List` walks its items until one does not fit and then
+/// stops, so when the *first* item is taller than the viewport it draws
+/// **zero** items rather than a clipped one — a whole day's work vanishing
+/// because a project picked up a fourth note. Handing the list nothing
+/// taller than its viewport turns that cliff into a gradual degradation.
+fn clamp_item_rows(mut body: Text<'static>, max_rows: u16) -> Text<'static> {
+    let max_rows = usize::from(max_rows.max(1));
+    if body.lines.len() <= max_rows {
+        return body;
     }
 
-    fn render_header(&self, area: Rect, working_time_lines: Vec<Line<'static>>, buf: &mut Buffer) {
+    // At one row only the project's own header line fits, and it is the row
+    // worth keeping: it carries the name and the hours.
+    let kept = max_rows.saturating_sub(1).max(1);
+    let hidden = body.lines.len() - kept;
+    body.lines.truncate(kept);
+    if max_rows > 1 {
+        body.lines.push(Line::from(format!(
+            "{OVERFLOW_MARKER_INDENT}… +{hidden} more"
+        )));
+    }
+    body
+}
+
+impl ProjectListWidget {
+    fn render_header(
+        &self,
+        area: Rect,
+        working_time_lines: Vec<Line<'static>>,
+        warning_lines: Vec<Line<'static>>,
+        buf: &mut Buffer,
+    ) {
         let mut lines = vec![
             Line::from(format!("Start Time: {}", self.start_time)),
             Line::from(format!("  End Time: {}", self.end_time)),
@@ -312,13 +391,9 @@ impl ProjectListWidget {
         ];
         lines.extend(working_time_lines);
 
-        if !self.warnings.is_empty() {
+        if !warning_lines.is_empty() {
             lines.push(Line::from(""));
-            lines.extend(
-                self.warnings
-                    .iter()
-                    .map(|warning| Line::styled(warning.clone(), self.theme.error)),
-            );
+            lines.extend(warning_lines);
         }
 
         Paragraph::new(lines).bold().centered().render(area, buf);
@@ -369,14 +444,18 @@ impl ProjectListWidget {
             .border_style(self.theme.list_header);
 
         let body_width = area.width.saturating_sub(4);
+        let viewport_rows = area.height.saturating_sub(LIST_TITLE_ROWS);
         let items: Vec<ListItem> = self
             .project_list
             .items
             .iter()
             .enumerate()
             .map(|(i, project_item)| {
-                ListItem::new(project_item.body(body_width))
-                    .style(alternate_row_style(&self.theme, i))
+                ListItem::new(clamp_item_rows(
+                    project_item.body(body_width),
+                    viewport_rows,
+                ))
+                .style(alternate_row_style(&self.theme, i))
             })
             .collect();
 
@@ -523,7 +602,8 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
     use crate::tui::context::TuiContext;
-    use crate::tui::testing::{fixture_day, render_to_string};
+    use crate::tui::testing::{fixture_day, fixture_day_with_notes, render_to_string};
+    use crate::tui::ui::MIN_ROWS;
 
     #[test]
     fn pads_by_display_width_not_char_count() {
@@ -672,6 +752,62 @@ mod tests {
         assert!(
             screen.contains("Error parsing time range"),
             "got:\n{screen}"
+        );
+    }
+
+    /// The header-band half of the blank-list failure, pinned at the size
+    /// the app advertises as its floor. The day's warnings block used to
+    /// grow a row per warning, uncapped, against a `Fill(1)` list that
+    /// cannot outrank a `Length` — five warnings at 60x15 left the list a
+    /// two-row viewport, which ratatui draws as nothing at all.
+    ///
+    /// All three assertions are load-bearing and pin different seams: the
+    /// count pins [`band::warning_lines`]'s cap, `admin` pins
+    /// [`clamp_item_rows`], and the *note* pins [`band::fit_band`]'s floor —
+    /// without the floor the list is left a one-row viewport, which shows a
+    /// project's name and none of its work. Removing any one of the three
+    /// fails exactly its own assertion.
+    #[tokio::test]
+    async fn a_flood_of_warnings_is_capped_and_counted_without_costing_the_list() {
+        let mut data = fixture_day();
+        data.warnings = (0..5).map(|i| format!("bad entry {i}")).collect();
+        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let screen = render_to_string(&mut app, 80, MIN_ROWS);
+
+        assert!(
+            screen.contains("Warnings (5)"),
+            "a capped block still has to carry the full count:\n{screen}"
+        );
+        assert!(
+            screen.contains("admin"),
+            "the warnings block must not cost the day its project list:\n{screen}"
+        );
+        assert!(
+            screen.contains("standup"),
+            "the list's floor is a whole project, not a one-line stub:\n{screen}"
+        );
+    }
+
+    /// The other half: ratatui 0.29 draws *zero* items when the first is
+    /// taller than the viewport, so a project with more notes than the pane
+    /// has rows used to blank the whole list rather than clip one item.
+    #[tokio::test]
+    async fn a_project_with_more_notes_than_the_pane_still_renders() {
+        let mut app =
+            App::new(TuiContext::for_test()).with_data(fixture_day_with_notes("solo", 40));
+        let screen = render_to_string(&mut app, 80, 24);
+
+        assert!(
+            screen.contains("solo"),
+            "an over-tall item must clip, not vanish:\n{screen}"
+        );
+        assert!(
+            screen.contains("note 0"),
+            "the notes that do fit must still be shown:\n{screen}"
+        );
+        assert!(
+            screen.contains("… +"),
+            "the notes that don't fit must be counted, not silently dropped:\n{screen}"
         );
     }
 
