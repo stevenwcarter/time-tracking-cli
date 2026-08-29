@@ -5,6 +5,7 @@ use crate::Config;
 pub mod app;
 pub mod context;
 pub mod event;
+pub mod mode;
 pub mod project_list;
 pub mod theme;
 pub mod ui;

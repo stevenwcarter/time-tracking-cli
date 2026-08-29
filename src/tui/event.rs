@@ -30,7 +30,7 @@ pub enum Event {
 /// Application events.
 ///
 /// You can extend this enum with your own custom events.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
     /// Toggle the help popup
     ToggleHelp,
@@ -115,6 +115,16 @@ impl EventHandler {
         // Ignore the result as the reciever cannot be dropped while this struct still has a
         // reference to it
         let _ = self.sender.send(Event::App(app_event));
+    }
+
+    /// Pop an already-queued event without awaiting, or `None` when the queue
+    /// is empty.
+    ///
+    /// Lets a test drive the app by hand — send a key, then drain whatever it
+    /// queued — without standing up the event loop.
+    #[cfg(test)]
+    pub fn try_next(&mut self) -> Option<Event> {
+        self.receiver.try_recv().ok()
     }
 
     /// Pause event polling (for editor sessions)

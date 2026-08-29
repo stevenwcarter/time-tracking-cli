@@ -4,6 +4,7 @@ use ratatui::widgets::*;
 
 use time_tracking_parser::TimeTrackingData;
 
+use super::mode::Handled;
 use super::theme::Theme;
 
 #[derive(Debug)]
@@ -57,34 +58,38 @@ impl ProjectListWidget {
         }
     }
 
-    /// Handle keyboard events for the project list
-    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> bool {
+    /// Handle keyboard events for the project list.
+    ///
+    /// An empty list owns no keys at all, so `j` and friends fall through to
+    /// the layer behind it rather than being silently eaten.
+    pub fn handle_key_event(&mut self, key_event: KeyEvent) -> Handled {
         if self.project_list.items.is_empty() {
-            return false;
+            return Handled::Ignored;
         }
 
         match key_event.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.next_item();
-                true
+                Handled::Consumed
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.previous_item();
-                true
+                Handled::Consumed
             }
             KeyCode::Char('g') => {
                 self.go_to_first();
-                true
+                Handled::Consumed
             }
             KeyCode::Char('G') => {
                 self.go_to_last();
-                true
+                Handled::Consumed
             }
             KeyCode::Enter => {
+                // Task 12 turns this into `Handled::Emit(CopyToClipboard(..))`.
                 self.copy_selected_notes_to_clipboard();
-                true
+                Handled::Consumed
             }
-            _ => false,
+            _ => Handled::Ignored,
         }
     }
 

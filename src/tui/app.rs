@@ -6,6 +6,7 @@ use crate::{DataService, editor::open_in_editor};
 use super::{
     context::TuiContext,
     event::{AppEvent, Event, EventHandler},
+    mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
 };
 use anyhow::{Context, Result};
@@ -25,10 +26,13 @@ use time_tracking_parser::TimeTrackingData;
 pub struct App {
     /// Is the application running?
     pub running: bool,
-    /// Is the application zoomed into the bar chart
-    pub zoom_bar: bool,
-    /// Is help popup currently being shown
-    pub show_help: bool,
+    /// The view currently filling the screen.
+    pub mode: Mode,
+    /// The modal layer drawn over `mode`, if any.
+    ///
+    /// While this is `Some` the overlay is the only layer that sees a key;
+    /// see [`App::handle_key_events`].
+    pub overlay: Option<Overlay>,
     /// Is a load of the active date's data currently in flight
     pub loading: bool,
     /// Current active date
@@ -70,8 +74,8 @@ impl App {
         );
         Self {
             running: true,
-            zoom_bar: false,
-            show_help: false,
+            mode: Mode::Day,
+            overlay: None,
             loading: false,
             active_date,
             week_dates,
@@ -155,6 +159,10 @@ impl App {
         Ok(())
     }
 
+    /// Apply `app_event`, awaiting the two events that need to.
+    ///
+    /// Everything else is delegated to [`App::apply_sync_event`], which is the
+    /// single place application state changes in response to an event.
     pub async fn handle_app_event(
         &mut self,
         app_event: AppEvent,
@@ -164,34 +172,71 @@ impl App {
             AppEvent::ReloadFromDisk => {
                 self.load_data_for_active_date().await?;
             }
-            AppEvent::ToggleZoomBar => {
-                self.toggle_zoom_bar();
-            }
             AppEvent::Edit => {
                 self.run_editor(terminal).await?;
                 self.events.send(AppEvent::ReloadFromDisk);
             }
-            AppEvent::Today => {
-                self.active_date = today();
-                self.events.send(AppEvent::ReloadFromDisk);
-            }
-            AppEvent::ToggleHelp => self.show_help = !self.show_help,
-            AppEvent::NextDate => {
-                self.active_date = self.active_date.next_day().unwrap_or(self.active_date);
-                self.events.send(AppEvent::ReloadFromDisk);
-            }
-            AppEvent::PreviousDate => {
-                self.active_date = self.active_date.previous_day().unwrap_or(self.active_date);
-                self.events.send(AppEvent::ReloadFromDisk);
-            }
-            AppEvent::Quit => self.quit(),
+            sync_event => self.apply_sync_event(sync_event),
         }
 
         Ok(())
     }
 
-    pub fn toggle_zoom_bar(&mut self) {
-        self.zoom_bar = !self.zoom_bar;
+    /// The part of event handling that does not await.
+    ///
+    /// Keeping it separate from [`App::handle_app_event`] is what lets a test
+    /// send a key and then assert on the resulting state without standing up
+    /// the terminal or the event loop; see `App::drain_pending_events`.
+    pub fn apply_sync_event(&mut self, app_event: AppEvent) {
+        match app_event {
+            AppEvent::ToggleZoomBar => self.toggle_zoom_bar(),
+            AppEvent::ToggleHelp => self.toggle_help(),
+            AppEvent::Today => self.go_to_date(today()),
+            AppEvent::NextDate => {
+                self.go_to_date(self.active_date.next_day().unwrap_or(self.active_date));
+            }
+            AppEvent::PreviousDate => {
+                self.go_to_date(self.active_date.previous_day().unwrap_or(self.active_date));
+            }
+            AppEvent::Quit => self.quit(),
+            // Both await; `handle_app_event` owns them.
+            AppEvent::ReloadFromDisk | AppEvent::Edit => {}
+        }
+    }
+
+    /// Drain everything already queued through [`App::apply_sync_event`].
+    #[cfg(test)]
+    pub fn drain_pending_events(&mut self) {
+        while let Some(event) = self.events.try_next() {
+            if let Event::App(app_event) = event {
+                self.apply_sync_event(app_event);
+            }
+        }
+    }
+
+    /// Open the active date's week full screen, or go back to the day view.
+    fn toggle_zoom_bar(&mut self) {
+        self.mode = if self.mode == Mode::ZoomedWeek {
+            Mode::Day
+        } else {
+            Mode::ZoomedWeek
+        };
+    }
+
+    /// Show the help popup, or dismiss it if it is already up.
+    fn toggle_help(&mut self) {
+        self.overlay = if self.overlay == Some(Overlay::Help) {
+            None
+        } else {
+            Some(Overlay::Help)
+        };
+    }
+
+    /// Move to `date` and queue a reload of its data.
+    fn go_to_date(&mut self, date: Date) {
+        self.active_date = date;
+        self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
+        self.events.send(AppEvent::ReloadFromDisk);
     }
 
     pub async fn run_editor(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -260,22 +305,87 @@ impl App {
         Ok(())
     }
 
-    /// Handles the key events and updates the state of [`App`].
+    /// Offer `key_event` to each key layer in turn, outermost first.
+    ///
+    /// 1. The overlay, when one is open. Overlays are modal, so a key it does
+    ///    not handle is swallowed here rather than falling through to the
+    ///    view it covers.
+    /// 2. The active [`Mode`], which owns the keys belonging to whatever is
+    ///    on screen.
+    /// 3. The global bindings, which mean the same thing everywhere.
     pub fn handle_key_events(&mut self, key_event: KeyEvent) -> Result<()> {
-        // First try to handle project list specific events
-        if let Some(ref mut widget) = self.project_list_widget
-            && widget.handle_key_event(key_event)
-        {
-            // Event was handled by the widget, return early
+        if self.overlay.is_some() {
+            if let Handled::Emit(app_event) = self.handle_overlay_key(key_event) {
+                self.events.send(app_event);
+            }
             return Ok(());
         }
 
-        // Handle app-level events
+        match self.handle_mode_key(key_event) {
+            Handled::Consumed => return Ok(()),
+            Handled::Emit(app_event) => {
+                self.events.send(app_event);
+                return Ok(());
+            }
+            Handled::Ignored => {}
+        }
+
+        self.handle_global_key(key_event);
+        Ok(())
+    }
+
+    /// The overlay layer: the only layer that sees a key while one is open.
+    ///
+    /// Returns [`Handled::Ignored`] when there is no overlay, which the caller
+    /// never asks for; every other answer stops the key here.
+    fn handle_overlay_key(&mut self, key_event: KeyEvent) -> Handled {
+        // Raw mode delivers Ctrl-C as a key rather than a signal, so an
+        // overlay that swallowed it would leave the user unable to quit
+        // without first working out how to dismiss the popup.
+        if is_ctrl_c(key_event) {
+            return Handled::Emit(AppEvent::Quit);
+        }
+        match self.overlay {
+            Some(Overlay::Help) => {
+                if matches!(key_event.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
+                    self.overlay = None;
+                }
+                Handled::Consumed
+            }
+            // Task 17 gives the prompt its own editing keys; until then it is
+            // unreachable, and swallowing is the safe answer either way.
+            Some(Overlay::DatePrompt(_)) => Handled::Consumed,
+            None => Handled::Ignored,
+        }
+    }
+
+    /// The mode layer: keys that belong to whatever view is on screen.
+    ///
+    /// Task 5 replaces the body with a lookup into the binding table keyed by
+    /// `(key, self.mode)`; the shape here — one arm per mode, delegating to
+    /// that mode's widget — is what that lookup slots into.
+    fn handle_mode_key(&mut self, key_event: KeyEvent) -> Handled {
+        match self.mode {
+            Mode::Day => match &mut self.project_list_widget {
+                Some(widget) => widget.handle_key_event(key_event),
+                // Nothing to navigate; the key belongs to the layer behind.
+                None => Handled::Ignored,
+            },
+            // Tasks 16 and 20 give these modes keys of their own.
+            Mode::Week | Mode::ZoomedWeek | Mode::RawFile => Handled::Ignored,
+        }
+    }
+
+    /// The global layer: bindings that mean the same thing in every mode.
+    ///
+    /// Task 5 replaces this match with the single binding table.
+    fn handle_global_key(&mut self, key_event: KeyEvent) {
+        if is_ctrl_c(key_event) {
+            self.events.send(AppEvent::Quit);
+            return;
+        }
         match key_event.code {
             KeyCode::Esc | KeyCode::Char('q') => self.events.send(AppEvent::Quit),
-            KeyCode::Char('c' | 'C') if key_event.modifiers == KeyModifiers::CONTROL => {
-                self.events.send(AppEvent::Quit)
-            }
             KeyCode::Char('e') => self.events.send(AppEvent::Edit),
             KeyCode::Char('f') => self.events.send(AppEvent::ToggleZoomBar),
             KeyCode::Char('r') => self.events.send(AppEvent::ReloadFromDisk),
@@ -285,7 +395,6 @@ impl App {
             KeyCode::Char('?') => self.events.send(AppEvent::ToggleHelp),
             _ => {}
         }
-        Ok(())
     }
 
     /// Handles the tick event of the terminal.
@@ -313,6 +422,12 @@ impl App {
             }
         }
     }
+}
+
+/// Ctrl-C, which raw mode delivers as a key event rather than as a signal.
+fn is_ctrl_c(key_event: KeyEvent) -> bool {
+    key_event.modifiers == KeyModifiers::CONTROL
+        && matches!(key_event.code, KeyCode::Char('c' | 'C'))
 }
 
 /// Today's date in the local timezone, falling back to UTC.
