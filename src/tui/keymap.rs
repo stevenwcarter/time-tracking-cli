@@ -42,8 +42,9 @@ impl ModeMask {
     pub const ZOOM: Self = Self(4);
     /// The raw-file view only.
     pub const RAW: Self = Self(8);
-    /// Every mode.
-    pub const ALL: Self = Self(15);
+    /// Every mode. Composed from the bits rather than spelled as a literal
+    /// so a mode added later cannot silently fall out of it.
+    pub const ALL: Self = Self::DAY.or(Self::WEEK).or(Self::ZOOM).or(Self::RAW);
 
     /// The union of two masks, for a binding live in some modes but not all.
     pub const fn or(self, other: Self) -> Self {
@@ -309,12 +310,21 @@ fn column_width<'a>(cells: impl Iterator<Item = &'a str>, heading: &str) -> usiz
 
 /// A key event reduced to what [`BINDINGS`] compares against.
 ///
-/// Crossterm reports an uppercase character with `SHIFT` already set, so `G`
-/// would otherwise never match the `(Char('G'), NONE)` row the table spells
-/// it with.
+/// `SHIFT` is dropped from every [`KeyCode::Char`], because for a character
+/// key the modifier carries nothing the character does not already say: `?`
+/// versus `/`, `:` versus `;`, `G` versus `g`. Crossterm sets the bit
+/// inconsistently across platforms — the Unix parser only sets it when the
+/// character is uppercase, while the Windows parser derives it from
+/// `dwControlKeyState` and so sets it for *any* shifted key — and a table
+/// spelling its rows with [`NONE`] has to match on both. Crossterm itself
+/// clears the bit this way once the shifted character is known (see its
+/// Kitty "report alternate keys" branch).
+///
+/// Modifiers on non-character codes are left alone: `SHIFT` really is the
+/// only thing distinguishing Shift+Up from Up.
 fn normalize(key: KeyEvent) -> Key {
     let mut modifiers = key.modifiers;
-    if matches!(key.code, KeyCode::Char(c) if c.is_uppercase()) {
+    if matches!(key.code, KeyCode::Char(_)) {
         modifiers.remove(KeyModifiers::SHIFT);
     }
     (key.code, modifiers)
@@ -348,9 +358,12 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// Every mode, so a test cannot quietly cover only some of them.
+    const ALL_MODES: [Mode; 4] = [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile];
+
     #[test]
     fn no_duplicate_key_within_a_mode() {
-        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+        for mode in ALL_MODES {
             let mut seen = HashSet::new();
             for b in BINDINGS.iter().filter(|b| b.modes.contains(mode)) {
                 for k in b.keys {
@@ -388,6 +401,91 @@ mod tests {
         );
     }
 
+    /// Every row has to be reachable. A row spelled with a modifier that
+    /// [`normalize`] strips before comparison could never fire, and nothing
+    /// else would notice — six later tasks add rows to this table.
+    #[test]
+    fn every_table_key_survives_normalisation() {
+        for binding in BINDINGS.iter().chain([&CLOSE_OVERLAY]) {
+            for &(code, modifiers) in binding.keys {
+                assert_eq!(
+                    normalize(KeyEvent::new(code, modifiers)),
+                    (code, modifiers),
+                    "{code:?} + {modifiers:?} is unreachable: normalize rewrites it"
+                );
+            }
+        }
+    }
+
+    /// `?` is Shift+`/`, and the Windows parser derives modifiers from
+    /// `dwControlKeyState` rather than from the character, so it arrives with
+    /// `SHIFT` set even though the character is not uppercase. Stripping
+    /// `SHIFT` only for uppercase characters left the help popup unreachable
+    /// on that platform.
+    #[test]
+    fn shifted_punctuation_matches_its_unmodified_row() {
+        let question = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        assert_eq!(
+            lookup(question, Mode::Day).map(|b| &b.event),
+            Some(&AppEvent::ToggleHelp),
+            "? must open the help popup however the platform reports Shift"
+        );
+        assert!(closes_overlay(question), "and must close it again");
+    }
+
+    /// `SHIFT` still means something on a key whose code does not already
+    /// encode it, so it is only dropped for characters.
+    #[test]
+    fn shift_is_kept_on_non_character_keys() {
+        let shift_up = KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT);
+        assert_eq!(normalize(shift_up), (KeyCode::Up, KeyModifiers::SHIFT));
+        assert!(lookup(shift_up, Mode::Day).is_none());
+    }
+
+    /// A typo in `bit` — `Week => DAY`, say — would leak the day-only list
+    /// bindings into the week view with every other test still green.
+    #[test]
+    fn each_mode_bit_selects_exactly_that_mode() {
+        for mode in ALL_MODES {
+            for other in ALL_MODES {
+                assert_eq!(
+                    ModeMask::bit(mode).contains(other),
+                    mode == other,
+                    "{mode:?}'s bit answered wrongly for {other:?}"
+                );
+            }
+            assert!(ModeMask::ALL.contains(mode), "ALL must cover {mode:?}");
+        }
+    }
+
+    /// The day view's list keys must reach the day view and nowhere else, so
+    /// Tasks 16 and 20 are free to bind them in the modes they build.
+    #[test]
+    fn day_only_bindings_reach_no_other_mode() {
+        for key in [KeyCode::Char('j'), KeyCode::Char('G'), KeyCode::Enter] {
+            let key = KeyEvent::new(key, KeyModifiers::NONE);
+            assert!(lookup(key, Mode::Day).is_some(), "{key:?} is a day key");
+            for mode in [Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+                assert!(lookup(key, mode).is_none(), "{key:?} leaked into {mode:?}");
+            }
+        }
+    }
+
+    /// Every mode's popup lists the shared bindings; only the day view's also
+    /// lists the project list's.
+    #[test]
+    fn help_rows_distinguish_all_four_modes() {
+        for mode in ALL_MODES {
+            let rows: Vec<_> = help_rows(mode).into_iter().map(|(_, d)| d).collect();
+            assert!(rows.contains(&"go to today"), "{mode:?} lost a shared row");
+            assert_eq!(
+                rows.contains(&"select the next project"),
+                mode == Mode::Day,
+                "{mode:?} disagrees about who owns the project list"
+            );
+        }
+    }
+
     /// Crossterm delivers a capital letter with `SHIFT` already set, so a
     /// table spelling `G` as `(Char('G'), NONE)` has to tolerate it.
     #[test]
@@ -407,29 +505,13 @@ mod tests {
 
     #[test]
     fn every_mode_keeps_the_bindings_that_mean_the_same_everywhere() {
-        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+        for mode in ALL_MODES {
             let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
             assert_eq!(
                 lookup(quit, mode).map(|b| &b.event),
                 Some(&AppEvent::Quit),
                 "q must quit in {mode:?}"
             );
-        }
-    }
-
-    /// The popup shows the day view's list keys and no other mode's.
-    #[test]
-    fn help_rows_are_narrowed_to_the_mode() {
-        let day: Vec<_> = help_rows(Mode::Day).into_iter().map(|(_, d)| d).collect();
-        let zoom: Vec<_> = help_rows(Mode::ZoomedWeek)
-            .into_iter()
-            .map(|(_, d)| d)
-            .collect();
-
-        assert!(day.contains(&"select the next project"));
-        assert!(!zoom.contains(&"select the next project"));
-        for rows in [&day, &zoom] {
-            assert!(rows.contains(&"go to today"));
         }
     }
 

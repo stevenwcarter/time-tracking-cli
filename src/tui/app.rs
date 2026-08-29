@@ -450,13 +450,20 @@ impl App {
     }
 }
 
-/// Does applying `app_event` change which layer sees the next key?
+/// Does applying `app_event` change which layer sees the next key, or what
+/// that layer makes of it?
 ///
-/// Only overlay changes do, and they are the reason [`App::queue_or_apply`]
-/// exists: an overlay opened or closed a queue-iteration late would let an
-/// already-typed key reach the wrong layer.
+/// Two axes qualify, and they are the reason [`App::queue_or_apply`] exists.
+/// Opening or closing an [`Overlay`] changes *which* layer reads the next
+/// key. Changing [`Mode`] changes what the key *means*, because
+/// [`keymap::lookup`] is keyed by mode — a key already queued behind `f`
+/// would otherwise be resolved against the view the user has just left.
+/// Both are pure state changes, so applying them straight away is safe.
 fn changes_key_routing(app_event: &AppEvent) -> bool {
-    matches!(app_event, AppEvent::ToggleHelp | AppEvent::CloseOverlay)
+    matches!(
+        app_event,
+        AppEvent::ToggleHelp | AppEvent::CloseOverlay | AppEvent::ToggleZoomBar
+    )
 }
 
 /// Ctrl-C, which raw mode delivers as a key event rather than as a signal.
@@ -559,6 +566,40 @@ mod tests {
         app.drain_pending_events();
 
         assert!(app.overlay.is_none());
+        assert_eq!(selection(&app), Some(1));
+    }
+
+    /// The same rule on the mode axis. `keymap::lookup` is keyed by mode, so
+    /// a mode change that waited for the queue would resolve the key behind
+    /// it against the view the user has just left.
+    #[test]
+    fn a_key_typed_straight_after_the_zoom_key_resolves_in_the_new_mode() {
+        let mut app = day_app();
+
+        app.handle_key_events(key('f')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(app.mode, Mode::ZoomedWeek);
+        assert_eq!(
+            selection(&app),
+            Some(0),
+            "j is not bound in the zoomed week, so it must not move the list"
+        );
+    }
+
+    /// Guards the test above from passing vacuously: zooming back out has to
+    /// hand `j` to the project list again, in the same key-handling pass.
+    #[test]
+    fn zooming_back_out_gives_the_next_key_to_the_project_list() {
+        let mut app = day_app();
+
+        app.handle_key_events(key('f')).unwrap();
+        app.handle_key_events(key('f')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(app.mode, Mode::Day);
         assert_eq!(selection(&app), Some(1));
     }
 
