@@ -4,7 +4,7 @@ Here are some recent changes:
 
 ### ⚠ BREAKING CHANGES
 
-* an invalid `week_start_day` in the config file now makes `ttcli --tui` fail to start with an error instead of silently falling back to Saturday ([a5e5a7c](https://github.com/stevenwcarter/time-tracking-cli/commits/a5e5a7c79bec1659f3e44e57ab27828f9356a8a6))
+* **display:** the `DisplayFormatter` trait changed shape. `weekly_projects` and `display_weekly_projects` now take `&[WeeklyProject]` instead of `&[(&String, &(u32, Vec<String>))]`, since weekly aggregation moved out of the stdout printer and into `DataService` ([19769c9](https://github.com/stevenwcarter/time-tracking-cli/commits/19769c97bdec6f2399ec76a506bbae2e7e90a6c7)), and `weekly_warnings` / `display_weekly_warnings` were added so the weekly warnings block is rendered by the formatter rather than printed in one hardcoded emoji shape for every formatter. Any external implementor of the trait must be updated; `publish = false`, so there are none today.
 
 ## [0.8.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.7.0...v0.8.0) (2025-11-26)
 

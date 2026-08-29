@@ -9,9 +9,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build                        # Debug build
 cargo build --release              # Release build
 cargo build --release -p cli       # CLI binary only
-cargo test                         # Run all tests
+cargo test --workspace             # Run all tests
 cargo run -p cli -- --help         # Run CLI with args
 ```
+
+**`just gate` is the verification gate**, not `cargo test` alone. It runs
+check / test / clippy `-D warnings` / `fmt --check` across all three supported
+feature combinations (default, `tui`-only, `webapp`-only) and asserts real
+feature isolation with `cargo tree -i`. CI only runs `cargo build --release -p cli`,
+so `just gate` is the only thing that exercises the non-default builds. It needs
+`site/build/` to exist first (`cd site && yarn install && yarn build`), because
+`rust-embed` pulls it in at compile time under the `webapp` feature.
+
+**Never smoke-run the binary bare.** A plain `ttcli` or `cargo run -p cli --`
+defaults to the real `~/.time-tracking/` and opens `$EDITOR` on today's file —
+which is where stray orphaned editor processes holding the user's real data
+come from. Always pass `--noedit --data-directory <tmp>`.
 
 ### Frontend (site/)
 ```bash
@@ -45,11 +58,11 @@ All three are enabled by default. `cli/src/main.rs` uses `#[cfg(feature = ...)]`
 | Module | Purpose |
 |--------|---------|
 | `config.rs` | CLI args (Clap) + TOML config deserialization + path resolution. Includes `theme` (TUI colour preset, default `"dark"`) and `daily_target_hours` (default `8.0`) — both are TUI-only and read once into `TuiContext` (see below), never accessed elsewhere |
-| `data_svc.rs` | `DataService` — async file reader with 30-second in-memory cache |
+| `data_svc.rs` | `DataService` — the whole data layer. A 30-second in-memory cache holding both the raw content *and* the memoized parse per date; `existing_dates` (one `read_dir` rather than a `stat` per queried day) and `find_populated_dates` for the calendar; and weekly aggregation (`get_weekly_summary`, which owns the project rollup and the minutes-desc-then-name-asc ordering). One unreadable day file is logged and skipped, never fatal to a scan |
 | `file_utils.rs` | Directory setup, template handling, file discovery |
 | `editor.rs` | Launch `$EDITOR`/`$VISUAL` for a given date file |
 | `time_utils.rs` | Date/weekday helpers |
-| `display/` | `DisplayFormatter` trait + three impls: `Default` (emoji), `Plain`, `Markdown` |
+| `display/` | `DisplayFormatter` trait + three impls: `Default` (emoji), `Plain`, `Markdown`. Rendering only — the weekly aggregation it used to do now lives in `data_svc.rs`, and it is handed a `WeeklySummary` to print |
 | `graphql.rs` | Juniper schema (queries + mutations) |
 | `web.rs` | Axum server with `/graphql` and static asset endpoints |
 | `tui/` | Ratatui app — see the breakdown below |
