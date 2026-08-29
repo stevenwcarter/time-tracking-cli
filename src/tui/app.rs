@@ -2083,6 +2083,23 @@ mod tests {
         assert!(status_text(&app).unwrap().to_lowercase().contains("date"));
     }
 
+    /// `submit_date_prompt`'s `Err` arm only calls `set_status` — by code
+    /// shape it cannot touch `active_date`, `week_dates` or `loading`, but
+    /// that has never been asserted directly. This pins it so a future
+    /// refactor that starts mutating state before validation fails loudly.
+    #[tokio::test]
+    async fn rejected_date_leaves_active_date_week_dates_and_loading_untouched() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        let week_dates_before = app.week_dates;
+        app.overlay = Some(Overlay::DatePrompt("gibberish".into()));
+
+        app.handle_key_events(enter()).unwrap();
+
+        assert_eq!(app.active_date, date!(2026 - 08 - 24));
+        assert_eq!(app.week_dates, week_dates_before);
+        assert!(!app.loading, "a rejected date must not queue a reload");
+    }
+
     /// The success path routes through `go_to_date`, not a bare assignment to
     /// `active_date`: it has to recompute `week_dates`, flip `loading` and
     /// queue the reload the same way `t`/`h`/`l` already do, or the prompt
@@ -2751,6 +2768,21 @@ mod tests {
         app.drain_pending_events();
         // The same clamp applies stepping backward: February is short too.
         assert_eq!(app.active_date, date!(2026 - 02 - 28));
+    }
+
+    /// `shift_months` clamps via `Month::length(year)`, which is leap-year
+    /// aware — so Jan 31 lands on Feb 29 in a leap year rather than Feb 28.
+    /// The non-leap case is pinned above; this is the same call, exercised
+    /// with a leap year so the clamp's year-awareness is actually asserted
+    /// rather than merely relied upon.
+    #[tokio::test]
+    async fn bracket_steps_a_month_and_clamps_to_feb_29_in_a_leap_year() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2028 - 01 - 31));
+        app.handle_key_events(KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+        // 2028 is a leap year: February has a 29th.
+        assert_eq!(app.active_date, date!(2028 - 02 - 29));
     }
 
     #[tokio::test]

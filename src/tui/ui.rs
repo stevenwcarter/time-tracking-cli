@@ -509,6 +509,26 @@ mod tests {
         assert_eq!(breakpoint(Rect::new(0, 0, 120, 30)), Breakpoint::Full);
     }
 
+    /// One column or one row short of the floor, on its own, must still trip
+    /// the notice. Existing coverage pins the floor itself (clean) and a
+    /// size well below it (too small); neither would notice `breakpoint`'s
+    /// `<` comparisons drifting by one, since a size well below the floor
+    /// stays `TooSmall` under either operator. This is the adjacent value
+    /// that actually distinguishes them.
+    #[test]
+    fn one_less_than_the_floor_in_either_dimension_is_too_small() {
+        assert_eq!(
+            breakpoint(Rect::new(0, 0, MIN_COLS - 1, MIN_ROWS)),
+            Breakpoint::TooSmall,
+            "one column short of the floor must still trip the notice"
+        );
+        assert_eq!(
+            breakpoint(Rect::new(0, 0, MIN_COLS, MIN_ROWS - 1)),
+            Breakpoint::TooSmall,
+            "one row short of the floor must still trip the notice"
+        );
+    }
+
     /// Below the floor, the notice has to name the floor: a user staring at
     /// a blank pane with no numbers on it has no idea how far to resize.
     #[tokio::test]
