@@ -22,11 +22,21 @@ const NAME_COLS: usize = 25;
 /// first line rather than under the marker.
 const BULLET_INDENT: usize = 5;
 
+/// Dead time at or above this many minutes is a hard failure rather than a
+/// recoverable warning. Mirrors the split `format_day_summary_impl` in
+/// `src/display/mod.rs` uses, so the TUI and the CLI never disagree about
+/// the same file.
+const DEAD_TIME_ERROR_THRESHOLD_MINUTES: u32 = 90;
+
 #[derive(Debug)]
 pub struct ProjectListWidget {
     start_time: String,
     end_time: String,
     total_minutes: u32,
+    dead_time_minutes: u32,
+    dead_time: String,
+    dead_decimal: String,
+    warnings: Vec<String>,
     project_list: ProjectList,
     theme: Theme,
 }
@@ -136,6 +146,10 @@ impl ProjectListWidget {
             start_time: data.formatted_start_time(),
             end_time: data.formatted_end_time(),
             total_minutes: data.total_minutes,
+            dead_time_minutes: data.dead_time_minutes,
+            dead_time: data.formatted_dead_time_minutes(),
+            dead_decimal: data.formatted_dead_decimal(),
+            warnings: data.warnings.clone(),
             project_list: ProjectList { items, state },
             theme: theme.clone(),
         }
@@ -228,7 +242,7 @@ impl ProjectListWidget {
 impl Widget for &mut ProjectListWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let [header_area, main_area, footer_area] = Layout::vertical([
-            Constraint::Length(2),
+            Constraint::Length(self.header_height()),
             Constraint::Fill(1),
             Constraint::Length(1),
         ])
@@ -241,17 +255,69 @@ impl Widget for &mut ProjectListWidget {
 }
 
 impl ProjectListWidget {
-    fn render_header(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new(format!(
-            "Start Time: {}\n  End Time: {}\n\nWorking Time: {} hours",
-            self.start_time,
-            self.end_time,
-            self.total_minutes as f32 / 60.
-        ))
-        .bold()
-        .centered()
-        .render(area, buf);
+    /// Rows the header needs: four for the start/end/working-time block,
+    /// which is always present, plus a blank separator and one row per
+    /// warning when there are any. A clean day — no warnings — never pays
+    /// for a block it doesn't show, so the list below keeps every row it
+    /// had before this feature existed.
+    fn header_height(&self) -> u16 {
+        const BASE_ROWS: u16 = 4;
+        if self.warnings.is_empty() {
+            return BASE_ROWS;
+        }
+        let extra = 1 + self.warnings.len();
+        BASE_ROWS + u16::try_from(extra).unwrap_or(u16::MAX)
     }
+
+    fn render_header(&self, area: Rect, buf: &mut Buffer) {
+        let mut lines = vec![
+            Line::from(format!("Start Time: {}", self.start_time)),
+            Line::from(format!("  End Time: {}", self.end_time)),
+            Line::from(""),
+            self.working_time_line(),
+        ];
+
+        if !self.warnings.is_empty() {
+            lines.push(Line::from(""));
+            lines.extend(
+                self.warnings
+                    .iter()
+                    .map(|warning| Line::styled(warning.clone(), self.theme.error)),
+            );
+        }
+
+        Paragraph::new(lines).bold().centered().render(area, buf);
+    }
+
+    /// The "Working Time" line, with a "Dead Time" span appended whenever
+    /// the day has any — styled `theme.warning` below
+    /// [`DEAD_TIME_ERROR_THRESHOLD_MINUTES`] and `theme.error` at or above
+    /// it, matching `format_day_summary_impl` in `src/display/mod.rs` so
+    /// the TUI and the CLI never disagree about the same file. A day with
+    /// no dead time renders nothing extra, so it costs no header width.
+    fn working_time_line(&self) -> Line<'static> {
+        let working = format!("Working Time: {} hours", self.total_minutes as f32 / 60.);
+        if self.dead_time_minutes == 0 {
+            return Line::from(working);
+        }
+
+        let style = if self.dead_time_minutes < DEAD_TIME_ERROR_THRESHOLD_MINUTES {
+            self.theme.warning
+        } else {
+            self.theme.error
+        };
+        Line::from(vec![
+            Span::raw(format!("{working}    ")),
+            Span::styled(
+                format!(
+                    "Dead Time: {} ({} hours)",
+                    self.dead_time, self.dead_decimal
+                ),
+                style,
+            ),
+        ])
+    }
+
     fn render_footer(&self, area: Rect, buf: &mut Buffer) {
         Paragraph::new("? for help")
             .wrap(Wrap { trim: true })
@@ -419,6 +485,9 @@ fn wrap_note(note: &str, width: u16, hanging_indent: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::App;
+    use crate::tui::context::TuiContext;
+    use crate::tui::testing::{fixture_day, render_to_string};
 
     #[test]
     fn pads_by_display_width_not_char_count() {
@@ -510,5 +579,48 @@ mod tests {
         for l in &lines {
             assert!(l.width() <= 3, "line {l:?} exceeds width 3");
         }
+    }
+
+    #[tokio::test]
+    async fn the_header_shows_dead_time() {
+        let mut data = fixture_day();
+        data.dead_time_minutes = 95;
+        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.to_lowercase().contains("dead"), "got:\n{screen}");
+    }
+
+    #[tokio::test]
+    async fn parser_warnings_are_rendered() {
+        let mut data = fixture_day();
+        data.warnings = vec!["Error parsing time range 'x-y'".into()];
+        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(
+            screen.contains("Error parsing time range"),
+            "got:\n{screen}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_clean_day_renders_no_warning_block() {
+        let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(!screen.to_lowercase().contains("warning"), "got:\n{screen}");
+    }
+
+    /// Regression guard for the header's height calculation: a naive
+    /// implementation that always reserved rows for a warnings block (even
+    /// an empty one) would eat into the list below it. On a clean day the
+    /// last project's last note must still fit at the same terminal size
+    /// the other header tests use.
+    #[tokio::test]
+    async fn a_clean_day_loses_no_list_rows_to_an_empty_warning_block() {
+        let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(
+            screen.contains("release notes"),
+            "the last project's last note should still fit with no warnings to show:\n{screen}"
+        );
     }
 }
