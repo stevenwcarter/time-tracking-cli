@@ -184,16 +184,45 @@ fn weekly_tie_ordering_is_deterministic() {
     );
 }
 
+/// The banner is gated on `webserver_running` (`cli/src/main.rs`), so a
+/// TUI-only launch must not mention the webserver.
+///
+/// **The child must be put in a new session, or this test does not
+/// terminate.** There is no such thing as "no TTY" here just because
+/// `output()` pipes stdout: nothing in the code path reads `TERM`, and on Unix
+/// crossterm does not read stdin at all — it opens `/dev/tty` directly. A
+/// child that keeps the test runner's controlling terminal therefore starts a
+/// real TUI on the developer's terminal and reads their keystrokes; an `e`
+/// reaches `App::run_editor`, and `open_in_editor` spawns `$EDITOR` with
+/// `Stdio::inherit()`, so the editor holds the write end of `output()`'s pipe
+/// and EOF never arrives even after `ttcli` exits. `setsid(2)` gives the child
+/// no controlling terminal, so crossterm's `open("/dev/tty")` fails with
+/// `ENXIO` and the TUI bails out immediately. `Stdio::null()` on stdin alone
+/// is not sufficient, precisely because crossterm bypasses stdin.
+#[cfg(unix)]
 #[test]
 fn tui_only_launch_prints_no_webserver_banner() {
-    // --tui with no TTY exits immediately; we only care about stdout.
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
     let dir = staged("week_no_ties");
-    let out = Command::new(env!("CARGO_BIN_EXE_ttcli"))
-        .args(["--tui", "--data-directory"])
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ttcli"));
+    cmd.args(["--tui", "--data-directory"])
         .arg(dir.path())
-        .env("TERM", "dumb")
-        .output()
-        .expect("run ttcli");
+        .stdin(Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and touches no allocator or lock
+    // state, which is the entire requirement on a `pre_exec` hook. The child
+    // is freshly forked and so is never already a process-group leader, the
+    // one condition under which `setsid` fails.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let out = cmd.output().expect("run ttcli");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("webserver"),

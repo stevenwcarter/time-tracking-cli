@@ -21,3 +21,9 @@ tracing = "0.1.41"
 
 [dev-dependencies]
 tempfile = "3.8"
+
+# Test-only. `cli_output_characterization` must launch `ttcli --tui` with no
+# controlling terminal, which needs a raw `setsid(2)` in a `pre_exec` hook.
+# Already in the lock transitively, so this adds no crate to the graph.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2.177"
