@@ -208,6 +208,7 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 | [ / PageUp   | go back a month                                                |
 | ] / PageDown | go forward a month                                             |
 | t / T        | go to today                                                    |
+| :            | jump to a date                                                 |
 | f            | toggle zooming into the weekly bar chart                       |
 | w            | toggle the week's per-project rollup                           |
 | v            | view the active date's file as it sits on disk                 |

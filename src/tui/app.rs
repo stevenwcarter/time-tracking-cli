@@ -20,6 +20,7 @@ use super::{
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
     week_list::WeekListState,
+    widgets::date_prompt,
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
@@ -531,6 +532,7 @@ impl App {
             e @ (AppEvent::ToggleZoomBar
             | AppEvent::ToggleHelp
             | AppEvent::CloseOverlay
+            | AppEvent::OpenDatePrompt
             | AppEvent::Today
             | AppEvent::NextDate
             | AppEvent::PreviousDate
@@ -579,6 +581,7 @@ impl App {
             AppEvent::ToggleZoomBar => self.toggle_zoom_bar(),
             AppEvent::ToggleHelp => self.toggle_help(),
             AppEvent::CloseOverlay => self.overlay = None,
+            AppEvent::OpenDatePrompt => self.overlay = Some(Overlay::DatePrompt(String::new())),
             AppEvent::Today => self.go_to_date(today()),
             AppEvent::NextDate => {
                 self.go_to_date(self.active_date.next_day().unwrap_or(self.active_date));
@@ -1238,25 +1241,84 @@ impl App {
     ///
     /// Returns [`Handled::Ignored`] when there is no overlay, which the caller
     /// never asks for; every other answer stops the key here.
+    ///
+    /// Ctrl-C's meaning is decided per overlay rather than once up front: the
+    /// help popup has no state of its own to lose, so it quits just as it
+    /// would with no overlay open at all (raw mode delivers Ctrl-C as a key
+    /// rather than a signal — see [`is_ctrl_c`]); the date prompt has
+    /// something to lose — whatever has been typed — so there Ctrl-C cancels
+    /// the prompt instead, matching the readline convention of Ctrl-C
+    /// aborting the current line rather than the whole session.
     fn handle_overlay_key(&mut self, key_event: KeyEvent) -> Handled {
-        // Raw mode delivers Ctrl-C as a key rather than a signal, so an
-        // overlay that swallowed it would leave the user unable to quit
-        // without first working out how to dismiss the popup.
-        if is_ctrl_c(key_event) {
-            return Handled::Emit(AppEvent::Quit);
-        }
-        match self.overlay {
+        match &self.overlay {
+            Some(Overlay::DatePrompt(_)) => self.handle_date_prompt_key(key_event),
             Some(Overlay::Help) => {
+                if is_ctrl_c(key_event) {
+                    return Handled::Emit(AppEvent::Quit);
+                }
                 if keymap::closes_overlay(key_event) {
                     Handled::Emit(AppEvent::CloseOverlay)
                 } else {
                     Handled::Consumed
                 }
             }
-            // Task 17 gives the prompt its own editing keys; until then it is
-            // unreachable, and swallowing is the safe answer either way.
-            Some(Overlay::DatePrompt(_)) => Handled::Consumed,
             None => Handled::Ignored,
+        }
+    }
+
+    /// The date prompt's own keys, live only while [`Overlay::DatePrompt`] is
+    /// open: characters extend the buffer, `Backspace` shortens it, `Enter`
+    /// tries to parse it, and `Esc` or Ctrl-C cancel.
+    ///
+    /// Cancelling on Ctrl-C rather than quitting is deliberate — see
+    /// [`App::handle_overlay_key`]'s doc — and every character is accepted
+    /// unconditionally, including ones bound elsewhere (`l`, `i`, `d`, `f`,
+    /// `r`, `y`, `w`, `v`, …): the whole point of `handle_key_events` routing
+    /// to this method first is that nothing behind the overlay gets a look
+    /// at the key while it is open.
+    fn handle_date_prompt_key(&mut self, key_event: KeyEvent) -> Handled {
+        if is_ctrl_c(key_event) || key_event.code == KeyCode::Esc {
+            self.overlay = None;
+            return Handled::Consumed;
+        }
+        let Some(Overlay::DatePrompt(buffer)) = &mut self.overlay else {
+            // `handle_overlay_key` only reaches here while the variant
+            // matches; nothing to do if that ever stops being true.
+            return Handled::Ignored;
+        };
+        let submitted = match key_event.code {
+            KeyCode::Char(c) => {
+                buffer.push(c);
+                None
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+                None
+            }
+            KeyCode::Enter => Some(buffer.clone()),
+            _ => None,
+        };
+        // Outside the borrow of `self.overlay` above: parsing on success
+        // moves `active_date` through `go_to_date`, which needs `self` back.
+        if let Some(input) = submitted {
+            self.submit_date_prompt(&input);
+        }
+        Handled::Consumed
+    }
+
+    /// Parse `input` and either jump to it through [`App::go_to_date`] — the
+    /// only path that keeps `week_dates` and the queued reload in step with
+    /// `active_date`, see its own doc — or report why not and leave the
+    /// prompt open so the mistyped text can be fixed rather than retyped
+    /// from scratch.
+    fn submit_date_prompt(&mut self, input: &str) {
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+        match date_prompt::parse_prompt(input, now) {
+            Ok(date) => {
+                self.overlay = None;
+                self.go_to_date(date);
+            }
+            Err(message) => self.set_status(message),
         }
     }
 
@@ -1524,8 +1586,14 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         // disjoint mask, so a key typed straight after `w` would otherwise
         // move the day's hidden project list instead of the rollup the user
         // is now looking at.
+        // `OpenDatePrompt` belongs here for the same reason: it opens the
+        // overlay that has to be the very next layer offered a key, or the
+        // rest of "last friday" typed right after `:` would resolve against
+        // whatever mode was on screen instead of filling the prompt's
+        // buffer.
         AppEvent::ToggleHelp
         | AppEvent::CloseOverlay
+        | AppEvent::OpenDatePrompt
         | AppEvent::ToggleZoomBar
         | AppEvent::ToggleRawFile
         | AppEvent::ToggleWeekMode => true,
@@ -1566,10 +1634,13 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
 /// The week's per-project rollup, or nothing when `stale` says `summary`
 /// describes a week other than the one on screen.
 ///
-/// The one place [`App::week_is_stale`] is applied to the rollup, so
-/// [`App::week_pane`] and the pane's `Enter` can never disagree about
-/// whether this week has data — an `Enter` that read past this guard is
-/// exactly how `Y` came to yank the previous week's hours into a timesheet.
+/// The one place [`App::week_is_stale`] is applied to the rollup — both of
+/// the guarded readers, [`App::week_rows`] behind [`App::week_pane`] and
+/// [`App::apply_week_key`] behind the pane's `Enter`, call through here
+/// rather than trusting `weekly_summary` directly, so the two can never
+/// disagree about whether this week has data. An `Enter` that read past this
+/// guard is exactly how `Y` came to yank the previous week's hours into a
+/// timesheet.
 ///
 /// A free function rather than a method because
 /// [`App::apply_week_key`] needs the rollup borrowed while
@@ -1864,6 +1935,149 @@ mod tests {
 
         assert_eq!(app.mode, Mode::Day);
         assert_eq!(selection(&app), Some(1));
+    }
+
+    #[test]
+    fn colon_opens_the_date_prompt() {
+        let mut app = day_app();
+
+        app.handle_key_events(key(':')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(app.overlay, Some(Overlay::DatePrompt(String::new())));
+    }
+
+    /// The same rule the zoom and raw-file keys pin above, for `:`:
+    /// `OpenDatePrompt` has to sit on the `true` side of `changes_key_routing`,
+    /// or the very next key — the first character of what the user is about
+    /// to type — would resolve against the day view instead of landing in
+    /// the prompt's buffer.
+    #[test]
+    fn a_key_typed_straight_after_colon_lands_in_the_prompt_not_the_list() {
+        let mut app = day_app();
+
+        app.handle_key_events(key(':')).unwrap();
+        app.handle_key_events(key('j')).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(
+            app.overlay,
+            Some(Overlay::DatePrompt("j".into())),
+            "j must be typed into the prompt, not left for the list to consume"
+        );
+        assert_eq!(
+            selection(&app),
+            Some(0),
+            "j must not move the list hidden behind the prompt"
+        );
+    }
+
+    /// The fourth of the brief's tests: the one that proves the overlay
+    /// dispatch is real. `l`, `i`, `d`, `f`, `r`, `a`, `y`, `w` and `v` are
+    /// all live bindings elsewhere, and none of them may fire while the
+    /// prompt is open.
+    #[tokio::test]
+    async fn typing_into_the_prompt_does_not_move_the_date() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.overlay = Some(Overlay::DatePrompt(String::new()));
+
+        for c in "last friday".chars() {
+            app.handle_key_events(key(c)).unwrap();
+        }
+        app.drain_pending_events();
+
+        assert_eq!(
+            app.active_date,
+            date!(2026 - 08 - 24),
+            "l, i, d etc must not act as bindings"
+        );
+        assert_eq!(app.overlay, Some(Overlay::DatePrompt("last friday".into())));
+    }
+
+    #[test]
+    fn backspace_removes_the_last_character_typed() {
+        let mut app = App::new(TuiContext::for_test());
+        app.overlay = Some(Overlay::DatePrompt("2026-01-0".into()));
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.overlay, Some(Overlay::DatePrompt("2026-01-".into())));
+    }
+
+    #[tokio::test]
+    async fn esc_cancels_without_changing_the_date() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.overlay = Some(Overlay::DatePrompt("2026-01-01".into()));
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        app.drain_pending_events();
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.active_date, date!(2026 - 08 - 24));
+    }
+
+    /// The deliberate choice for Ctrl-C while the date prompt is open: it
+    /// cancels the prompt rather than quitting, the opposite of every other
+    /// overlay (see `ctrl_c_quits_even_with_an_overlay_open` in `mode.rs`'s
+    /// tests, which pins the help popup's side of that same decision). A
+    /// half-typed date is exactly the input a terminal user expects Ctrl-C to
+    /// abort, not a request to tear down the whole session.
+    #[tokio::test]
+    async fn ctrl_c_cancels_the_date_prompt_without_quitting() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.overlay = Some(Overlay::DatePrompt("last frid".into()));
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        app.drain_pending_events();
+
+        assert!(app.overlay.is_none(), "Ctrl-C should cancel the prompt");
+        assert!(app.running, "Ctrl-C must not quit while the prompt is open");
+        assert_eq!(app.active_date, date!(2026 - 08 - 24));
+    }
+
+    #[tokio::test]
+    async fn bad_input_keeps_the_prompt_open_and_reports() {
+        let mut app = App::new(TuiContext::for_test());
+        app.overlay = Some(Overlay::DatePrompt("gibberish".into()));
+
+        app.handle_key_events(enter()).unwrap();
+
+        assert!(
+            app.overlay.is_some(),
+            "an unparseable date must not close the prompt"
+        );
+        assert!(status_text(&app).unwrap().to_lowercase().contains("date"));
+    }
+
+    /// The success path routes through `go_to_date`, not a bare assignment to
+    /// `active_date`: it has to recompute `week_dates`, flip `loading` and
+    /// queue the reload the same way `t`/`h`/`l` already do, or the prompt
+    /// would reintroduce the stale-pane and month-memo bugs those keys' own
+    /// tests close.
+    #[tokio::test]
+    async fn a_valid_date_jumps_there_through_go_to_date() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 24));
+        app.overlay = Some(Overlay::DatePrompt("2026-01-05".into()));
+
+        app.handle_key_events(enter()).unwrap();
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.active_date, date!(2026 - 01 - 05));
+        assert!(
+            app.week_dates.contains(&date!(2026 - 01 - 05)),
+            "week_dates must be recomputed for the new date, not left stale"
+        );
+        assert!(
+            app.loading,
+            "go_to_date sets loading before the reload lands"
+        );
+        assert!(matches!(
+            app.events.try_next(),
+            Some(Event::App(AppEvent::ReloadFromDisk(Reload::Navigation)))
+        ));
     }
 
     /// `v` is the raw file view's escape hatch, both ways.

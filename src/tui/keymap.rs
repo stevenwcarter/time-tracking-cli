@@ -246,6 +246,13 @@ pub const BINDINGS: &[Binding] = &[
         description: "go to today",
     },
     Binding {
+        keys: &[(KeyCode::Char(':'), NONE)],
+        event: AppEvent::OpenDatePrompt,
+        modes: ModeMask::ALL,
+        group: Group::Date,
+        description: "jump to a date",
+    },
+    Binding {
         keys: &[(KeyCode::Char('f'), NONE)],
         event: AppEvent::ToggleZoomBar,
         modes: ModeMask::ALL,

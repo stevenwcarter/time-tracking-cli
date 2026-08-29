@@ -12,7 +12,7 @@ use super::mode::{Mode, Overlay};
 use super::theme::Theme;
 use super::week_list::WeekListWidget;
 use super::widgets::HelpPopup;
-use super::widgets::{Calendar, RawFileView, WeeklyBarChart};
+use super::widgets::{Calendar, DatePrompt, RawFileView, WeeklyBarChart};
 
 /// The narrowest terminal width the day view can lay out at all.
 ///
@@ -257,8 +257,10 @@ impl App {
     fn render_overlay(&mut self, area: Rect, buf: &mut Buffer) {
         match &self.overlay {
             Some(Overlay::Help) => HelpPopup::new(&self.ctx.theme, self.mode).render(area, buf),
-            // Task 17 renders the prompt here.
-            Some(Overlay::DatePrompt(_)) | None => {}
+            Some(Overlay::DatePrompt(input)) => {
+                DatePrompt::new(&self.ctx.theme, input).render(area, buf);
+            }
+            None => {}
         }
     }
 
@@ -492,7 +494,7 @@ mod tests {
 
     /// Cheap insurance: ratatui panics on some zero-width layout arithmetic,
     /// and this task's constraints are exactly the kind of place that can
-    /// produce it. Swept across every `Mode` and both overlay states, not
+    /// produce it. Swept across every `Mode` and every overlay state, not
     /// just `Day`: `Day` is the one mode `breakpoint` protects below the
     /// floor, so it is the *least* likely of the four to hit a degenerate
     /// rectangle — restricting the sweep to it would cover the safest case
@@ -507,6 +509,12 @@ mod tests {
     /// vacuous. `week_app` lands a rollup, so `WeekListWidget`'s own
     /// layout — the header split, the `List` with `scroll_padding`, and
     /// `project_row`'s width arithmetic — is what gets rendered at 1x1.
+    ///
+    /// `Overlay::DatePrompt` carries a non-empty buffer here rather than
+    /// `String::new()`: an empty prompt would still exercise the popup's
+    /// border and title, but not the cursor span drawn one cell past the
+    /// typed text, which is exactly the arithmetic most likely to run past
+    /// a narrow buffer's edge.
     #[tokio::test]
     async fn no_render_panics_at_any_plausible_size() {
         for build in [day_app as fn() -> App, week_app as fn() -> App] {
@@ -520,7 +528,11 @@ mod tests {
                 (400, 100),
             ] {
                 for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
-                    for overlay in [None, Some(Overlay::Help)] {
+                    for overlay in [
+                        None,
+                        Some(Overlay::Help),
+                        Some(Overlay::DatePrompt("2026-08-14".to_owned())),
+                    ] {
                         let mut app = build();
                         app.mode = mode;
                         app.overlay = overlay;

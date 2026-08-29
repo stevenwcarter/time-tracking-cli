@@ -45,6 +45,8 @@ pub enum AppEvent {
     ToggleHelp,
     /// Dismiss whatever overlay is open
     CloseOverlay,
+    /// Open the jump-to-date prompt, empty and ready for input.
+    OpenDatePrompt,
     /// Toggle whether the bar chart is zoomed
     ToggleZoomBar,
     /// Select the next project in the day view's list

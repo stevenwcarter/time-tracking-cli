@@ -15,7 +15,8 @@ use super::event::AppEvent;
 pub enum Mode {
     /// A single day: calendar, weekly bar chart and the project list.
     Day,
-    /// The whole week's projects rolled up. Task 20 builds the view.
+    /// The whole week's projects rolled up; see
+    /// [`crate::tui::week_list::WeekListWidget`].
     Week,
     /// The weekly bar chart, full screen.
     ZoomedWeek,
@@ -35,7 +36,8 @@ pub enum Overlay {
     /// The help popup.
     Help,
     /// A one-line prompt for a date to jump to, holding what has been typed
-    /// so far. Task 17 makes it reachable.
+    /// so far. Opened by `:`; see
+    /// [`crate::tui::widgets::date_prompt::parse_prompt`].
     DatePrompt(String),
 }
 
