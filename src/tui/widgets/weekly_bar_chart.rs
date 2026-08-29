@@ -209,7 +209,13 @@ impl<'a> WeeklyBarChart<'a> {
         // `.min(ceiling)` guards the subtraction below in case the invariant
         // that the target never exceeds the ceiling is ever broken upstream.
         let target = target_tenths(self.target_hours).min(ceiling);
-        let filled = (target * u64::from(bars_height) / ceiling) as u16;
+        // `.max(1)`: integer division floors, so a target that is a tiny
+        // fraction of a very tall ceiling (a long day dwarfing a modest
+        // target, in a chart short enough to have only a handful of bar
+        // rows) can floor `filled` to zero. Left unclamped that lands the
+        // marker at `bars_height` rows down — one past the last bar row,
+        // on the day-labels row — instead of just above it.
+        let filled = ((target * u64::from(bars_height) / ceiling) as u16).max(1);
         Some(inner_area.y + bars_height - filled)
     }
 }
@@ -276,9 +282,16 @@ impl Widget for &mut WeeklyBarChart<'_> {
         let total_line = Line::from(total_text).style(self.theme.warning);
         let total_width = (total_line.width() as u16).min(inner_area.width);
         let total_area = Rect {
+            // Floored at `inner_area.x`: on a narrow `Mode::ZoomedWeek`
+            // terminal (no minimum-size floor there, unlike `Mode::Day`)
+            // `total_width + RIGHT_MARGIN` can exceed the inner width, and
+            // an unfloored `saturating_sub` lands at buffer column 0 —
+            // pinning the text to the outer left edge — rather than at the
+            // chart's own left edge.
             x: inner_area
                 .right()
-                .saturating_sub(total_width + RIGHT_MARGIN),
+                .saturating_sub(total_width + RIGHT_MARGIN)
+                .max(inner_area.x),
             y: area.y + 1,
             width: total_width,
             height: 1,
@@ -454,5 +467,81 @@ mod tests {
 
         chart.set_daily_target_hours(6.0);
         assert_eq!(chart.ceiling_for(Rect::new(0, 0, 80, 30)), 60);
+    }
+
+    #[test]
+    fn goal_marker_never_lands_on_the_day_labels_row() {
+        // Regression guard: `filled` is an integer-division floor of the
+        // target's proportional height, so a target that is a tiny fraction
+        // of a very tall ceiling (a day dwarfing a modest target) can floor
+        // to zero in a chart short enough to have only a handful of bar
+        // rows — the zoomed view on a short terminal, roughly 5-6 rows.
+        // Unclamped, that lands the marker one row *below* the bars area,
+        // on the row the day-of-month labels occupy.
+        let theme = Theme::none();
+        let week = week();
+        let mut data = HashMap::new();
+        data.insert(date!(2026 - 08 - 24), 1439u32); // 23h59m dwarfs a 1h target
+        let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        chart.set_weekly_data(&data);
+        chart.set_daily_target_hours(1.0);
+
+        let ceiling = chart.ceiling_for(Rect::new(0, 0, 80, 30));
+        let inner_area = Rect::new(0, 0, 80, 6); // bars_height = 5
+        let label_row = inner_area.y + inner_area.height - 1;
+
+        let row = chart
+            .goal_marker_row(inner_area, ceiling)
+            .expect("a 6-row inner area has room for a bar row");
+        assert!(
+            row < label_row,
+            "goal marker at row {row} must stay above the day-labels row {label_row}"
+        );
+    }
+
+    #[test]
+    fn total_hours_stays_right_aligned_in_a_narrow_zoomed_view() {
+        // `Mode::ZoomedWeek` renders the chart at the raw terminal size with
+        // no minimum-size floor — unlike `Mode::Day`, which now refuses to
+        // lay out below 60x15 (see `ui::MIN_COLS`/`MIN_ROWS`), so this narrow
+        // width is the one a real terminal can actually reach. Regression
+        // guard: the previous `saturating_sub` had no floor at `inner_area.x`,
+        // so once `total_width + RIGHT_MARGIN` exceeded the inner width it
+        // saturated all the way to buffer column 0 — pinning the text to the
+        // outer left edge — instead of stopping at the chart's own left edge.
+        use crate::tui::app::App;
+        use crate::tui::context::TuiContext;
+        use crate::tui::mode::Mode;
+        use crate::tui::testing::fixture_date;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_weekly_data(HashMap::from([(fixture_date(), 480u32)]));
+        app.mode = Mode::ZoomedWeek;
+
+        // Width 12: narrow enough that `total_width + RIGHT_MARGIN` (12)
+        // exactly matches the inner width available, so an unfloored
+        // `saturating_sub` would land at 0 — but still wide enough that the
+        // full "8.0h total" fits without truncation, isolating the position
+        // bug from the (separate, already-handled) narrow-bar-width case.
+        let mut terminal = Terminal::new(TestBackend::new(12, 10)).expect("test backend");
+        terminal
+            .draw(|frame| frame.render_widget(&mut app, frame.area()))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+
+        let row: String = (0..12)
+            .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            row.trim_end().ends_with("8.0h total"),
+            "total hours text truncated or missing in a narrow zoomed view: {row:?}"
+        );
+        assert!(
+            row.starts_with(' '),
+            "total hours must stay clear of column 0 (the chart's own left edge), not pinned to the outer buffer edge: {row:?}"
+        );
     }
 }
