@@ -55,17 +55,28 @@ const CLEAN_HEADER_ROWS: u16 = 4;
 /// will draw any item at all.
 const LIST_FLOOR_ROWS: u16 = LIST_TITLE_ROWS + TYPICAL_ITEM_ROWS;
 
-/// The inner height at which this pane can show two whole projects on a
-/// clean day.
+/// How many projects on screen at once count as a usable list.
 ///
-/// Exported for [`ui`](super::ui)'s `COMPACT_ROWS`, which is what decides
-/// whether the calendar/chart band above the pane is drawn at all: the band
-/// is worth its twelve rows only when the pane below it still has this many.
-/// Keeping the threshold derived from the pane's own measurements is the
-/// point — the blank-list bug was a hand-picked `COMPACT_ROWS` that had
-/// silently fallen below the band's own cost.
+/// This codebase's one notion of "usable", so both things that need it are
+/// derived from it rather than from a second number:
+/// [`MIN_ROWS_FOR_TWO_PROJECTS`] below, and the count
+/// `App::band_is_affordable` measures the calendar/chart band against.
+///
+/// Two rather than all of them because the list *scrolls*. Rendering fewer
+/// projects at once is not data loss — `j`/`k` reach the rest. Rendering
+/// none was, and that is pinned separately.
+pub(super) const USABLE_PROJECTS: usize = 2;
+
+/// The inner height at which this pane can show a usable list on a clean
+/// day.
+///
+/// Exported for [`ui`](super::ui)'s `COMPACT_ROWS`, the size-only floor
+/// below which the calendar/chart band is never drawn. An estimate, because
+/// its caller applies it to days that have no project list to measure;
+/// [`ProjectListWidget::rows_to_show`] is the measured version, and is what
+/// a day with a list is actually judged by.
 pub(super) const MIN_ROWS_FOR_TWO_PROJECTS: u16 =
-    CLEAN_HEADER_ROWS + LIST_TITLE_ROWS + 2 * TYPICAL_ITEM_ROWS;
+    CLEAN_HEADER_ROWS + LIST_TITLE_ROWS + USABLE_PROJECTS as u16 * TYPICAL_ITEM_ROWS;
 
 /// Stands in for the notes a clamped item could not show. Indented to line
 /// up under the bullets it replaces.
@@ -390,14 +401,16 @@ fn clamp_item_rows(mut body: Text<'static>, max_rows: u16) -> Text<'static> {
 
 impl ProjectListWidget {
     /// The inner rows this pane would need at `width` to show its header and
-    /// every one of its projects at once, with nothing scrolled out of view.
+    /// the first `projects` of its projects at once — or all of them, if it
+    /// has fewer than that.
     ///
     /// Read by [`ui`](super::ui) to decide whether the calendar/chart band
     /// above the pane can be afforded — see `App::band_is_affordable`. It has
     /// to be measured rather than estimated because all three inputs move:
     /// the header grows with dead time and warnings, and an item grows with
-    /// its notes and with how they wrap at this width.
-    pub(super) fn rows_to_show_everything(&self, width: u16) -> u16 {
+    /// its notes and with how they wrap at this width. The list draws from
+    /// the top, so the first `projects` items are the ones that decide it.
+    pub(super) fn rows_to_show(&self, width: u16, projects: usize) -> u16 {
         let working_time_lines = self.working_time_lines(width);
         let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
         let body_width = width.saturating_sub(4);
@@ -405,6 +418,7 @@ impl ProjectListWidget {
             .project_list
             .items
             .iter()
+            .take(projects)
             .map(|item| u16::try_from(item.body_rows(body_width)).unwrap_or(u16::MAX))
             .fold(0u16, u16::saturating_add);
 
