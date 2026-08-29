@@ -189,38 +189,43 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 
 #### TUI Keybinds
 
-| Keys         | Action                                                         |
-| ------------ | -------------------------------------------------------------- |
-| ↓ / j        | select the next project                                        |
-| ↑ / k        | select the previous project                                    |
-| g            | jump to the first project                                      |
-| G            | jump to the last project                                       |
-| Enter        | copy the selected project's notes to the clipboard             |
-| ↓ / j        | select the next project in the weekly rollup                   |
-| ↑ / k        | select the previous project in the weekly rollup               |
-| g            | jump to the first project in the weekly rollup                 |
-| G            | jump to the last project in the weekly rollup                  |
-| Enter        | copy the selected project's week (with hours) to the clipboard |
-| ← / h        | go to the previous day                                         |
-| → / l        | go to the next day                                             |
-| H            | go back a week                                                 |
-| L            | go forward a week                                              |
-| [ / PageUp   | go back a month                                                |
-| ] / PageDown | go forward a month                                             |
-| t / T        | go to today                                                    |
-| :            | jump to a date                                                 |
-| f            | toggle zooming into the weekly bar chart                       |
-| w            | toggle the week's per-project rollup                           |
-| v            | view the active date's file as it sits on disk                 |
-| ↓ / j        | scroll the raw file down                                       |
-| ↑ / k        | scroll the raw file up                                         |
-| r            | reload the current date from disk                              |
-| e            | edit the current date's notes in $EDITOR                       |
-| y            | copy the day's summary (with hours) to the clipboard           |
-| Y            | copy the week's summary (with hours) to the clipboard          |
-| ?            | show the help popup                                            |
-| Esc / q      | quit                                                           |
-| ? / Esc / q  | close the help popup                                           |
+| Keys         | Mode          | Action                                                         |
+| ------------ | ------------- | -------------------------------------------------------------- |
+| ↓ / j        | Day           | select the next project                                        |
+| ↑ / k        | Day           | select the previous project                                    |
+| g            | Day           | jump to the first project                                      |
+| G            | Day           | jump to the last project                                       |
+| Enter        | Day           | copy the selected project's notes to the clipboard             |
+| ↓ / j        | Week          | select the next project in the weekly rollup                   |
+| ↑ / k        | Week          | select the previous project in the weekly rollup               |
+| g            | Week          | jump to the first project in the weekly rollup                 |
+| G            | Week          | jump to the last project in the weekly rollup                  |
+| Enter        | Week          | copy the selected project's week (with hours) to the clipboard |
+| ← / h        | All           | go to the previous day                                         |
+| → / l        | All           | go to the next day                                             |
+| H            | All           | go back a week                                                 |
+| L            | All           | go forward a week                                              |
+| [ / PageUp   | All           | go back a month                                                |
+| ] / PageDown | All           | go forward a month                                             |
+| t / T        | All           | go to today                                                    |
+| :            | All           | jump to a date                                                 |
+| f            | All           | toggle zooming into the weekly bar chart                       |
+| w            | Day, Week     | toggle the week's per-project rollup                           |
+| v            | Day, Raw file | view the active date's file as it sits on disk                 |
+| ↓ / j        | Raw file      | scroll the raw file down                                       |
+| ↑ / k        | Raw file      | scroll the raw file up                                         |
+| r            | All           | reload the current date from disk                              |
+| e            | All           | edit the current date's notes in $EDITOR                       |
+| y            | All           | copy the day's summary (with hours) to the clipboard           |
+| Y            | All           | copy the week's summary (with hours) to the clipboard          |
+| ?            | All           | show the help popup                                            |
+| Esc / q      | All           | quit                                                           |
+| ? / Esc / q  | All           | close the help popup                                           |
+
+Ctrl-C isn't in the table above because it doesn't mean one thing: it quits
+immediately, the same as `Esc`/`q`, everywhere except while the `:` date
+prompt is open, where it cancels the half-typed date instead — the readline
+convention of Ctrl-C aborting the current line rather than the whole session.
 
 ### Example Output
 

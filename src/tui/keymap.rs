@@ -23,6 +23,8 @@ const NONE: KeyModifiers = KeyModifiers::NONE;
 
 /// Heading of the README table's key column.
 const KEYS_HEADING: &str = "Keys";
+/// Heading of the README table's mode column.
+const MODE_HEADING: &str = "Mode";
 /// Heading of the README table's description column.
 const ACTION_HEADING: &str = "Action";
 
@@ -63,6 +65,39 @@ impl ModeMask {
             Mode::ZoomedWeek => Self::ZOOM,
             Mode::RawFile => Self::RAW,
         }
+    }
+
+    /// How this mask reads in the README's Mode column.
+    ///
+    /// `All` once every mode is covered, so a mode added later doesn't turn
+    /// `ModeMask::ALL` into an ever-longer list; otherwise the modes it
+    /// contains, comma-separated in [`MODE_ORDER`]. The popup needs none of
+    /// this — [`help_rows`] is already filtered to one mode — only the
+    /// README lists every mode side by side.
+    fn label(self) -> String {
+        if self == Self::ALL {
+            return "All".to_owned();
+        }
+        MODE_ORDER
+            .into_iter()
+            .filter(|&mode| self.contains(mode))
+            .map(mode_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// Every [`Mode`], in the order [`ModeMask::label`] and the README's Mode
+/// column list them.
+const MODE_ORDER: [Mode; 4] = [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile];
+
+/// A [`Mode`], spelled the way the README's Mode column shows it.
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Day => "Day",
+        Mode::Week => "Week",
+        Mode::ZoomedWeek => "Zoomed chart",
+        Mode::RawFile => "Raw file",
     }
 }
 
@@ -373,10 +408,23 @@ pub fn closes_overlay(key: KeyEvent) -> bool {
 /// Rows arrive ordered by [`Group`] with an empty pair between groups, which
 /// is how the popup draws them as separate blocks without needing to know
 /// what the groups are.
+///
+/// Drops the ambient [`AppEvent::Quit`] row. The popup is only ever on
+/// screen while the help overlay is open, and while it is, `Esc`/`q` close
+/// it rather than quitting — the overlay layer checks
+/// [`closes_overlay`] before either key ever reaches the global bindings.
+/// Showing "Esc / q → quit" right beside `CLOSE_OVERLAY`'s "? / Esc / q →
+/// close the help popup" would have the popup contradict itself over the
+/// very keys it names. `readme_table` keeps the row: the README documents
+/// the whole app, not a screen that only exists while a modal owns the
+/// keys.
 pub fn help_rows(mode: Mode) -> Vec<(String, &'static str)> {
     let mut rows = Vec::new();
     let mut previous: Option<Group> = None;
-    for binding in documented().filter(|binding| binding.modes.contains(mode)) {
+    for binding in documented()
+        .filter(|binding| binding.modes.contains(mode))
+        .filter(|binding| binding.event != AppEvent::Quit)
+    {
         if previous.is_some_and(|group| group != binding.group) {
             rows.push((String::new(), ""));
         }
@@ -391,22 +439,38 @@ pub fn help_rows(mode: Mode) -> Vec<(String, &'static str)> {
 /// `readme_keybind_table_matches_the_binding_table` asserts the README
 /// contains this verbatim, so regenerating it is the only supported way to
 /// change that section.
+///
+/// Carries a Mode column because five keys — `j`, `k`, `g`, `G`, `Enter` —
+/// are bound more than once, meaning something different in Day, Week or
+/// RawFile each time; a flat two-column table couldn't say which without
+/// five ambiguous-looking duplicate rows. [`help_rows`] doesn't need this:
+/// it is already filtered to one mode, so within a single popup a key
+/// appears at most once.
 pub fn readme_table() -> String {
-    let rows: Vec<(String, &'static str)> = documented()
-        .map(|binding| (binding.rendered_keys(), binding.description))
+    let rows: Vec<(String, String, &'static str)> = documented()
+        .map(|binding| {
+            (
+                binding.rendered_keys(),
+                binding.modes.label(),
+                binding.description,
+            )
+        })
         .collect();
-    let keys_width = column_width(rows.iter().map(|(keys, _)| keys.as_str()), KEYS_HEADING);
-    let action_width = column_width(rows.iter().map(|(_, action)| *action), ACTION_HEADING);
+    let keys_width = column_width(rows.iter().map(|(keys, _, _)| keys.as_str()), KEYS_HEADING);
+    let mode_width = column_width(rows.iter().map(|(_, mode, _)| mode.as_str()), MODE_HEADING);
+    let action_width = column_width(rows.iter().map(|(_, _, action)| *action), ACTION_HEADING);
 
     let mut lines = Vec::with_capacity(rows.len() + 2);
     lines.push(format!(
-        "| {KEYS_HEADING:<keys_width$} | {ACTION_HEADING:<action_width$} |"
+        "| {KEYS_HEADING:<keys_width$} | {MODE_HEADING:<mode_width$} | {ACTION_HEADING:<action_width$} |"
     ));
-    lines.push(format!("| {:-<keys_width$} | {:-<action_width$} |", "", ""));
-    lines.extend(
-        rows.iter()
-            .map(|(keys, action)| format!("| {keys:<keys_width$} | {action:<action_width$} |")),
-    );
+    lines.push(format!(
+        "| {:-<keys_width$} | {:-<mode_width$} | {:-<action_width$} |",
+        "", "", ""
+    ));
+    lines.extend(rows.iter().map(|(keys, mode, action)| {
+        format!("| {keys:<keys_width$} | {mode:<mode_width$} | {action:<action_width$} |")
+    }));
     lines.join("\n")
 }
 
@@ -480,7 +544,7 @@ mod tests {
     use std::collections::HashSet;
 
     /// Every mode, so a test cannot quietly cover only some of them.
-    const ALL_MODES: [Mode; 4] = [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile];
+    const ALL_MODES: [Mode; 4] = MODE_ORDER;
 
     #[test]
     fn no_duplicate_key_within_a_mode() {
@@ -509,6 +573,61 @@ mod tests {
             readme.contains(&readme_table()),
             "README keybind table is stale — regenerate it from BINDINGS with \
              `cargo test -- --ignored print_readme_table --nocapture`"
+        );
+    }
+
+    /// `j`, `k`, `g`, `G` and `Enter` each mean something different in more
+    /// than one mode; the README's Mode column exists so listing them twice
+    /// (or three times, for `j`/`k`) reads as "different pane" rather than
+    /// as a stray duplicate row.
+    #[test]
+    fn readme_table_disambiguates_duplicate_keys_with_a_mode_column() {
+        let table = readme_table();
+        assert!(table.contains(MODE_HEADING), "got:\n{table}");
+        let day_row = table
+            .lines()
+            .find(|line| line.contains("Day") && line.contains("select the next project"));
+        let week_row = table.lines().find(|line| {
+            line.contains("Week") && line.contains("select the next project in the weekly rollup")
+        });
+        assert!(
+            day_row.is_some(),
+            "no Day row for the list-down key:\n{table}"
+        );
+        assert!(
+            week_row.is_some(),
+            "no Week row for the list-down key:\n{table}"
+        );
+    }
+
+    #[test]
+    fn mode_mask_label_lists_modes_and_collapses_to_all() {
+        assert_eq!(ModeMask::DAY.label(), "Day");
+        assert_eq!(ModeMask::DAY.or(ModeMask::WEEK).label(), "Day, Week");
+        assert_eq!(ModeMask::ALL.label(), "All");
+    }
+
+    /// The wart the brief called out: the popup used to advertise
+    /// `Esc / q → quit` right beside `CLOSE_OVERLAY`'s `? / Esc / q → close
+    /// the help popup`, contradicting each other while the popup — the only
+    /// time either row is ever shown — is open. `readme_table` keeps the
+    /// `Quit` row; only `help_rows` (what the popup renders) drops it.
+    #[test]
+    fn help_rows_omits_the_quit_row_shadowed_by_close_overlay() {
+        for mode in ALL_MODES {
+            let descriptions: Vec<_> = help_rows(mode).into_iter().map(|(_, d)| d).collect();
+            assert!(
+                !descriptions.contains(&"quit"),
+                "{mode:?} help popup must not claim Esc/q quits while it is showing"
+            );
+            assert!(
+                descriptions.contains(&"close the help popup"),
+                "{mode:?} help popup lost its own close instructions"
+            );
+        }
+        assert!(
+            readme_table().lines().any(|line| line.contains("quit")),
+            "the README must still document Quit even though the popup omits it"
         );
     }
 

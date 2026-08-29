@@ -103,6 +103,8 @@ fn clamp_to_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::event::AppEvent;
+    use crate::tui::keymap::BINDINGS;
 
     fn rendered(mode: Mode) -> String {
         let theme = Theme::dark();
@@ -142,5 +144,68 @@ mod tests {
     fn the_popup_is_narrowed_to_the_mode() {
         assert!(rendered(Mode::Day).contains("select the next project"));
         assert!(!rendered(Mode::ZoomedWeek).contains("select the next project"));
+    }
+
+    /// Sourced from [`BINDINGS`] directly rather than `help_rows`, so this
+    /// checks the popup against the actual source of truth instead of
+    /// re-checking `help_rows`'s own output against itself — a binding added
+    /// to the table without a row here fails this test with no edit needed.
+    #[test]
+    fn every_binding_live_in_a_mode_appears_on_that_modes_popup() {
+        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+            let screen = rendered(mode);
+            for binding in BINDINGS.iter().filter(|b| b.modes.contains(mode)) {
+                // `Quit` shares `Esc`/`q` with the overlay's own close keys,
+                // and while the popup is open those keys close it rather
+                // than quitting — see `help_rows`'s doc, and the test below.
+                if binding.event == AppEvent::Quit {
+                    continue;
+                }
+                assert!(
+                    screen.contains(binding.description),
+                    "{mode:?} popup is missing {:?}:\n{screen}",
+                    binding.keys
+                );
+            }
+        }
+    }
+
+    /// The wart the brief called out: the popup used to advertise
+    /// `Esc / q → quit` right beside `? / Esc / q → close the help popup`,
+    /// which contradict each other while the popup — the only time either
+    /// row is ever shown — is open. This pins the rendered text, not just
+    /// `help_rows`'s output, against that coming back.
+    #[test]
+    fn the_popup_never_claims_esc_or_q_quits() {
+        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+            let screen = rendered(mode);
+            assert!(
+                screen.contains("close the help popup"),
+                "{mode:?} popup lost its own close instructions:\n{screen}"
+            );
+            assert!(
+                !screen.contains("quit"),
+                "{mode:?} popup must not claim Esc/q quits while it is showing:\n{screen}"
+            );
+        }
+    }
+
+    /// Regression: date navigation used to appear in neither the popup nor
+    /// the README, so a user reading either one learned no way to look at
+    /// yesterday.
+    #[test]
+    fn help_lists_the_date_motions() {
+        let screen = rendered(Mode::Day);
+        for expected in [
+            "go to the previous day",
+            "go forward a week",
+            "go forward a month",
+            "jump to a date",
+        ] {
+            assert!(
+                screen.contains(expected),
+                "help omits {expected}:\n{screen}"
+            );
+        }
     }
 }
