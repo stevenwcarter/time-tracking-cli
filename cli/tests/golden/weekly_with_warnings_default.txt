@@ -1,0 +1,154 @@
+
+================================================================================
+WEEKLY TIME TRACKING SUMMARY
+Week of Saturday 2026-08-22 to Friday 2026-08-28
+================================================================================
+
+
+📊 WEEKLY TOTALS
+----------------------------------------
+⏱️  Total Working Time: 14:00 (14.00 hrs)
+⏸️  Total Dead Time: 6:30 (6.50 hrs)
+
+
+⚠️  WEEKLY WARNINGS
+  ⚠ Saturday 2026-08-22: Time period 1:00-10:00 appears to be longer than 8 hours. Input may not be in correct order.
+  ⚠ Monday 2026-08-24: Gap from 1:30 to 8:00 appears to be longer than 6 hours. Input may not be in correct order.
+
+📋 WEEKLY PROJECTS SUMMARY
+  📌 client-bd - 9:30 (9.50 hrs)
+     • Saturday 2026-08-22: Long client engagement session
+     • Monday 2026-08-24: Early check-in
+  📌 internal - 3:00 (3.00 hrs)
+     • Monday 2026-08-24: Standup after a big gap
+     • Wednesday 2026-08-26: Team sync
+  📌 ops - 1:00 (1.00 hrs)
+     • Friday 2026-08-28: Equipment check
+  📌 admin - 0:30 (0.50 hrs)
+     • Tuesday 2026-08-25: Routine paperwork
+
+
+================================================================================
+DAILY BREAKDOWNS
+================================================================================
+
+
+📅 Saturday 2026-08-22
+============================================================
+
+  📅 TIME OVERVIEW
+  Start Time: 1:00
+  End Time:   10:00
+
+  ⏱️  WORKING TIME
+  Total: 9:00 (9.00 hours)
+
+  ⏸️  DEAD TIME
+  ✅ No dead time (gaps) found
+
+
+  ⚠️  WARNINGS
+    ⚠ Time period 1:00-10:00 appears to be longer than 8 hours. Input may not be in correct order.
+
+  📋 PROJECTS
+    📌 client-bd - 9:00 (9.00 hrs)
+       • Long client engagement session
+
+
+
+📅 Sunday 2026-08-23
+============================================================
+
+  📄 No time tracking file found
+
+📅 Monday 2026-08-24
+============================================================
+
+  📅 TIME OVERVIEW
+  Start Time: 1:00
+  End Time:   9:00
+
+  ⏱️  WORKING TIME
+  Total: 1:30 (1.50 hours)
+
+  ⏸️  DEAD TIME
+  ❌ 6:30 (6.50 hours)
+
+
+  ⚠️  WARNINGS
+    ⚠ Gap from 1:30 to 8:00 appears to be longer than 6 hours. Input may not be in correct order.
+
+  📋 PROJECTS
+    📌 client-bd - 0:30 (0.50 hrs)
+       • Early check-in
+    📌 internal - 1:00 (1.00 hrs)
+       • Standup after a big gap
+
+
+
+📅 Tuesday 2026-08-25
+============================================================
+
+  📅 TIME OVERVIEW
+  Start Time: 9:00
+  End Time:   9:30
+
+  ⏱️  WORKING TIME
+  Total: 0:30 (0.50 hours)
+
+  ⏸️  DEAD TIME
+  ✅ No dead time (gaps) found
+
+
+  📋 PROJECTS
+    📌 admin - 0:30 (0.50 hrs)
+       • Routine paperwork
+
+
+
+📅 Wednesday 2026-08-26
+============================================================
+
+  📅 TIME OVERVIEW
+  Start Time: 9:00
+  End Time:   11:00
+
+  ⏱️  WORKING TIME
+  Total: 2:00 (2.00 hours)
+
+  ⏸️  DEAD TIME
+  ✅ No dead time (gaps) found
+
+
+  📋 PROJECTS
+    📌 internal - 2:00 (2.00 hrs)
+       • Team sync
+
+
+
+📅 Thursday 2026-08-27
+============================================================
+
+  💤 No time tracking data found
+
+📅 Friday 2026-08-28
+============================================================
+
+  📅 TIME OVERVIEW
+  Start Time: 9:00
+  End Time:   10:00
+
+  ⏱️  WORKING TIME
+  Total: 1:00 (1.00 hours)
+
+  ⏸️  DEAD TIME
+  ✅ No dead time (gaps) found
+
+
+  📋 PROJECTS
+    📌 ops - 1:00 (1.00 hrs)
+       • Equipment check
+
+
+
+================================================================================

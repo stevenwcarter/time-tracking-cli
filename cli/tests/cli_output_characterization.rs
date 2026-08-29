@@ -113,6 +113,41 @@ fn missing_day_still_renders_no_file_found() {
     );
 }
 
+/// Pins the `⚠️  WEEKLY WARNINGS` block, which no other fixture triggers.
+/// `week_with_warnings` has one day with a single entry over
+/// `MAX_ENTRY_DURATION_MINUTES` (8h) and another with a gap between
+/// consecutive entries over `MAX_GAP_DURATION_MINUTES` (6h), so both
+/// `time-tracking-parser` warning message shapes are covered.
+#[test]
+fn weekly_summary_includes_warnings_section() {
+    let dir = staged("week_with_warnings");
+    let got = run_ttcli(
+        &[
+            "--week",
+            "--date",
+            "2026-08-24",
+            "--formatter",
+            "default",
+            "--week-start-day",
+            "Saturday",
+        ],
+        dir.path(),
+    );
+    assert!(
+        got.contains("WEEKLY WARNINGS"),
+        "expected a warnings section in:\n{got}"
+    );
+    assert!(
+        got.contains("appears to be longer than 8 hours"),
+        "expected the over-long-entry warning in:\n{got}"
+    );
+    assert!(
+        got.contains("appears to be longer than 6 hours"),
+        "expected the over-long-gap warning in:\n{got}"
+    );
+    compare_golden("weekly_with_warnings_default", &got);
+}
+
 /// Ties are ordered by `HashMap` iteration today, so this asserts a property
 /// rather than exact bytes. It is expected to be unstable until Task 11 adds
 /// the name tiebreak.
