@@ -135,6 +135,28 @@ pub enum DayPane {
     Empty,
 }
 
+/// Why the day on screen has nothing tracked, once [`App::day_pane`] has
+/// already ruled out `Loading`.
+///
+/// Distinguishes "no file at all" from "a file that exists but the parser
+/// found no entries in it" the same way [`crate::data_svc::DataService::read_day`]
+/// distinguishes them at the disk: `Ok(None)` for a missing file versus
+/// `Ok(Some(_))` for one that exists, however it parses. `raw_content` and
+/// `project_list_widget` are written together by [`App::apply_payload`],
+/// so a file that parsed to zero projects leaves `raw_content` populated
+/// with `project_list_widget` still `None` — that pair is what tells the
+/// two states apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DayState {
+    /// The project list, which belongs to the date on screen.
+    Populated,
+    /// A file exists for the date but the parser recognised no time
+    /// entries in it — the raw text is still there to read, via `v`.
+    FileWithNoEntries,
+    /// No file exists for the date at all.
+    NoFile,
+}
+
 /// What the weekly rollup pane has to draw, once the rollup on hand has been
 /// checked against the week on screen.
 ///
@@ -991,6 +1013,23 @@ impl App {
             DayPane::Projects
         } else {
             DayPane::Empty
+        }
+    }
+
+    /// Which of the three [`DayState`]s the day on screen is in.
+    ///
+    /// Deliberately not gated on `loaded_date` the way [`App::day_pane`] is:
+    /// this only has to tell `NoFile` apart from `FileWithNoEntries` once
+    /// the render path already knows it is in `DayPane::Empty`, and by then
+    /// `raw_content` and `project_list_widget` already belong to the date
+    /// on screen.
+    pub fn day_state(&self) -> DayState {
+        if self.project_list_widget.is_some() {
+            DayState::Populated
+        } else if self.raw_content.is_some() {
+            DayState::FileWithNoEntries
+        } else {
+            DayState::NoFile
         }
     }
 
@@ -3215,7 +3254,10 @@ mod tests {
 
         let screen = render_to_string(&mut app, 80, 24);
 
-        assert!(screen.contains("No data found for date"), "got:\n{screen}");
+        assert!(
+            screen.contains("No file for this day yet"),
+            "got:\n{screen}"
+        );
         assert!(screen.contains(HELP_HINT), "got:\n{screen}");
     }
 

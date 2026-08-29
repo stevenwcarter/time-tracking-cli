@@ -7,7 +7,7 @@ use time::Date;
 
 use crate::{DATE_FORMAT, time_utils::WeekdayExt};
 
-use super::app::{App, DayPane, LOADING_MESSAGE, WeekPane};
+use super::app::{App, DayPane, DayState, LOADING_MESSAGE, WeekPane};
 use super::mode::{Mode, Overlay};
 use super::theme::Theme;
 use super::week_list::WeekListWidget;
@@ -141,7 +141,15 @@ impl App {
                 );
             }
             DayPane::Empty => {
-                render_pane_message(EMPTY_TEXT, self.ctx.theme.warning, block, chunks[1], buf);
+                // `DayState::Populated` cannot reach this arm — `day_pane`
+                // already routed it to `DayPane::Projects` above — but the
+                // match stays total rather than reaching for
+                // `unreachable!()` in a render path swept for panics.
+                let text = match self.day_state() {
+                    DayState::Populated | DayState::NoFile => NO_FILE_TEXT,
+                    DayState::FileWithNoEntries => FILE_WITH_NO_ENTRIES_TEXT,
+                };
+                render_call_to_action(text, self.ctx.theme.warning, block, chunks[1], buf);
             }
         }
     }
@@ -293,9 +301,19 @@ impl App {
     }
 }
 
-/// What the day pane says when there is nothing to show for the date on
-/// screen.
-const EMPTY_TEXT: &str = "No data found for date";
+/// What the day pane says when there is no file at all for the date on
+/// screen — the first screen a new user sees, and the one every weekend and
+/// future date lands on too. Names the two keys that move forward: `e` to
+/// start writing this date's file, `t` to bail back to a date that might
+/// already have one.
+const NO_FILE_TEXT: &str =
+    "No file for this day yet. press e to create and edit it · press t for today";
+
+/// What the day pane says when a file exists but the parser recognised no
+/// time entries in it — distinct from [`NO_FILE_TEXT`], and pointed at `v`:
+/// the raw text is still there to read even though the project list has
+/// nothing to show.
+const FILE_WITH_NO_ENTRIES_TEXT: &str = "This file has no time entries the parser recognised. press v to see the raw text · press e to edit";
 
 /// What the weekly rollup says for a week that loaded and turned out to
 /// have nothing in it. Deliberately not the day pane's wording: "no data
@@ -308,6 +326,20 @@ fn render_pane_message(text: &str, style: Style, block: Block<'_>, area: Rect, b
         .block(block)
         .style(style)
         .alignment(Alignment::Left)
+        .render(area, buf);
+}
+
+/// The day pane's empty-state call to action — see [`DayState`]. Centred and
+/// word-wrapped rather than [`render_pane_message`]'s left-aligned single
+/// line: [`NO_FILE_TEXT`] and [`FILE_WITH_NO_ENTRIES_TEXT`] both run well
+/// past [`MIN_COLS`], so they need to wrap to stay readable on the narrowest
+/// terminal the day view supports at all.
+fn render_call_to_action(text: &str, style: Style, block: Block<'_>, area: Rect, buf: &mut Buffer) {
+    Paragraph::new(text)
+        .block(block)
+        .style(style)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true })
         .render(area, buf);
 }
 
@@ -433,6 +465,21 @@ mod tests {
         day_app().with_weekly_summary(fixture_week_summary())
     }
 
+    /// No file at all for the active date — `DayState::NoFile`, exercising
+    /// [`render_call_to_action`]'s centred wrap rather than [`day_app`]'s
+    /// project list.
+    fn empty_no_file_app() -> App {
+        App::new(TuiContext::for_test()).with_active_date(fixture_date())
+    }
+
+    /// A file that parsed to no entries — `DayState::FileWithNoEntries`,
+    /// the other text [`render_call_to_action`] has to wrap.
+    fn empty_file_with_no_entries_app() -> App {
+        App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_raw_content("# just a heading, no entries\n")
+    }
+
     #[test]
     fn breakpoints_are_chosen_by_size() {
         assert_eq!(breakpoint(Rect::new(0, 0, 50, 20)), Breakpoint::TooSmall);
@@ -515,9 +562,18 @@ mod tests {
     /// border and title, but not the cursor span drawn one cell past the
     /// typed text, which is exactly the arithmetic most likely to run past
     /// a narrow buffer's edge.
+    ///
+    /// `empty_no_file_app` and `empty_file_with_no_entries_app` cover the
+    /// task's own new arithmetic: `render_call_to_action`'s centred wrap,
+    /// which `day_app` and `week_app` never reach at all.
     #[tokio::test]
     async fn no_render_panics_at_any_plausible_size() {
-        for build in [day_app as fn() -> App, week_app as fn() -> App] {
+        for build in [
+            day_app as fn() -> App,
+            week_app as fn() -> App,
+            empty_no_file_app as fn() -> App,
+            empty_file_with_no_entries_app as fn() -> App,
+        ] {
             for (w, h) in [
                 (1, 1),
                 (10, 3),
@@ -665,5 +721,45 @@ mod tests {
         let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 27));
         let screen = render_to_string(&mut app, 100, 30);
         assert!(screen.contains("Thu 2026-08-27"), "got:\n{screen}");
+    }
+
+    /// The first screen a new user sees, and the one every weekend and
+    /// future date lands on too: no file, no data, and — before this task —
+    /// no way forward. `e` is the key that fixes that.
+    #[tokio::test]
+    async fn no_file_offers_to_create_one() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 30));
+        assert_eq!(app.day_state(), DayState::NoFile);
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("Sun 2026-08-30"), "got:\n{screen}");
+        assert!(screen.contains("press e"), "got:\n{screen}");
+    }
+
+    /// A file that exists but fences or parses to zero entries is not the
+    /// same dead end as no file at all: the raw text is still there, via
+    /// `v`.
+    #[tokio::test]
+    async fn a_file_that_parses_to_nothing_says_so_and_points_at_v() {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(date!(2026 - 08 - 30))
+            .with_raw_content("# just a heading, no entries\n");
+        assert_eq!(app.day_state(), DayState::FileWithNoEntries);
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(screen.contains("no time entries"), "got:\n{screen}");
+        assert!(screen.contains("press v"), "got:\n{screen}");
+    }
+
+    /// Regression: the hint used to live inside `ProjectListWidget::render`,
+    /// so it vanished on exactly the empty day a new user is most likely to
+    /// meet first. The footer moved up to `App` since, but nothing pinned
+    /// that it stayed put on the one screen that matters most.
+    #[tokio::test]
+    async fn the_help_hint_survives_the_empty_screen() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 30));
+        let screen = render_to_string(&mut app, 100, 30);
+        assert!(
+            screen.contains("? for help"),
+            "the hint must not vanish on an empty day:\n{screen}"
+        );
     }
 }
