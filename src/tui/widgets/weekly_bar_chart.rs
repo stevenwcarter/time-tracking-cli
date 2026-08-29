@@ -200,10 +200,18 @@ impl<'a> WeeklyBarChart<'a> {
     }
 
     /// Row inside `inner_area` the goal line sits on, or `None` if the area
-    /// is too short to have a bar row at all.
+    /// is too short to spare it a row.
+    ///
+    /// "Too short" is *two* bar rows, not one. The `.max(1)` below can force
+    /// the marker onto the bottom bar row, and where there is only one bar
+    /// row that is every row the data has: at 60x6 the zoomed chart drew a
+    /// rule and seven day labels and nothing else, strictly less than 60x5
+    /// one row smaller. The marker is drawn over the bars so a bar that
+    /// reaches the target visibly pierces it; with nothing left to pierce
+    /// it, it is not worth the row it erases.
     fn goal_marker_row(&self, inner_area: Rect, ceiling: u64) -> Option<u16> {
         let bars_height = inner_area.height.checked_sub(1)?; // bottom row holds the day labels
-        if bars_height == 0 {
+        if bars_height <= 1 {
             return None;
         }
         // `.min(ceiling)` guards the subtraction below in case the invariant
@@ -467,6 +475,48 @@ mod tests {
 
         chart.set_daily_target_hours(6.0);
         assert_eq!(chart.ceiling_for(Rect::new(0, 0, 80, 30)), 60);
+    }
+
+    /// The flip side of the `.max(1)` clamp the test below pins. When a long
+    /// day dwarfs the target the marker is forced onto the *bottom* bar row,
+    /// and where there is only one bar row that is all of them: at 60x6
+    /// `Mode::ZoomedWeek` drew a rule and seven day labels and no data at
+    /// all, strictly less than 60x5 one row smaller. The marker is drawn
+    /// over the bars so a bar can visibly pierce it; with nothing left to
+    /// pierce it, it is not worth the row it erases.
+    #[test]
+    fn the_goal_marker_is_dropped_rather_than_covering_the_only_bar_row() {
+        let theme = Theme::none();
+        let week = week();
+        let mut data = HashMap::new();
+        data.insert(date!(2026 - 08 - 24), 480u32); // a full-height 8h bar
+        let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        chart.set_weekly_data(&data);
+        chart.set_daily_target_hours(1.0); // dwarfed, so `.max(1)` forces the marker down
+        let ceiling = chart.ceiling_for(Rect::new(0, 0, 80, 30));
+
+        assert_eq!(
+            chart.goal_marker_row(Rect::new(0, 0, 80, 2), ceiling),
+            None,
+            "one bar row leaves no room for both the marker and the bars"
+        );
+
+        // And the bars really do survive on screen. `Block::inner` charges a
+        // row for the title even with `Borders::NONE` and the bottom row
+        // holds the day labels, so a five-row widget area — what a 60x6
+        // terminal leaves once `App` takes its status line — has exactly one
+        // bar row.
+        let area = Rect::new(0, 0, 60, 5);
+        let mut buf = Buffer::empty(area);
+        (&mut chart).render(area, &mut buf);
+        let screen: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol().to_owned())
+            .collect();
+        assert!(
+            screen.contains('█'),
+            "the one bar row must carry the week's bars, not the marker:\n{screen}"
+        );
     }
 
     #[test]

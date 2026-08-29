@@ -475,9 +475,13 @@ fn bounding_rect(chunks: &[Rect]) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use time::Weekday;
     use time::macros::date;
 
     use super::*;
+    use crate::time_utils::get_week_dates;
     use crate::tui::context::TuiContext;
     use crate::tui::testing::{
         fixture_date, fixture_day, fixture_day_with_notes, fixture_day_with_projects,
@@ -495,6 +499,26 @@ mod tests {
     /// the real pane rather than its empty state.
     fn week_app() -> App {
         day_app().with_weekly_summary(fixture_week_summary())
+    }
+
+    /// `day_app` with a week's chart data, calendar markers and a long,
+    /// already-scrolled raw file landed on top, so the sweep reaches
+    /// `WeeklyBarChart`'s real arithmetic — `bar_values`, `style_for`,
+    /// `calculate_bar_dimensions`'s two divisions and `BarChart`'s own
+    /// layout with actual `Bar`s — instead of the empty box an unseeded
+    /// `weekly_data` produces.
+    fn charted_app() -> App {
+        let week: HashMap<Date, u32> = get_week_dates(&fixture_date(), Weekday::Saturday)
+            .into_iter()
+            .enumerate()
+            .map(|(i, date)| (date, i as u32 * 137 + 1439))
+            .collect();
+        let mut app = day_app()
+            .with_populated_dates(vec![fixture_date()])
+            .with_weekly_data(week);
+        app.raw_content = Some((0..300).map(|i| format!("line {i}\n")).collect());
+        app.raw_scroll = 250;
+        app
     }
 
     /// A completed load that found no file — `EmptyReason::NoFile`,
@@ -710,11 +734,21 @@ mod tests {
     /// `empty_unreadable_app` cover the task's own new arithmetic:
     /// `render_call_to_action`'s centred wrap, all three of its texts,
     /// which `day_app` and `week_app` never reach at all.
+    ///
+    /// `charted_app` is the third fixture added for the same reason as
+    /// `week_app`, on the axis that had gone vacuous next: none of the
+    /// others calls `with_weekly_data`, so `prepare_bars` early-returned an
+    /// empty vector and `Mode::ZoomedWeek` swept an empty box at every
+    /// size — leaving the widget with the most arithmetic on the branch
+    /// unswept. It seeds a scrolled raw file too, so `render_raw_file`'s
+    /// `visible_lines`/`clamp_raw_scroll` path is exercised somewhere other
+    /// than its trivial state.
     #[tokio::test]
     async fn no_render_panics_at_any_plausible_size() {
         for build in [
             day_app as fn() -> App,
             week_app as fn() -> App,
+            charted_app as fn() -> App,
             empty_no_file_app as fn() -> App,
             empty_file_with_no_entries_app as fn() -> App,
             empty_unreadable_app as fn() -> App,
@@ -742,6 +776,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The same guard for the chart axis, and the half of this fix that
+    /// stops the hole reopening: this branch has now caught the sweep going
+    /// vacuous twice, once for the week rollup and once for the bar chart,
+    /// and both times the fixture was there while nothing checked it still
+    /// reached the widget. Bars at a size the sweep actually renders is
+    /// what makes `charted_app` more than decoration.
+    #[tokio::test]
+    async fn the_sweeps_chart_fixture_really_renders_bars() {
+        let mut app = charted_app();
+        app.mode = Mode::ZoomedWeek;
+        let screen = render_to_string(&mut app, 80, 24);
+
+        assert!(
+            screen.contains('\u{2588}'),
+            "the sweep must not draw an empty chart:\n{screen}"
+        );
+        assert!(
+            !screen.contains("0.0h total"),
+            "nor total an empty week:\n{screen}"
+        );
     }
 
     /// Guards the sweep above from silently going vacuous again: at a size
