@@ -619,7 +619,12 @@ impl DataService {
                 && let Ok(metadata) = tokio::fs::metadata(file_path).await
                 && let Ok(file_mod_time) = metadata.modified()
                 && let Some(cached_mod_time) = entry.file_mod_time
-                && file_mod_time <= cached_mod_time
+                // Inequality, not `<=`. The question is "has the file changed
+                // since we cached it", not "is it newer than what we cached":
+                // a restore from backup, a `git checkout`, a `cp -p` or clock
+                // skew on a network mount all move the mtime *backwards*, and
+                // `<=` called every one of those unmodified.
+                && file_mod_time == cached_mod_time
             {
                 // File hasn't been modified, the entry is still good
                 return Ok(Some(entry));
@@ -782,6 +787,43 @@ mod tests {
             service.parse_day(&d).await.unwrap().unwrap().total_minutes,
             240,
             "the cache must not be holding the pre-write parse"
+        );
+    }
+
+    /// A day file replaced by an *older* copy must invalidate the cache.
+    ///
+    /// The validity check asked `file_mod_time <= cached_mod_time`, which is an
+    /// ordering question nobody was asking: a `git checkout`, a `cp -p`, an
+    /// `rsync --times`, a restore from backup, an editor that preserves mtime,
+    /// or clock skew on a network mount all move the mtime backwards, and the
+    /// cache then declared itself still valid and served the pre-restore
+    /// content for the rest of the TTL. `!=` is the question actually being
+    /// asked: has the file changed since we cached it.
+    #[tokio::test]
+    async fn a_day_file_restored_to_an_older_copy_is_not_served_from_cache() {
+        let (service, dir) = hermetic_service(60);
+        let d = date!(2026 - 08 - 24);
+        let path = dir.path().join("2026-08-24.md");
+
+        tokio::fs::write(&path, "8-12 admin\n").await.unwrap();
+        assert_eq!(
+            service.parse_day(&d).await.unwrap().unwrap().total_minutes,
+            240
+        );
+
+        tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+        let an_hour_ago = SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(an_hour_ago)
+            .unwrap();
+
+        assert_eq!(
+            service.parse_day(&d).await.unwrap().unwrap().total_minutes,
+            120,
+            "a file whose mtime went backwards has still changed"
         );
     }
 
