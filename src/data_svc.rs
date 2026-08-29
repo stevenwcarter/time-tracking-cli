@@ -10,6 +10,9 @@ use time::Date;
 use time_tracking_parser::TimeTrackingData;
 use tokio::{fs, sync::Mutex};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::{Config, DATE_FORMAT, file_utils::create_template_content, get_time_tracking_dir};
 
 static DATA_SVC: OnceLock<DataService> = OnceLock::new();
@@ -17,8 +20,11 @@ static DATA_SVC: OnceLock<DataService> = OnceLock::new();
 /// Cache entry for a date's data
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    /// The parsed time tracking data
+    /// The raw file content
     data: Option<String>,
+    /// The parsed time tracking data, memoized alongside `data` so a full
+    /// cache hit never re-runs the markdown parse.
+    parsed: Option<TimeTrackingData>,
     /// File modification time when cached
     file_mod_time: Option<SystemTime>,
     /// When this entry was cached
@@ -115,6 +121,12 @@ pub struct DataService {
     data_dir: DataDir,
     /// How those files are parsed and created
     parse_opts: ParseOpts,
+    /// Real (non-cached) parse count. Test-only seam: a second `parse_day`
+    /// call returns the same data whether or not it reparsed, so equal
+    /// results alone can't prove memoization — this counter, incremented
+    /// only where `parse_time_tracking_data` actually runs, can.
+    #[cfg(test)]
+    parse_count: Arc<AtomicUsize>,
 }
 
 impl DataService {
@@ -158,6 +170,8 @@ impl DataService {
             cache_timeout: cache_timeout_seconds,
             data_dir,
             parse_opts,
+            #[cfg(test)]
+            parse_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -211,17 +225,45 @@ impl DataService {
         Ok(Some(content))
     }
 
-    /// Parse a day's time tracking data
+    /// Parse a day's time tracking data, using the cached parse when the
+    /// backing file hasn't changed. This is the hot path for the TUI: a
+    /// single navigation key can call this ~97 times, and on a full cache
+    /// hit none of those calls should re-run the markdown parser.
     pub async fn parse_day(&self, date: &Date) -> Result<Option<TimeTrackingData>> {
+        let file_path = self.get_file_path(*date).await?;
+
+        if !file_path.exists() {
+            return Ok(None);
+        }
+
+        if let Some(parsed) = self.get_cached_parsed(date, &file_path).await? {
+            return Ok(Some(parsed));
+        }
+
         let Some(content) = self.read_day(date).await? else {
             return Ok(None);
         };
 
-        Ok(Some(time_tracking_parser::parse_time_tracking_data(
+        let parsed = time_tracking_parser::parse_time_tracking_data(
             &content,
             self.parse_opts.prefix(),
             self.parse_opts.suffix(),
-        )))
+        );
+
+        #[cfg(test)]
+        self.parse_count.fetch_add(1, Ordering::Relaxed);
+
+        self.cache_parsed(*date, parsed.clone()).await;
+
+        Ok(Some(parsed))
+    }
+
+    /// Real parses performed since the service was created. Test-only:
+    /// proves memoization by making the counter, not just the returned
+    /// value, the thing under test.
+    #[cfg(test)]
+    fn parse_count(&self) -> usize {
+        self.parse_count.load(Ordering::Relaxed)
     }
 
     /// Create a new day file with template content if it doesn't exist
@@ -310,8 +352,12 @@ impl DataService {
         Ok(weekly_data)
     }
 
-    /// Get cached content if valid, None otherwise
-    async fn get_cached_content(&self, date: &Date, file_path: &Path) -> Result<Option<String>> {
+    /// Return the cache entry for `date` if it is still valid for
+    /// `file_path`: within the cache timeout and not modified on disk since
+    /// it was cached. Both `get_cached_content` and `get_cached_parsed` are
+    /// built on this so the raw content and the parsed value share exactly
+    /// one validity check and always expire together.
+    async fn get_valid_entry(&self, date: &Date, file_path: &Path) -> Result<Option<CacheEntry>> {
         // Clone the entry so we can release the lock before doing I/O
         let cached_entry = {
             let cache = self.cache.lock().await;
@@ -329,25 +375,61 @@ impl DataService {
                 && let Some(cached_mod_time) = entry.file_mod_time
                 && file_mod_time <= cached_mod_time
             {
-                // File hasn't been modified, use cached content
-                return Ok(entry.data.clone());
+                // File hasn't been modified, the entry is still good
+                return Ok(Some(entry));
             }
         }
 
         Ok(None)
     }
 
-    /// Cache content for a date
+    /// Get cached content if valid, None otherwise
+    async fn get_cached_content(&self, date: &Date, file_path: &Path) -> Result<Option<String>> {
+        Ok(self
+            .get_valid_entry(date, file_path)
+            .await?
+            .and_then(|entry| entry.data))
+    }
+
+    /// Get the cached parse for `date` if it is still valid, None otherwise
+    async fn get_cached_parsed(
+        &self,
+        date: &Date,
+        file_path: &Path,
+    ) -> Result<Option<TimeTrackingData>> {
+        Ok(self
+            .get_valid_entry(date, file_path)
+            .await?
+            .and_then(|entry| entry.parsed))
+    }
+
+    /// Cache content for a date. Freshly read content has no known parse
+    /// yet, so `parsed` starts `None` and is filled in by `cache_parsed`
+    /// once `parse_day` actually runs the parser.
     async fn cache_content(&self, date: Date, file_mod_time: Option<SystemTime>, content: &str) {
         let mut cache = self.cache.lock().await;
 
         let entry = CacheEntry {
             data: Some(content.to_string()),
+            parsed: None,
             file_mod_time,
             cached_at: SystemTime::now(),
         };
 
         cache.insert(date, entry);
+    }
+
+    /// Store a freshly computed parse alongside whatever `cache_content`
+    /// already recorded for `date` (the raw content and its mod time). If
+    /// the entry was invalidated out from under us between the parse and
+    /// this call, there's nothing to attach the parse to and it is simply
+    /// dropped — the next `parse_day` call will parse again, which is
+    /// correct, just not maximally memoized.
+    async fn cache_parsed(&self, date: Date, parsed: TimeTrackingData) {
+        let mut cache = self.cache.lock().await;
+        if let Some(entry) = cache.get_mut(&date) {
+            entry.parsed = Some(parsed);
+        }
     }
 }
 
@@ -389,6 +471,7 @@ mod tests {
                 test_date,
                 CacheEntry {
                     data: Some("test content".to_string()),
+                    parsed: None,
                     file_mod_time: None,
                     cached_at: SystemTime::now(),
                 },
@@ -424,6 +507,7 @@ mod tests {
                 test_date1,
                 CacheEntry {
                     data: Some("test1".to_string()),
+                    parsed: None,
                     file_mod_time: None,
                     cached_at: SystemTime::now(),
                 },
@@ -432,6 +516,7 @@ mod tests {
                 test_date2,
                 CacheEntry {
                     data: Some("test2".to_string()),
+                    parsed: None,
                     file_mod_time: None,
                     cached_at: SystemTime::now(),
                 },
@@ -522,5 +607,62 @@ mod tests {
         // Read file
         let content = service.read_day(&test_date).await.unwrap();
         assert!(content.is_some());
+    }
+
+    #[tokio::test]
+    async fn parse_day_is_memoized_between_calls() {
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 24);
+        let path = service.get_file_path(test_date).await.unwrap();
+        tokio::fs::write(&path, "8-10 admin\n  - note\n")
+            .await
+            .unwrap();
+
+        let first = service.parse_day(&test_date).await.unwrap().unwrap();
+        let second = service.parse_day(&test_date).await.unwrap().unwrap();
+
+        assert_eq!(first.total_minutes, second.total_minutes);
+        assert_eq!(
+            service.parse_count(),
+            1,
+            "second call must be served from cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn touching_the_file_invalidates_the_parsed_cache() {
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 24);
+        let path = service.get_file_path(test_date).await.unwrap();
+
+        tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+        assert_eq!(
+            service
+                .parse_day(&test_date)
+                .await
+                .unwrap()
+                .unwrap()
+                .total_minutes,
+            120
+        );
+
+        // Sleep past filesystem mtime granularity, then rewrite.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        tokio::fs::write(&path, "8-12 admin\n").await.unwrap();
+
+        assert_eq!(
+            service
+                .parse_day(&test_date)
+                .await
+                .unwrap()
+                .unwrap()
+                .total_minutes,
+            240
+        );
+        assert_eq!(
+            service.parse_count(),
+            2,
+            "the rewrite must trigger a real reparse, not reuse the stale cache"
+        );
     }
 }
