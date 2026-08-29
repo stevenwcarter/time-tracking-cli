@@ -5,12 +5,12 @@
 #[test]
 fn webapp_only_server_stays_running() {
     use std::process::Command;
-    use std::time::Duration;
     use std::thread;
+    use std::time::Duration;
 
     // Find an available port by binding to port 0 (OS assigns ephemeral port)
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("failed to bind to ephemeral port");
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind to ephemeral port");
     let port = listener
         .local_addr()
         .expect("failed to get local addr")
@@ -19,7 +19,7 @@ fn webapp_only_server_stays_running() {
 
     // Spawn ttcli with --serve and --port, capturing output
     let mut child = Command::new(env!("CARGO_BIN_EXE_ttcli"))
-        .args(&["--serve", "--port"])
+        .args(["--serve", "--port"])
         .arg(port.to_string())
         .env("RUST_LOG", "info")
         .spawn()
