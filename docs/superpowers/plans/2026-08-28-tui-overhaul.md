@@ -2817,6 +2817,10 @@ gate:
 // Jan 31 2028 → `]` → Feb 29 2028 (2028 is a leap year)
 ```
 
+- [ ] **Step 2d: Pin the boundary one step below the floor (carried from Task 24's re-review)**
+
+`the_exact_floor_size_does_not_trigger_the_too_small_notice` pins 60×15 using the named constants, and a pre-existing test at 50×10 pins that the notice *does* appear well below the floor. What is missing is the adjacent case: exactly `MIN_COLS - 1` and `MIN_ROWS - 1`. That is the sharper pin against an off-by-one in `breakpoint()`'s `<` comparisons — the current pair would both still pass if the comparison flipped to `<=`. Add it, referencing the constants rather than literals.
+
 - [ ] **Step 3: Verify the whole suite and the lints**
 
 ```bash
