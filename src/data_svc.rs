@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use time::Date;
 use time_tracking_parser::TimeTrackingData;
 use tokio::{fs, sync::Mutex};
+use tracing::warn;
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -267,7 +268,23 @@ impl DataService {
     pub async fn read_day(&self, date: &Date) -> Result<Option<String>> {
         let file_path = self.get_file_path(*date).await?;
 
-        if !file_path.exists() {
+        // One stat answers everything the read needs to know up front: whether
+        // the file is there, whether it is a day file at all, and when it was
+        // last written — so `cache_content` does not have to stat again.
+        let metadata = match tokio::fs::metadata(&file_path).await {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e).with_context(|| format!("could not stat {}", file_path.display()));
+            }
+        };
+        // A directory or a FIFO can be named `YYYY-MM-DD.md` as easily as a
+        // day file can. Refusing them here is not pedantry: `read_to_string`
+        // on a directory fails with `EISDIR`, and on a FIFO it blocks forever
+        // with nothing to time it out — a hang is strictly worse than an
+        // error. "There is no day file here" is both true and non-fatal, and
+        // it is the same answer [`Self::existing_dates`] gives.
+        if !metadata.is_file() {
             return Ok(None);
         }
 
@@ -276,10 +293,18 @@ impl DataService {
             return Ok(Some(content));
         }
 
-        // Stat and read in one step so cache_content doesn't need to re-stat
-        let metadata = tokio::fs::metadata(&file_path).await.ok();
-        let file_mod_time = metadata.and_then(|m| m.modified().ok());
-        let content = fs::read_to_string(&file_path).await?;
+        let file_mod_time = metadata.modified().ok();
+        let content = match fs::read_to_string(&file_path).await {
+            Ok(content) => content,
+            // The file was there at the stat above and is gone now: deleting
+            // the day file while a load is in flight is enough to land here.
+            // "No file" is the honest answer and the same one the stat would
+            // have given a moment earlier.
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(e).with_context(|| format!("could not read {}", file_path.display()));
+            }
+        };
         self.cache_content(*date, file_mod_time, &content).await;
 
         Ok(Some(content))
@@ -378,6 +403,10 @@ impl DataService {
     /// error — it holds no day files, which is the answer the caller wants,
     /// and reads no longer create it (see [`Self::ensure_data_dir`]).
     ///
+    /// Only regular files are candidates. A directory or a FIFO can be named
+    /// `YYYY-MM-DD.md` just as easily, and admitting one is how a scan ends up
+    /// failing with `EISDIR` or blocking forever on an open FIFO.
+    ///
     /// **Existing is not the same as populated.** A day file with nothing
     /// logged in it still exists; see [`Self::find_populated_dates`].
     pub async fn existing_dates(&self, start: Date, end: Date) -> Result<Vec<Date>> {
@@ -396,11 +425,28 @@ impl DataService {
             .await
             .with_context(|| format!("could not read an entry of {}", dir.display()))?
         {
-            if let Some(date) = day_file_date(&entry.file_name())
-                && (start..=end).contains(&date)
-            {
-                dates.push(date);
+            let Some(date) = day_file_date(&entry.file_name()) else {
+                continue;
+            };
+            if !(start..=end).contains(&date) {
+                continue;
             }
+            // Checked last, and only for entries already known to be in-range
+            // day files, so the ninety-probes win stands: on Linux this reads
+            // the `d_type` `read_dir` already returned and costs no syscall.
+            match entry.file_type().await {
+                Ok(ft) if ft.is_file() => {}
+                // A symlinked day file is a real use (a day file living in a
+                // synced folder), and resolving the target here would cost a
+                // stat per candidate, so let it through and let `read_day`
+                // and the per-day containment in the walkers judge it.
+                Ok(ft) if ft.is_symlink() => {}
+                // A directory, a FIFO, a socket — or an entry we could not
+                // even classify. None of them is a day file, and none of them
+                // is worth failing the whole listing over.
+                _ => continue,
+            }
+            dates.push(date);
         }
         // `read_dir` hands entries back in whatever order the filesystem keeps
         // them in, and every caller wants them in day order.
@@ -432,14 +478,15 @@ impl DataService {
         for date in self.existing_dates(start_date, end_date).await? {
             let svc = self.clone();
             set.spawn(async move {
-                let has_data = svc.check_date_has_data(&date).await?;
-                Ok::<(Date, bool), anyhow::Error>((date, has_data))
+                let has_data =
+                    day_or_skip(date, svc.check_date_has_data(&date).await).unwrap_or(false);
+                (date, has_data)
             });
         }
 
         let mut populated_dates = Vec::new();
         while let Some(result) = set.join_next().await {
-            let (date, has_data) = result??;
+            let (date, has_data) = result?;
             if has_data {
                 populated_dates.push(date);
             }
@@ -462,15 +509,22 @@ impl DataService {
         for (idx, &date) in dates.iter().enumerate() {
             let svc = self.clone();
             set.spawn(async move {
-                let content = svc.read_day(&date).await?;
-                let parsed = svc.parse_day(&date).await?;
-                Ok::<DayLoad, anyhow::Error>((idx, date, content, parsed))
+                let loaded = async {
+                    let content = svc.read_day(&date).await?;
+                    let parsed = svc.parse_day(&date).await?;
+                    Ok::<_, anyhow::Error>((content, parsed))
+                }
+                .await;
+                // An unreadable day renders as an empty day, exactly like one
+                // with no file, rather than taking the other six down with it.
+                let (content, parsed) = day_or_skip(date, loaded).unwrap_or((None, None));
+                (idx, date, content, parsed)
             });
         }
 
         let mut loaded: Vec<DayLoad> = Vec::with_capacity(dates.len());
         while let Some(result) = set.join_next().await {
-            loaded.push(result??);
+            loaded.push(result?);
         }
         // Restore the caller's order before folding: the fold below is where
         // the day prefixes on notes and warnings get their sequence.
@@ -634,6 +688,21 @@ impl DataService {
     }
 }
 
+/// Contain a per-day failure inside a multi-day walk: log it and drop the day.
+///
+/// One unreadable entry must never be fatal to the whole scan. A day file the
+/// user cannot read, one deleted between the directory listing and the read,
+/// or anything else that only `stat` and `open` can discover would otherwise
+/// propagate out of the `JoinSet` and fail the entire week or the entire
+/// ninety-day calendar sweep — hiding every other day along with it. The
+/// single-day paths still surface their errors; it is only the walkers, where
+/// one day is a detail of a larger answer, that degrade.
+fn day_or_skip<T>(date: Date, result: Result<T>) -> Option<T> {
+    result
+        .inspect_err(|e| warn!("skipping the day file for {date}: {e:#}"))
+        .ok()
+}
+
 /// The date a day file's name encodes, or `None` for anything else that
 /// shares the directory — a template, a README, an editor's swap file.
 ///
@@ -714,6 +783,224 @@ mod tests {
             240,
             "the cache must not be holding the pre-write parse"
         );
+    }
+
+    /// A day file the caller cannot read must cost that one day, not the week.
+    ///
+    /// `read_day`'s error used to propagate through the `JoinSet`'s `result??`
+    /// and fail `get_weekly_summary` outright, so a single `chmod 000` file —
+    /// or a directory, or a FIFO, named `YYYY-MM-DD.md` — hid all seven days
+    /// and exited non-zero. Verified before the fix from the CLI: EISDIR and
+    /// EACCES both printed the header and then `Error: ...`, and the FIFO hung
+    /// until it was killed at 15s.
+    #[tokio::test]
+    async fn one_unreadable_entry_does_not_fail_the_whole_week() {
+        let (service, dir) = hermetic_service(60);
+        let good = date!(2026 - 08 - 24);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        // A directory named exactly like a day file: `read_to_string` gives
+        // EISDIR. Nothing rejects it by name, so it reaches the read.
+        std::fs::create_dir(dir.path().join("2026-08-25.md")).unwrap();
+
+        let summary = service
+            .get_weekly_summary(&week_of_2026_08_22())
+            .await
+            .expect("one bad entry must not fail the week");
+
+        assert_eq!(
+            summary.total_minutes, 120,
+            "the readable day must still be counted"
+        );
+        assert_eq!(summary.per_day.get(&good), Some(&120));
+        assert_eq!(
+            summary.per_day.get(&date!(2026 - 08 - 25)),
+            Some(&0),
+            "the unreadable entry renders as an empty day"
+        );
+    }
+
+    /// The same containment for the ninety-day calendar sweep.
+    #[tokio::test]
+    async fn one_unreadable_entry_does_not_fail_the_calendar_scan() {
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        std::fs::create_dir(dir.path().join("2026-08-25.md")).unwrap();
+
+        let found = service
+            .find_populated_dates(date!(2026 - 08 - 22), date!(2026 - 08 - 28))
+            .await
+            .expect("one bad entry must not fail the scan");
+
+        assert_eq!(found, vec![date!(2026 - 08 - 24)]);
+    }
+
+    /// A FIFO named like a day file used to block the scan forever, which is
+    /// worse than an error: nothing times out and nothing reports. It is not a
+    /// regular file, so `existing_dates` must never offer it as a candidate.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_named_like_a_day_file_is_not_a_candidate() {
+        use std::ffi::CString;
+
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        let fifo = CString::new(dir.path().join("2026-08-27.md").to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path and a valid mode; `mkfifo` only
+        // reads the pointer for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+
+        let dates = service
+            .existing_dates(date!(2026 - 08 - 22), date!(2026 - 08 - 28))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            dates,
+            vec![date!(2026 - 08 - 24)],
+            "a FIFO is not a day file and must never reach `read_day`"
+        );
+    }
+
+    /// Reading a FIFO must return "no day file", not block forever.
+    ///
+    /// The weekly path does not go through `existing_dates` — it hands
+    /// `get_weekly_summary` all seven dates of the week directly — so the
+    /// candidate-set filter does not protect it and `read_day` has to refuse
+    /// non-regular files itself. Verified before the fix from the CLI: a FIFO
+    /// named `2026-08-27.md` hung `ttcli --week` until it was killed at 15s.
+    /// The timeout is deliberate: a regression here must fail the suite, never
+    /// wedge it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reading_a_fifo_named_like_a_day_file_does_not_block() {
+        use std::ffi::CString;
+
+        let (service, dir) = hermetic_service(60);
+        let d = date!(2026 - 08 - 27);
+        let fifo = CString::new(dir.path().join("2026-08-27.md").to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path and a valid mode; `mkfifo` only
+        // reads the pointer for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+
+        let got = tokio::time::timeout(std::time::Duration::from_secs(5), service.read_day(&d))
+            .await
+            .expect("reading a FIFO must not block");
+
+        assert_eq!(got.unwrap(), None, "a FIFO is not a day file");
+    }
+
+    /// A day file the user cannot read costs that day, not the week.
+    ///
+    /// This is the case the candidate-set filter cannot catch — the entry is a
+    /// perfectly ordinary regular file — so it is what pins `day_or_skip`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_day_file_does_not_fail_the_whole_week() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: `geteuid` reads a process attribute and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            // Root reads a 0o000 file happily, so there is nothing to contain.
+            return;
+        }
+
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        let locked = dir.path().join("2026-08-26.md");
+        tokio::fs::write(&locked, "9-11 ops\n").await.unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let summary = service
+            .get_weekly_summary(&week_of_2026_08_22())
+            .await
+            .expect("an unreadable day must not fail the week");
+
+        assert_eq!(
+            summary.total_minutes, 120,
+            "the readable day must still be counted"
+        );
+        assert_eq!(summary.per_day.get(&date!(2026 - 08 - 26)), Some(&0));
+    }
+
+    /// A directory is likewise never a candidate, so it does not even reach
+    /// the read that the containment above would have to catch.
+    #[tokio::test]
+    async fn a_directory_named_like_a_day_file_is_not_a_candidate() {
+        let (service, dir) = hermetic_service(60);
+        tokio::fs::write(dir.path().join("2026-08-24.md"), "8-10 admin\n")
+            .await
+            .unwrap();
+        std::fs::create_dir(dir.path().join("2026-08-25.md")).unwrap();
+
+        assert_eq!(
+            service
+                .existing_dates(date!(2026 - 08 - 22), date!(2026 - 08 - 28))
+                .await
+                .unwrap(),
+            vec![date!(2026 - 08 - 24)]
+        );
+    }
+
+    /// A symlinked day file must keep working: pointing a day file at one in a
+    /// synced folder is a real use, and the non-regular-file skip above is the
+    /// kind of change that quietly breaks it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_day_file_is_still_a_candidate() {
+        let (service, dir) = hermetic_service(60);
+        let target = dir.path().join("elsewhere.md");
+        tokio::fs::write(&target, "8-10 admin\n").await.unwrap();
+        std::os::unix::fs::symlink(&target, dir.path().join("2026-08-24.md")).unwrap();
+
+        assert_eq!(
+            service
+                .existing_dates(date!(2026 - 08 - 22), date!(2026 - 08 - 28))
+                .await
+                .unwrap(),
+            vec![date!(2026 - 08 - 24)]
+        );
+        assert_eq!(
+            service
+                .parse_day(&date!(2026 - 08 - 24))
+                .await
+                .unwrap()
+                .unwrap()
+                .total_minutes,
+            120
+        );
+    }
+
+    /// A day file deleted between `read_day`'s `exists()` check and its read
+    /// reads as absent, not as an error. Reachable by deleting today's file
+    /// while the TUI is loading.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_day_file_deleted_mid_read_reads_as_absent() {
+        let (service, dir) = hermetic_service(0);
+        let d = date!(2026 - 08 - 24);
+        let path = dir.path().join("2026-08-24.md");
+
+        // Racing a delete against the read is inherently timing-dependent, so
+        // run it until the window is hit rather than once and hopefully.
+        for _ in 0..2_000 {
+            tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+            let svc = service.clone();
+            let reader = tokio::spawn(async move { svc.read_day(&d).await });
+            let _ = tokio::fs::remove_file(&path).await;
+            let got = reader.await.unwrap();
+            assert!(
+                got.is_ok(),
+                "a deletion racing the read must read as absent, not error: {:?}",
+                got.err()
+            );
+        }
     }
 
     fn hermetic_service(cache_timeout_seconds: u64) -> (DataService, TempDir) {
