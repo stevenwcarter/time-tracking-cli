@@ -56,7 +56,13 @@ const NOTHING_TO_COPY: &str = "No notes to copy";
 /// A trait rather than [`ClipboardContext`] directly so the failure that makes
 /// this task worth doing — a machine with no clipboard backend at all — is
 /// reachable from a test instead of only from a box with `DISPLAY` unset.
-trait Clipboard: fmt::Debug {
+///
+/// [`Send`] is a supertrait rather than a bound on the boxed field: `App` is
+/// spawned onto a multi-threaded runtime alongside the web server, so a
+/// clipboard that could not cross a thread would make the whole `App` — and
+/// therefore `tui()` — unspawnable. Requiring it here puts the error on the
+/// offending implementation instead of on `cli/src/main.rs`.
+trait Clipboard: fmt::Debug + Send {
     /// Put `payload` on the system clipboard.
     fn set_contents(&mut self, payload: String) -> Result<()>;
 }
@@ -144,7 +150,7 @@ pub struct App {
     /// half and, on X11, the connection is what keeps the pasted selection
     /// available. A machine with no backend leaves this `None` and every
     /// `Enter` reports [`CLIPBOARD_UNAVAILABLE`] instead of failing silently.
-    clipboard: Option<Box<dyn Clipboard>>,
+    clipboard: Option<Box<dyn Clipboard + Send>>,
     /// Is a load of the active date's data currently in flight
     pub loading: bool,
     /// The date `data`, `populated_dates` and `weekly_data` describe, or
@@ -195,6 +201,21 @@ pub struct App {
     /// Environment the app runs against (week start, data dir, theme, ...)
     pub ctx: TuiContext,
 }
+
+/// `App` has to be [`Send`]: `cli/src/main.rs` spawns [`tui`] into a
+/// `JoinSet` so the TUI and the web server can run together, and
+/// `JoinSet::spawn` requires the whole future to be `Send`.
+///
+/// Asserted here rather than left to the binary, because `cargo check --lib`
+/// and `cargo test --lib` never build `cli` — a field that quietly took the
+/// property away (a `Box<dyn Trait>` without `+ Send`, an `Rc`, a `RefCell`
+/// crossing an await) passed both and broke only the binary.
+///
+/// [`tui`]: super::tui
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<App>();
+};
 
 impl App {
     /// Constructs a new instance of [`App`], opened on today's date.
@@ -701,7 +722,7 @@ impl App {
     /// clipboard — an SSH connection re-established with forwarding — starts
     /// working without a restart.
     fn set_clipboard_contents(&mut self, payload: String) -> Result<()> {
-        let clipboard = match self.clipboard.as_mut() {
+        let clipboard: &mut Box<dyn Clipboard + Send> = match self.clipboard.as_mut() {
             Some(clipboard) => clipboard,
             None => {
                 let context = ClipboardContext::new()
@@ -1047,7 +1068,10 @@ mod tests {
     use super::*;
     use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
     use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
-    use std::{cell::RefCell, rc::Rc, time::Duration};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
     use time::{Weekday, macros::date};
 
     fn key(c: char) -> KeyEvent {
@@ -1067,14 +1091,21 @@ mod tests {
         app.status.as_ref().map(|(message, _)| message.as_str())
     }
 
+    /// What a [`RecordingClipboard`] was handed, readable from the test that
+    /// installed it.
+    type Copied = Arc<Mutex<Vec<String>>>;
+
     /// A clipboard that records what it was handed, so the success path is
     /// asserted rather than assumed.
     #[derive(Debug)]
-    struct RecordingClipboard(Rc<RefCell<Vec<String>>>);
+    struct RecordingClipboard(Copied);
 
     impl Clipboard for RecordingClipboard {
         fn set_contents(&mut self, payload: String) -> Result<()> {
-            self.0.borrow_mut().push(payload);
+            self.0
+                .lock()
+                .expect("the recording clipboard")
+                .push(payload);
             Ok(())
         }
     }
@@ -1091,10 +1122,15 @@ mod tests {
     }
 
     /// Give `app` a recording clipboard, returning the handle to read it back.
-    fn recording_clipboard(app: &mut App) -> Rc<RefCell<Vec<String>>> {
-        let copied = Rc::new(RefCell::new(Vec::new()));
-        app.clipboard = Some(Box::new(RecordingClipboard(Rc::clone(&copied))));
+    fn recording_clipboard(app: &mut App) -> Copied {
+        let copied = Copied::default();
+        app.clipboard = Some(Box::new(RecordingClipboard(Arc::clone(&copied))));
         copied
+    }
+
+    /// What the recording clipboard was handed, as owned strings.
+    fn copied_payloads(copied: &Copied) -> Vec<String> {
+        copied.lock().expect("the recording clipboard").clone()
     }
 
     /// Dispatch the next queued app event the way `App::run` does — through
@@ -1733,7 +1769,7 @@ mod tests {
         app.handle_key_events(enter()).unwrap();
         app.drain_pending_events();
 
-        assert_eq!(copied.borrow().as_slice(), ["- standup\n- inbox triage"]);
+        assert_eq!(copied_payloads(&copied), ["- standup\n- inbox triage"]);
         assert_eq!(status_text(&app), Some("Copied 2 notes for admin"));
     }
 
@@ -1765,7 +1801,7 @@ mod tests {
 
         assert_eq!(status_text(&app), Some(NOTHING_TO_COPY));
         assert!(
-            copied.borrow().is_empty(),
+            copied_payloads(&copied).is_empty(),
             "the clipboard must be left as the user had it"
         );
     }
@@ -1781,7 +1817,11 @@ mod tests {
         app.apply_sync_event(AppEvent::CopyNotes);
         app.drain_pending_events();
 
-        assert_eq!(copied.borrow().len(), 1, "the copy intent must not be lost");
+        assert_eq!(
+            copied_payloads(&copied).len(),
+            1,
+            "the copy intent must not be lost"
+        );
     }
 
     /// Startup, not a keypress: loads run off the event loop, so the first
