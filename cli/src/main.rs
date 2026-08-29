@@ -4,7 +4,7 @@ use time_tracking_cli::{
     show_weekly_summary,
 };
 use tokio::task::JoinSet;
-use tracing::{error, info};
+use tracing::error;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,26 +32,34 @@ async fn main_impl() -> Result<()> {
         parse_weekday(config.get_week_start_day()).context("Could not parse weekday")?;
 
     let mut set: JoinSet<()> = JoinSet::new();
-    let mut webserver_running = false;
 
     #[cfg(feature = "webapp")]
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
 
     // Handle serve mode
     #[cfg(feature = "webapp")]
-    if let Some(true) = config.serve
-        && let Some(port) = config.port
-    {
-        webserver_running = true;
-        info!("🚀 Starting Time Tracking Web Server...");
-        let config = config.clone();
-        set.spawn(async move {
-            if let Err(e) = time_tracking_cli::web::run_server(port, config, rx).await {
-                error!("Error running web server: {}", e);
-                eprintln!("Error running web server: {}", e);
-            }
-        });
-    }
+    let webserver_running = {
+        use tracing::info;
+
+        let mut running = false;
+        if let Some(true) = config.serve
+            && let Some(port) = config.port
+        {
+            running = true;
+            info!("🚀 Starting Time Tracking Web Server...");
+            let config = config.clone();
+            set.spawn(async move {
+                if let Err(e) = time_tracking_cli::web::run_server(port, config, rx).await {
+                    error!("Error running web server: {}", e);
+                    eprintln!("Error running web server: {}", e);
+                }
+            });
+        }
+        running
+    };
+
+    #[cfg(not(feature = "webapp"))]
+    let webserver_running = false;
 
     #[cfg(feature = "tui")]
     if let Some(true) = config.tui {
