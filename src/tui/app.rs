@@ -459,11 +459,30 @@ impl App {
 /// [`keymap::lookup`] is keyed by mode — a key already queued behind `f`
 /// would otherwise be resolved against the view the user has just left.
 /// Both are pure state changes, so applying them straight away is safe.
+///
+/// **There is deliberately no `_` arm.** Getting this wrong is silent: the
+/// app still works, a key typed quickly after another just lands on the
+/// wrong layer. An exhaustive match turns "someone added an event and did
+/// not think about routing" from a bug into a compile error, so please
+/// answer for the new variant rather than tidying this back into a
+/// `matches!`.
 fn changes_key_routing(app_event: &AppEvent) -> bool {
-    matches!(
-        app_event,
-        AppEvent::ToggleHelp | AppEvent::CloseOverlay | AppEvent::ToggleZoomBar
-    )
+    match app_event {
+        // Changes which layer reads the next key, or what it resolves to.
+        AppEvent::ToggleHelp | AppEvent::CloseOverlay | AppEvent::ToggleZoomBar => true,
+        // Leaves the active mode and overlay exactly as they were.
+        AppEvent::NextProject
+        | AppEvent::PreviousProject
+        | AppEvent::FirstProject
+        | AppEvent::LastProject
+        | AppEvent::CopyNotes
+        | AppEvent::Edit
+        | AppEvent::NextDate
+        | AppEvent::PreviousDate
+        | AppEvent::ReloadFromDisk
+        | AppEvent::Today
+        | AppEvent::Quit => false,
+    }
 }
 
 /// Ctrl-C, which raw mode delivers as a key event rather than as a signal.
