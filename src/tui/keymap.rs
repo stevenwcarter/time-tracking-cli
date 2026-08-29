@@ -369,7 +369,7 @@ pub const BINDINGS: &[Binding] = &[
         event: AppEvent::Quit,
         modes: ModeMask::ALL,
         group: Group::General,
-        description: "quit",
+        description: "quit (from the main view)",
     },
 ];
 
@@ -391,6 +391,19 @@ static CLOSE_OVERLAY: Binding = Binding {
     description: "close the help popup",
 };
 
+/// Ctrl-C, documented as a satellite the same way [`CLOSE_OVERLAY`] is: it
+/// fires from inside whatever overlay is open (`App::handle_overlay_key`),
+/// which no [`ModeMask`] can express, and no single [`AppEvent`] names what
+/// it does either — it quits from the help popup but cancels the date
+/// prompt, so its own row has to say so rather than pick one.
+static CTRL_C: Binding = Binding {
+    keys: &[(KeyCode::Char('C'), KeyModifiers::CONTROL)],
+    event: AppEvent::Quit,
+    modes: ModeMask::ALL,
+    group: Group::General,
+    description: "quit, except it cancels the date prompt while that's open",
+};
+
 /// The binding `key` triggers in `mode`, if any.
 pub fn lookup(key: KeyEvent, mode: Mode) -> Option<&'static Binding> {
     BINDINGS
@@ -408,23 +421,10 @@ pub fn closes_overlay(key: KeyEvent) -> bool {
 /// Rows arrive ordered by [`Group`] with an empty pair between groups, which
 /// is how the popup draws them as separate blocks without needing to know
 /// what the groups are.
-///
-/// Drops the ambient [`AppEvent::Quit`] row. The popup is only ever on
-/// screen while the help overlay is open, and while it is, `Esc`/`q` close
-/// it rather than quitting — the overlay layer checks
-/// [`closes_overlay`] before either key ever reaches the global bindings.
-/// Showing "Esc / q → quit" right beside `CLOSE_OVERLAY`'s "? / Esc / q →
-/// close the help popup" would have the popup contradict itself over the
-/// very keys it names. `readme_table` keeps the row: the README documents
-/// the whole app, not a screen that only exists while a modal owns the
-/// keys.
 pub fn help_rows(mode: Mode) -> Vec<(String, &'static str)> {
     let mut rows = Vec::new();
     let mut previous: Option<Group> = None;
-    for binding in documented()
-        .filter(|binding| binding.modes.contains(mode))
-        .filter(|binding| binding.event != AppEvent::Quit)
-    {
+    for binding in documented().filter(|binding| binding.modes.contains(mode)) {
         if previous.is_some_and(|group| group != binding.group) {
             rows.push((String::new(), ""));
         }
@@ -479,7 +479,7 @@ fn documented() -> impl Iterator<Item = &'static Binding> {
     Group::ORDER.into_iter().flat_map(|group| {
         BINDINGS
             .iter()
-            .chain([&CLOSE_OVERLAY])
+            .chain([&CLOSE_OVERLAY, &CTRL_C])
             .filter(move |binding| binding.group == group)
     })
 }
@@ -607,28 +607,31 @@ mod tests {
         assert_eq!(ModeMask::ALL.label(), "All");
     }
 
-    /// The wart the brief called out: the popup used to advertise
-    /// `Esc / q → quit` right beside `CLOSE_OVERLAY`'s `? / Esc / q → close
-    /// the help popup`, contradicting each other while the popup — the only
-    /// time either row is ever shown — is open. `readme_table` keeps the
-    /// `Quit` row; only `help_rows` (what the popup renders) drops it.
+    /// R29: the Quit/`CLOSE_OVERLAY` contradiction — `Esc / q → quit` beside
+    /// `? / Esc / q → close the help popup` — is fixed by rephrasing
+    /// `Quit`'s own row, not by leaving it off the popup: every mode's help
+    /// still has to carry a way to quit, and Ctrl-C too, since the popup is
+    /// otherwise the only place either is documented at all. Sourced from
+    /// `BINDINGS`/`CTRL_C` themselves rather than a literal string, so a
+    /// future reword of either description can't leave this vacuously
+    /// green.
     #[test]
-    fn help_rows_omits_the_quit_row_shadowed_by_close_overlay() {
+    fn the_popup_always_lists_a_way_to_quit_and_ctrl_c() {
+        let quit = BINDINGS
+            .iter()
+            .find(|b| b.event == AppEvent::Quit)
+            .expect("BINDINGS carries a Quit row");
         for mode in ALL_MODES {
             let descriptions: Vec<_> = help_rows(mode).into_iter().map(|(_, d)| d).collect();
             assert!(
-                !descriptions.contains(&"quit"),
-                "{mode:?} help popup must not claim Esc/q quits while it is showing"
+                descriptions.contains(&quit.description),
+                "{mode:?} help lost its way to quit"
             );
             assert!(
-                descriptions.contains(&"close the help popup"),
-                "{mode:?} help popup lost its own close instructions"
+                descriptions.contains(&CTRL_C.description),
+                "{mode:?} help lost Ctrl-C"
             );
         }
-        assert!(
-            readme_table().lines().any(|line| line.contains("quit")),
-            "the README must still document Quit even though the popup omits it"
-        );
     }
 
     #[test]

@@ -103,7 +103,6 @@ fn clamp_to_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::event::AppEvent;
     use crate::tui::keymap::BINDINGS;
 
     fn rendered(mode: Mode) -> String {
@@ -120,11 +119,14 @@ mod tests {
             .join("\n")
     }
 
-    /// The popup is the keymap's documentation, so every binding the mode
-    /// carries has to be on it — this is the check that used to be a
-    /// hand-written string nobody updated.
+    /// The popup is the keymap's documentation, so every row [`help_rows`]
+    /// produces for the mode has to actually be rendered — this is the
+    /// check that used to be a hand-written string nobody updated. Checks
+    /// against `help_rows`'s own output; see
+    /// `every_bindings_table_row_for_the_mode_is_rendered_on_the_popup`
+    /// below for the equivalent check against `BINDINGS` itself.
     #[test]
-    fn every_binding_the_mode_carries_is_on_the_popup() {
+    fn help_rows_output_is_fully_rendered_on_the_popup() {
         for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
             let screen = rendered(mode);
             for (keys, description) in help_rows(mode) {
@@ -150,43 +152,20 @@ mod tests {
     /// checks the popup against the actual source of truth instead of
     /// re-checking `help_rows`'s own output against itself — a binding added
     /// to the table without a row here fails this test with no edit needed.
+    /// The counterpart above checks `help_rows`'s output makes it to the
+    /// screen; this one checks `help_rows` didn't drop anything in the
+    /// first place.
     #[test]
-    fn every_binding_live_in_a_mode_appears_on_that_modes_popup() {
+    fn every_bindings_table_row_for_the_mode_is_rendered_on_the_popup() {
         for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
             let screen = rendered(mode);
             for binding in BINDINGS.iter().filter(|b| b.modes.contains(mode)) {
-                // `Quit` shares `Esc`/`q` with the overlay's own close keys,
-                // and while the popup is open those keys close it rather
-                // than quitting — see `help_rows`'s doc, and the test below.
-                if binding.event == AppEvent::Quit {
-                    continue;
-                }
                 assert!(
                     screen.contains(binding.description),
                     "{mode:?} popup is missing {:?}:\n{screen}",
                     binding.keys
                 );
             }
-        }
-    }
-
-    /// The wart the brief called out: the popup used to advertise
-    /// `Esc / q → quit` right beside `? / Esc / q → close the help popup`,
-    /// which contradict each other while the popup — the only time either
-    /// row is ever shown — is open. This pins the rendered text, not just
-    /// `help_rows`'s output, against that coming back.
-    #[test]
-    fn the_popup_never_claims_esc_or_q_quits() {
-        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
-            let screen = rendered(mode);
-            assert!(
-                screen.contains("close the help popup"),
-                "{mode:?} popup lost its own close instructions:\n{screen}"
-            );
-            assert!(
-                !screen.contains("quit"),
-                "{mode:?} popup must not claim Esc/q quits while it is showing:\n{screen}"
-            );
         }
     }
 

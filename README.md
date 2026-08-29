@@ -219,13 +219,9 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 | y            | All           | copy the day's summary (with hours) to the clipboard           |
 | Y            | All           | copy the week's summary (with hours) to the clipboard          |
 | ?            | All           | show the help popup                                            |
-| Esc / q      | All           | quit                                                           |
+| Esc / q      | All           | quit (from the main view)                                      |
 | ? / Esc / q  | All           | close the help popup                                           |
-
-Ctrl-C isn't in the table above because it doesn't mean one thing: it quits
-immediately, the same as `Esc`/`q`, everywhere except while the `:` date
-prompt is open, where it cancels the half-typed date instead — the readline
-convention of Ctrl-C aborting the current line rather than the whole session.
+| Ctrl-C       | All           | quit, except it cancels the date prompt while that's open      |
 
 ### Example Output
 
