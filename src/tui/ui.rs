@@ -64,7 +64,7 @@ impl App {
     /// week data that has already been loaded.
     fn weekly_bar_chart(&self) -> WeeklyBarChart<'_> {
         let mut bar_chart =
-            WeeklyBarChart::new(self.active_date, self.ctx.week_start_day, &self.ctx.theme);
+            WeeklyBarChart::new(self.active_date, &self.week_dates, &self.ctx.theme);
         if !self.weekly_data.is_empty() {
             bar_chart.set_weekly_data(&self.weekly_data);
         }

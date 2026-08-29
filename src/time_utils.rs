@@ -198,6 +198,16 @@ mod tests {
     }
 
     #[test]
+    fn get_week_dates_always_returns_seven_days() {
+        // Guards the `.try_into::<[Date; 7]>()` in `App::week_dates_for`: if
+        // this ever stopped holding, that conversion would panic instead of
+        // failing a test.
+        for start in [Weekday::Monday, Weekday::Saturday, Weekday::Sunday] {
+            assert_eq!(get_week_dates(&date!(2026 - 08 - 24), start).len(), 7);
+        }
+    }
+
+    #[test]
     fn test_get_week_dates_year_boundary() {
         // Test with date near year boundary
         let date = date!(2023 - 12 - 31); // Sunday

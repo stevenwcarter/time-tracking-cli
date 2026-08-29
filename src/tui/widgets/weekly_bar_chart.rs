@@ -1,23 +1,23 @@
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use std::collections::HashMap;
-use time::{Date, Weekday};
+use time::Date;
 
-use crate::time_utils::{WeekdayExt, get_week_dates};
+use crate::time_utils::WeekdayExt;
 use crate::tui::theme::Theme;
 
 pub struct WeeklyBarChart<'a> {
     active_date: Date,
-    week_start_day: Weekday,
+    week_dates: &'a [Date; 7],
     theme: &'a Theme,
     week_data: Option<&'a HashMap<Date, u32>>, // Date -> total minutes
 }
 
 impl<'a> WeeklyBarChart<'a> {
-    pub fn new(active_date: Date, week_start_day: Weekday, theme: &'a Theme) -> Self {
+    pub fn new(active_date: Date, week_dates: &'a [Date; 7], theme: &'a Theme) -> Self {
         Self {
             active_date,
-            week_start_day,
+            week_dates,
             theme,
             week_data: None,
         }
@@ -37,25 +37,25 @@ impl<'a> WeeklyBarChart<'a> {
         }
     }
 
-    fn prepare_bars(&self, bar_width: u16) -> Vec<Bar<'_>> {
-        let Some(week_data) = self.week_data else {
-            return vec![]; // Empty data if not loaded
-        };
+    /// Per-day bar data for the week: the date, its value scaled to tenths
+    /// of an hour (so `BarChart`'s integer axis can carry one decimal
+    /// place), and the text shown at the foot of the bar.
+    ///
+    /// Split out of `prepare_bars` because `Bar`'s `value` field is private
+    /// in ratatui 0.29, so a test can't read it back off a built `Bar` —
+    /// it asserts against this instead.
+    fn bar_values(&self, bar_width: u16) -> Vec<(Date, u64, String)> {
+        let week_data = self.week_data;
 
-        let week_dates = get_week_dates(&self.active_date, self.week_start_day);
-
-        week_dates
+        self.week_dates
             .iter()
-            .map(|date| {
-                let day_name = date.weekday().short_name();
-
-                // Create label with day name and day of month
-                let day_of_month = date.day();
-                let label = format!("{}\n{}", day_name, day_of_month);
-
-                let minutes = week_data.get(date).unwrap_or(&0);
-                let hours = (*minutes as f64) / 60.0;
-                let value = u64::from(*minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
+            .map(|&date| {
+                let minutes = week_data
+                    .and_then(|data| data.get(&date))
+                    .copied()
+                    .unwrap_or(0);
+                let hours = minutes as f64 / 60.0;
+                let value = u64::from(minutes) * 10 / 60; // Scale by 10 for one decimal place; integer avoids lossy float→u64 cast
 
                 // Format text to fit within bar width dynamically
                 let text_value = if bar_width >= 5 {
@@ -73,9 +73,27 @@ impl<'a> WeeklyBarChart<'a> {
                     format!("{:.0}h", hours) // "10h" or "8h"
                 };
 
-                let style = if *date == self.active_date {
+                (date, value, text_value)
+            })
+            .collect()
+    }
+
+    fn prepare_bars(&self, bar_width: u16) -> Vec<Bar<'_>> {
+        if self.week_data.is_none() {
+            return vec![]; // Empty data if not loaded
+        }
+
+        self.bar_values(bar_width)
+            .into_iter()
+            .map(|(date, value, text_value)| {
+                let day_name = date.weekday().short_name();
+
+                // Create label with day name and day of month
+                let label = format!("{}\n{}", day_name, date.day());
+
+                let style = if date == self.active_date {
                     self.theme.active_date
-                } else if *minutes > 0 {
+                } else if value > 0 {
                     self.theme.populated_date
                 } else {
                     self.theme.inactive_date
@@ -180,5 +198,44 @@ impl Widget for &mut WeeklyBarChart<'_> {
             .max(max_value);
 
         chart.render(inner_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::theme::Theme;
+    use time::macros::date;
+
+    fn week() -> [Date; 7] {
+        [
+            date!(2026 - 08 - 22),
+            date!(2026 - 08 - 23),
+            date!(2026 - 08 - 24),
+            date!(2026 - 08 - 25),
+            date!(2026 - 08 - 26),
+            date!(2026 - 08 - 27),
+            date!(2026 - 08 - 28),
+        ]
+    }
+
+    #[test]
+    fn bar_values_come_from_the_passed_week_not_the_global_config() {
+        let theme = Theme::none();
+        let week = week();
+        let mut data = HashMap::new();
+        data.insert(date!(2026 - 08 - 24), 480u32); // 8h on the third day
+        let mut chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        chart.set_weekly_data(&data);
+
+        let values = chart.bar_values(6);
+
+        assert_eq!(values.len(), 7);
+        assert_eq!(values[2].0, date!(2026 - 08 - 24));
+        assert_eq!(values[2].1, 80, "8h in tenths of an hour");
+        assert_eq!(
+            values[0].1, 0,
+            "a day with no data is a zero bar, not absent"
+        );
     }
 }
