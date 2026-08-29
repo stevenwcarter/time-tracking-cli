@@ -1,11 +1,13 @@
 //! Runtime smoke tests that verify behavior which is invisible to clippy/fmt.
 //! E.g., graceful shutdown mechanics, process lifecycle.
 
+mod common;
+
 #[cfg(all(feature = "webapp", not(feature = "tui")))]
 #[test]
 fn webapp_only_server_shutdown_channel_stays_alive() {
     use std::net::TcpStream;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::thread;
     use std::time::Duration;
 
@@ -26,7 +28,10 @@ fn webapp_only_server_shutdown_channel_stays_alive() {
     // and --data-directory (prevents touching real data).
     // If the oneshot sender is dropped immediately (bare `_` bug), the server
     // will shut down within ~0.8ms and stop accepting connections.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ttcli"))
+    // `--noedit` already keeps this run away from the editor; going through
+    // `common::ttcli` as well means the guarantee does not depend on that flag
+    // surviving a future edit to this argument list.
+    let mut child = common::ttcli()
         .args([
             "--serve",
             "--port",

@@ -7,7 +7,9 @@
 //! `BLESS_GOLDEN=1 cargo test -p cli --test cli_output_characterization`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
+
+mod common;
 
 /// Copy a fixture week into a fresh temp dir. Required because
 /// `show_single_day` creates a template file for a missing date, which
@@ -37,17 +39,19 @@ fn staged(fixture: &str) -> tempfile::TempDir {
 /// `Config::load` creates its own default config under the scratch dir, which
 /// is deterministic. (`dirs::config_dir` reads `XDG_CONFIG_HOME` on Linux and
 /// derives from `HOME` on macOS, hence both.)
+///
+/// `EDITOR`/`VISUAL` are neutralised by [`common::ttcli`] rather than left to
+/// each caller's `--noedit`. Six of the seven invocations below happen to use
+/// `--week`, which never reaches the editor, and the seventh remembers the
+/// flag — but that is a discipline one new day-view golden away from being
+/// forgotten, and forgetting it hands the test runner's terminal to a
+/// full-screen editor that outlives the suite.
 fn run_ttcli(args: &[&str], data_dir: &Path) -> String {
     let cfg_home = tempfile::tempdir().expect("config tempdir");
-    let out = Command::new(env!("CARGO_BIN_EXE_ttcli"))
-        .args(args)
-        .arg("--data-directory")
-        .arg(data_dir)
-        .env("NO_COLOR", "1")
-        .env("HOME", cfg_home.path())
-        .env("XDG_CONFIG_HOME", cfg_home.path())
-        .output()
-        .expect("failed to run ttcli");
+    let mut cmd = common::ttcli();
+    cmd.args(args).env("NO_COLOR", "1");
+    common::scoped(&mut cmd, data_dir, cfg_home.path());
+    let out = common::output_within(cmd, Duration::from_secs(30));
     assert!(
         out.status.success(),
         "ttcli exited {:?}: {}",
@@ -254,13 +258,10 @@ fn weekly_tie_ordering_is_deterministic() {
 #[test]
 fn tui_only_launch_prints_no_webserver_banner() {
     use std::os::unix::process::CommandExt;
-    use std::process::Stdio;
 
     let dir = staged("week_no_ties");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ttcli"));
-    cmd.args(["--tui", "--data-directory"])
-        .arg(dir.path())
-        .stdin(Stdio::null());
+    let mut cmd = common::ttcli();
+    cmd.args(["--tui", "--data-directory"]).arg(dir.path());
     // SAFETY: `setsid` is async-signal-safe and touches no allocator or lock
     // state, which is the entire requirement on a `pre_exec` hook. The child
     // is freshly forked and so is never already a process-group leader, the
@@ -273,10 +274,49 @@ fn tui_only_launch_prints_no_webserver_banner() {
             Ok(())
         });
     }
-    let out = cmd.output().expect("run ttcli");
+    let out = common::output_within(cmd, Duration::from_secs(30));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("webserver"),
         "a TUI-only launch must not mention the webserver: {stdout}"
+    );
+}
+
+/// The harness must neutralise the editor, not merely avoid provoking it.
+///
+/// `display::show_single_day` calls `open_in_editor` on *every* day-view run
+/// that omits `--noedit`; creating the file first makes no difference. So the
+/// suite's safety currently rests on each caller remembering a flag — and
+/// `editor::get_editor` falls back to `nano` when `EDITOR` and `VISUAL` are
+/// both unset, meaning an unset environment is an interactive one, not a safe
+/// one. This runs the exact invocation a forgetful future test would write and
+/// asserts it dies instead of waiting for a human.
+///
+/// It is deliberately the failure mode, not the success one: pointing `EDITOR`
+/// at `true` would let an unexpected launch pass silently, which is how the
+/// orphaned editors went unnoticed for hours in the first place.
+///
+/// `output_within` is what keeps a regression here honest. Without it, undoing
+/// the neutralisation would make this test *hang* rather than fail, which is
+/// precisely the symptom it exists to prevent.
+#[test]
+fn a_day_view_without_noedit_fails_fast_instead_of_opening_an_editor() {
+    let dir = staged("week_no_ties");
+    let cfg_home = tempfile::tempdir().expect("config tempdir");
+    let mut cmd = common::ttcli();
+    cmd.args(["--date", "2026-08-24", "--formatter", "plain"]);
+    common::scoped(&mut cmd, dir.path(), cfg_home.path());
+
+    let out = common::output_within(cmd, Duration::from_secs(30));
+
+    assert!(
+        !out.status.success(),
+        "a run that reaches the editor must fail, not succeed quietly"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Editor"),
+        "the failure must name the editor as its cause, so a future reader is not left \
+         guessing why a day view exits non-zero; got: {stderr}"
     );
 }
