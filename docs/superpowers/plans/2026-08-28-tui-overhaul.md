@@ -1568,6 +1568,8 @@ async fn a_failed_load_surfaces_on_the_status_line() {
 Run: `cargo test --lib tui::`
 Expected: FAIL — `set_status` does not exist and `Enter` still performs I/O.
 
+**Carried from Task 6 — a user-visible regression it introduced and this task must close.** Moving loads off the event loop means startup now draws the empty state *before* the first load lands, so a cold cache shows a flash of "no data" before the day appears. `App.loading` is already set by `spawn_load`; rendering it is this task's job, and it is the reason `set_status` has been a no-op stub since Task 6. Make sure the loading indicator actually covers the startup window, not just subsequent navigations — a test that only exercises a keypress-triggered load would miss it.
+
 - [ ] **Step 3: Implement**
 
 - `App.status: Option<(String, Instant)>`; `STATUS_TTL: Duration = Duration::from_secs(4)`. `tick()` clears an expired status and sets `dirty`. This is the tick's only remaining job now that Task 7 decoupled redraw.
