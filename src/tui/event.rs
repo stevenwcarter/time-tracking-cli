@@ -59,19 +59,35 @@ pub struct EventHandler {
     receiver: mpsc::UnboundedReceiver<Event>,
     /// Pause sender to control the event task
     pause_sender: mpsc::UnboundedSender<bool>,
+    /// The poller, held until [`EventHandler::start`] spawns it.
+    task: Option<EventTask>,
 }
 
 impl EventHandler {
-    /// Constructs a new instance of [`EventHandler`] and spawns a new thread to handle events.
+    /// Constructs a new instance of [`EventHandler`].
+    ///
+    /// This only wires up the channels. No task is spawned and no terminal is
+    /// opened until [`EventHandler::start`] is called, so an `EventHandler` —
+    /// and the [`App`](super::app::App) that owns one — can be constructed
+    /// outside a Tokio runtime and away from a tty.
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (pause_sender, pause_receiver) = mpsc::unbounded_channel();
-        let actor = EventTask::new(sender.clone(), pause_receiver);
-        tokio::spawn(async { actor.run().await });
         Self {
+            task: Some(EventTask::new(sender.clone(), pause_receiver)),
             sender,
             receiver,
             pause_sender,
+        }
+    }
+
+    /// Spawn the task that reads crossterm events and emits ticks.
+    ///
+    /// Called once, by `App::run`, immediately before the event loop starts. A
+    /// second call does nothing, so the poller can never be spawned twice.
+    pub fn start(&mut self) {
+        if let Some(task) = self.task.take() {
+            tokio::spawn(async { task.run().await });
         }
     }
 
@@ -113,6 +129,7 @@ impl EventHandler {
 }
 
 /// A thread that handles reading crossterm events and emitting tick events on a regular schedule.
+#[derive(Debug)]
 struct EventTask {
     /// Event sender channel.
     sender: mpsc::UnboundedSender<Event>,

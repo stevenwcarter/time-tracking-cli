@@ -76,6 +76,12 @@ impl Theme {
 mod tests {
     use super::*;
 
+    /// Canary for the extraction that introduced [`Theme`]: every literal
+    /// below is transcribed from the pre-refactor sources at commit
+    /// `2a97a58` — `src/tui/widgets/colors.rs` (the day styles),
+    /// `src/tui/project_list.rs`'s four module `const`s (the list styles) and
+    /// the inline `show_surrounding` style in `src/tui/widgets/calendar.rs`.
+    /// If this test fails, the default look has drifted from what shipped.
     #[test]
     fn dark_reproduces_the_pre_theme_palette() {
         let theme = Theme::dark();

@@ -25,6 +25,27 @@ struct CacheEntry {
     cached_at: SystemTime,
 }
 
+/// Where a [`DataService`] looks for day files.
+#[derive(Debug, Clone)]
+enum DataDir {
+    /// Resolve from the global [`Config`] on each use. The CLI and web paths
+    /// run after `Config::get()` has parsed the real argv, so this is what they
+    /// have always done.
+    FromConfig,
+    /// A directory supplied by the caller, so nothing touches the config
+    /// singleton. Used by the TUI and by tests.
+    Fixed(PathBuf),
+}
+
+impl DataDir {
+    fn resolve(&self) -> Result<PathBuf> {
+        match self {
+            Self::FromConfig => get_time_tracking_dir(),
+            Self::Fixed(dir) => Ok(dir.clone()),
+        }
+    }
+}
+
 /// Centralized data service for time tracking files
 #[derive(Debug, Clone)]
 pub struct DataService {
@@ -32,17 +53,35 @@ pub struct DataService {
     cache: Arc<Mutex<HashMap<Date, CacheEntry>>>,
     /// Cache timeout in seconds (default: 30)
     cache_timeout: u64,
+    /// Directory the day files are read from
+    data_dir: DataDir,
 }
 
 impl DataService {
+    /// Cache lifetime of the process-wide service.
+    pub const DEFAULT_CACHE_TIMEOUT_SECONDS: u64 = 30;
+
     pub fn get() -> &'static Self {
-        DATA_SVC.get_or_init(|| Self::new(30))
+        DATA_SVC.get_or_init(|| Self::new(Self::DEFAULT_CACHE_TIMEOUT_SECONDS))
     }
-    /// Create a new data service with specified cache timeout
+
+    /// Create a new data service that resolves its directory from the global
+    /// configuration.
     fn new(cache_timeout_seconds: u64) -> Self {
+        Self::with_data_dir(cache_timeout_seconds, DataDir::FromConfig)
+    }
+
+    /// Create a new data service that reads from `data_dir`, so callers that
+    /// already know their directory never reach for the config singleton.
+    pub fn new_with_dir(cache_timeout_seconds: u64, data_dir: PathBuf) -> Self {
+        Self::with_data_dir(cache_timeout_seconds, DataDir::Fixed(data_dir))
+    }
+
+    fn with_data_dir(cache_timeout_seconds: u64, data_dir: DataDir) -> Self {
         Self {
             cache: Arc::new(Mutex::new(HashMap::new())),
             cache_timeout: cache_timeout_seconds,
+            data_dir,
         }
     }
 
@@ -61,7 +100,7 @@ impl DataService {
 
     /// Get the file path for a given date and config
     pub async fn get_file_path(&self, date: Date) -> Result<PathBuf> {
-        let time_tracking_dir = get_time_tracking_dir()?;
+        let time_tracking_dir = self.data_dir.resolve()?;
 
         // Create directory if it doesn't exist
         if !time_tracking_dir.exists() {
@@ -329,6 +368,22 @@ mod tests {
         let result = service.read_day(&test_date).await.unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_new_with_dir_reads_from_the_injected_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = DataService::new_with_dir(60, dir.path().to_path_buf());
+        let test_date = date!(2023 - 10 - 15);
+
+        let file_path = service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        assert_eq!(file_path, dir.path().join("2023-10-15.md"));
+        assert!(file_path.exists());
+        assert!(service.read_day(&test_date).await.unwrap().is_some());
     }
 
     #[tokio::test]

@@ -43,6 +43,8 @@ pub struct App {
     pub populated_dates: Vec<Date>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
+    /// Reader for the day files under `ctx.data_dir`
+    pub data_svc: DataService,
     /// Environment the app runs against (week start, data dir, theme, ...)
     pub ctx: TuiContext,
 }
@@ -54,6 +56,10 @@ impl App {
     /// never reads the global `Config` singleton, so it stays constructible
     /// from a test.
     pub fn new(ctx: TuiContext) -> Self {
+        let data_svc = DataService::new_with_dir(
+            DataService::DEFAULT_CACHE_TIMEOUT_SECONDS,
+            ctx.data_dir.clone(),
+        );
         Self {
             running: true,
             zoom_bar: false,
@@ -65,6 +71,7 @@ impl App {
             project_list_widget: None,
             populated_dates: Vec::new(),
             weekly_data: HashMap::new(),
+            data_svc,
             ctx,
         }
     }
@@ -93,8 +100,26 @@ impl App {
         self.with_data(parse_time_tracking_data(content, None, None))
     }
 
+    /// Seed the per-day minutes the weekly bar chart draws.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_weekly_data(mut self, weekly_data: HashMap<Date, u32>) -> Self {
+        self.weekly_data = weekly_data;
+        self
+    }
+
+    /// Seed the dates the calendar marks as having tracked hours.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_populated_dates(mut self, populated_dates: Vec<Date>) -> Self {
+        self.populated_dates = populated_dates;
+        self
+    }
+
     /// Run the application's main loop.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        // Nothing polls the terminal until now; see `EventHandler::start`.
+        self.events.start();
         if let Err(e) = self.load_data_for_active_date().await {
             tracing::warn!("Failed to load data on startup: {e}");
         }
@@ -168,7 +193,8 @@ impl App {
         disable_raw_mode()?;
 
         // Create the file if it doesn't exist and get the path
-        let file_path = DataService::get()
+        let file_path = self
+            .data_svc
             .create_day_file_if_not_exists(&self.active_date)
             .await?;
 
@@ -178,7 +204,7 @@ impl App {
         }
 
         // Invalidate cache since we just edited the file
-        DataService::get().invalidate_date(&self.active_date).await;
+        self.data_svc.invalidate_date(&self.active_date).await;
 
         // Restore the TUI after editor exits
         stdout().execute(EnterAlternateScreen)?;
@@ -192,7 +218,7 @@ impl App {
 
     pub async fn load_data_for_active_date(&mut self) -> Result<()> {
         let active_date = self.active_date;
-        let data_svc = DataService::get();
+        let data_svc = self.data_svc.clone();
 
         // Compute date ranges for the populated-dates scan (prev, current, next month)
         let current_month = active_date

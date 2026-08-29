@@ -1,9 +1,21 @@
 //! Test-only helpers shared by the TUI unit tests.
 
 use ratatui::{Terminal, backend::TestBackend};
+use time::{Date, macros::date};
 use time_tracking_parser::{ProjectSummary, Time, TimeTrackingData};
 
 use super::app::App;
+
+/// The date every TUI render test opens on.
+///
+/// `App::new` otherwise defaults to today, which would make the calendar and
+/// the weekly bar chart follow the wall clock. This one is mid-month and
+/// mid-week (a Wednesday in a 30-day month), so no month-boundary or
+/// week-boundary edge case is ever in play; its whole Saturday-start week
+/// falls inside June 2025.
+pub fn fixture_date() -> Date {
+    date!(2025 - 06 - 11)
+}
 
 /// Render an `App` into an off-screen buffer and flatten it to a string,
 /// one line per terminal row, trailing spaces trimmed.
@@ -30,6 +42,10 @@ pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
 ///
 /// Later tasks assert against rendered output built from this fixture, so its
 /// shape is deliberately stable: change it and those assertions all move.
+///
+/// Rendering it in full needs about **40 terminal rows**: the header row is a
+/// fixed `Length(12)`, and three projects at three lines each plus the list
+/// header and footer overflow an 80x24 buffer, silently clipping `internal`.
 pub fn fixture_day() -> TimeTrackingData {
     TimeTrackingData {
         total_minutes: 480,
@@ -81,14 +97,25 @@ fn time_at(hour: u8, minute: u8) -> Time {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use time::Weekday;
+
     use super::*;
+    use crate::time_utils::get_week_dates;
     use crate::tui::context::TuiContext;
 
     #[tokio::test]
     async fn renders_the_three_fixture_projects() {
-        let mut app = App::new(TuiContext::for_test()).with_data(fixture_day());
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(fixture_day());
         let rendered = render_to_string(&mut app, 80, 40);
 
+        assert!(
+            rendered.contains("June 2025"),
+            "calendar should be pinned to the fixture date:\n{rendered}"
+        );
         for name in ["admin", "client-bd", "internal"] {
             assert!(rendered.contains(name), "{name} missing from:\n{rendered}");
         }
@@ -104,7 +131,9 @@ mod tests {
         assert_eq!(data.projects.len(), 12);
         assert_eq!(data.total_minutes, 720);
 
-        let mut app = App::new(TuiContext::for_test()).with_data(data);
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(data);
         let rendered = render_to_string(&mut app, 80, 24);
         assert!(
             rendered.contains("project-00"),
@@ -113,10 +142,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_content_is_parsed_into_the_project_list() {
-        let mut app = App::new(TuiContext::for_test()).with_raw_content(
-            "9:00-10:30 admin\n- standup\n10:30-12:00 client-bd\n- discovery call\n",
+    async fn seeded_week_data_reaches_the_bar_chart() {
+        let week: HashMap<Date, u32> = get_week_dates(&fixture_date(), Weekday::Saturday)
+            .into_iter()
+            .map(|d| (d, u32::from(d == fixture_date()) * 480))
+            .collect();
+
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(fixture_day())
+            .with_populated_dates(vec![fixture_date()])
+            .with_weekly_data(week);
+        let rendered = render_to_string(&mut app, 80, 40);
+
+        assert!(
+            rendered.contains("8.0h total"),
+            "weekly minutes should reach the bar chart:\n{rendered}"
         );
+    }
+
+    #[tokio::test]
+    async fn raw_content_is_parsed_into_the_project_list() {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_raw_content(
+                "9:00-10:30 admin\n- standup\n10:30-12:00 client-bd\n- discovery call\n",
+            );
 
         let data = app.data.as_ref().expect("raw content should parse");
         assert_eq!(data.total_minutes, 180);

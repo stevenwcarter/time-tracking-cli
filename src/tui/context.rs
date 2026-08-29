@@ -49,15 +49,26 @@ impl TuiContext {
     }
 
     /// A deterministic context for tests: Saturday weeks, a scratch data
-    /// directory, and a palette that emits no colour so rendered buffers can be
-    /// compared as plain text.
+    /// directory of its own, and a palette that emits no colour so rendered
+    /// buffers can be compared as plain text.
+    ///
+    /// The directory is unique per call and is *not* created, so two tests
+    /// never see each other's day files. A test that needs the directory to
+    /// exist should create it (or override `data_dir` with a `tempfile`
+    /// handle it keeps alive for the duration of the test).
     #[cfg(test)]
     pub fn for_test() -> Self {
-        use std::env;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::{env, process};
+
+        // The counter separates contexts within one test binary; the pid
+        // separates concurrent `cargo test` runs.
+        static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
 
         Self {
             week_start_day: Weekday::Saturday,
-            data_dir: env::temp_dir().join("ttcli-test"),
+            data_dir: env::temp_dir().join(format!("ttcli-test-{}-{id}", process::id())),
             daily_target_hours: DEFAULT_DAILY_TARGET_HOURS,
             formatter: Formatter::Plain,
             theme: Theme::none(),
@@ -70,8 +81,6 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
 
-    // `App::new` builds an `EventHandler`, which spawns the crossterm poller,
-    // so construction needs a runtime — but no longer a parsed `Config`.
     #[tokio::test]
     async fn app_can_be_constructed_without_parsing_argv() {
         // Regression: App::new() used to reach for the Config singleton, whose
@@ -89,6 +98,25 @@ mod tests {
         assert_eq!(ctx.theme.populated_date.fg, None);
         assert_eq!(ctx.formatter, Formatter::Plain);
         assert_eq!(ctx.daily_target_hours, 8.0);
-        assert!(ctx.data_dir.ends_with("ttcli-test"));
+        assert!(ctx.data_dir.starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn app_can_be_constructed_outside_a_tokio_runtime() {
+        // `EventHandler::new` only wires up channels; the crossterm poller is
+        // spawned by `EventHandler::start`, which `App::run` calls. Before that
+        // split this panicked with "there is no reactor running", and every
+        // later async test would have spawned a tty reader flooding a channel
+        // nobody drains.
+        let app = App::new(TuiContext::for_test());
+        assert!(app.running);
+    }
+
+    #[test]
+    fn each_test_context_gets_its_own_data_dir() {
+        assert_ne!(
+            TuiContext::for_test().data_dir,
+            TuiContext::for_test().data_dir
+        );
     }
 }
