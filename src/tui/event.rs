@@ -55,14 +55,26 @@ pub enum AppEvent {
     LastProject,
     /// Copy the selected project's notes to the clipboard
     CopyNotes,
+    /// Put a payload on the system clipboard, reporting `.1` on the status
+    /// line once it is there.
+    ///
+    /// The two fields are `(payload, success_message)`. Separating the intent
+    /// from the I/O is what keeps [`ProjectListWidget`] free of a clipboard
+    /// handle — the widget knows what should be copied and what to say about
+    /// it, and `App` owns the one connection to the system clipboard and the
+    /// status line that reports the failure.
+    ///
+    /// [`ProjectListWidget`]: super::project_list::ProjectListWidget
+    CopyToClipboard(String, String),
     /// Edit the current date in $EDITOR
     Edit,
     /// Go to the next date
     NextDate,
     /// Go to the previous date
     PreviousDate,
-    /// Reload the current date from disk
-    ReloadFromDisk,
+    /// Reload the current date from disk, keeping or dropping the calendar's
+    /// month memo according to why the reload was asked for.
+    ReloadFromDisk(Reload),
     /// Go to today's date
     Today,
     /// A background load finished; carries the generation it was started with.
@@ -77,17 +89,48 @@ pub enum AppEvent {
     Quit,
 }
 
+/// Why a reload was asked for, which decides whether the calendar's month
+/// memo survives it.
+///
+/// An enum rather than a naked `bool`, and carried on the event rather than
+/// inferred from which dispatch path the event arrived by: the memo used to
+/// be dropped in `App::queue_or_apply`, which only *key-produced* events
+/// reach, so a reload posted by a background task — Task 21's file watcher —
+/// would have refreshed the day and the bar chart while leaving the calendar
+/// marker wrong.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reload {
+    /// The user moved to another date. The calendar's month memo still
+    /// describes the months on screen — a same-month move costing no
+    /// directory scan is the whole point of it — so it is kept.
+    Navigation,
+    /// "Read the disk again": `r`, a finished editor session, or an outside
+    /// edit. Nothing on hand can be trusted, the month memo included.
+    Rescan,
+}
+
 /// Everything one background load produces, applied to the app in one step.
 ///
-/// Loading all three together keeps the day, the calendar and the bar chart
+/// Loading all four together keeps the day, the calendar and the bar chart
 /// from ever showing a mix of two different dates.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoadPayload {
-    /// The active date's parsed day, or `None` when it has no file yet.
+    /// The date this load was started for.
+    ///
+    /// Carried rather than re-read off the app, because `App::active_date`
+    /// moves the moment a key is handled while the reload it queues starts a
+    /// loop turn or two later — so a payload still carrying the current
+    /// generation can land after the date on screen has already changed.
+    /// Everything the payload is filed under is keyed off this, not off
+    /// whatever is on screen when it lands.
+    pub date: Date,
+    /// The loaded date's parsed day, or `None` when it has no file yet.
     pub day: Option<TimeTrackingData>,
-    /// Dates with tracked hours, for the calendar's markers.
+    /// Dates with tracked hours, for the calendar's markers. Scanned for the
+    /// ninety-day window around [`LoadPayload::date`].
     pub populated: Vec<Date>,
-    /// Tracked minutes per day of the active week, for the bar chart.
+    /// Tracked minutes per day of [`LoadPayload::date`]'s week, for the bar
+    /// chart.
     pub weekly: HashMap<Date, u32>,
 }
 
@@ -292,12 +335,12 @@ mod tests {
         let tx = handler.sender();
         let tx2 = tx.clone();
 
-        tx.send(AppEvent::ReloadFromDisk);
+        tx.send(AppEvent::ReloadFromDisk(Reload::Rescan));
         tx2.send(AppEvent::Today);
 
         assert!(matches!(
             handler.try_next(),
-            Some(Event::App(AppEvent::ReloadFromDisk))
+            Some(Event::App(AppEvent::ReloadFromDisk(Reload::Rescan)))
         ));
         assert!(matches!(
             handler.try_next(),

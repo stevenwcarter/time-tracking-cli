@@ -1,16 +1,22 @@
 use crate::time_utils::get_week_dates;
-use std::{collections::HashMap, io::stdout};
+use std::{
+    collections::HashMap,
+    fmt,
+    io::stdout,
+    time::{Duration, Instant},
+};
 
 use crate::{DataService, editor::open_in_editor};
 
 use super::{
     context::TuiContext,
-    event::{AppEvent, Event, EventHandler, LoadPayload},
+    event::{AppEvent, Event, EventHandler, LoadPayload, Reload},
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
 };
 use anyhow::{Context, Result};
+use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
     ExecutableCommand,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -23,6 +29,81 @@ use ratatui::{
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
 use tokio::task::JoinHandle;
+
+/// How long a status message stays on the footer before [`App::tick`] clears
+/// it. Long enough to read a toast, short enough that the help hint is what
+/// an idle screen shows.
+const STATUS_TTL: Duration = Duration::from_secs(4);
+
+/// The footer's resting text, and the only hint a day with no data gives that
+/// the TUI has any keys at all.
+const HELP_HINT: &str = "? for help";
+
+/// Shown while a load is in flight: on the footer when no status message has
+/// claimed the line, and in place of the day pane whose content the load has
+/// not produced yet.
+pub(crate) const LOADING_MESSAGE: &str = "Loading…";
+
+/// Shown when the clipboard could not be reached — a headless box, or an SSH
+/// session with no forwarding, where `Enter` used to do nothing at all.
+const CLIPBOARD_UNAVAILABLE: &str = "Clipboard unavailable";
+
+/// Shown when the selected project has no notes to yank.
+const NOTHING_TO_COPY: &str = "No notes to copy";
+
+/// Somewhere [`AppEvent::CopyToClipboard`] can put a payload.
+///
+/// A trait rather than [`ClipboardContext`] directly so the failure that makes
+/// this task worth doing — a machine with no clipboard backend at all — is
+/// reachable from a test instead of only from a box with `DISPLAY` unset.
+trait Clipboard: fmt::Debug {
+    /// Put `payload` on the system clipboard.
+    fn set_contents(&mut self, payload: String) -> Result<()>;
+}
+
+/// The real system clipboard.
+///
+/// A newtype because [`ClipboardContext`] implements neither [`fmt::Debug`]
+/// nor the trait above, and [`App`] derives `Debug`.
+struct SystemClipboard(ClipboardContext);
+
+impl Clipboard for SystemClipboard {
+    fn set_contents(&mut self, payload: String) -> Result<()> {
+        // `copypasta`'s error is not `Sync`, so it cannot cross into
+        // `anyhow::Error` by `?`; its message is all the caller wants anyway.
+        self.0
+            .set_contents(payload)
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+impl fmt::Debug for SystemClipboard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SystemClipboard")
+    }
+}
+
+/// What the day pane has to draw, once the payload on hand has been checked
+/// against the date on screen.
+///
+/// The check is the point. [`App::go_to_date`] moves `active_date` and
+/// `week_dates` immediately while `data`, `populated_dates` and `weekly_data`
+/// only move when the load lands, so between the two the pane would otherwise
+/// draw the *previous* date's projects underneath the *new* date's header —
+/// stale content presented as current, which reads worse than an empty pane.
+/// Before loads went off the event loop that lasted one frame; now it lasts
+/// the whole load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DayPane {
+    /// A load for the date on screen is in flight and nothing on hand
+    /// describes it yet.
+    Loading,
+    /// The project list, which belongs to the date on screen.
+    Projects,
+    /// Nothing to show: a day with no tracked time, or a load that failed and
+    /// left only another date's payload behind.
+    Empty,
+}
 
 /// Application.
 #[derive(Debug)]
@@ -50,8 +131,29 @@ pub struct App {
     /// While this is `Some` the overlay is the only layer that sees a key;
     /// see [`App::handle_key_events`].
     pub overlay: Option<Overlay>,
+    /// The one-line message on the footer and the moment it was set, or
+    /// `None` when the footer is free to show the loading or help text.
+    ///
+    /// [`App::tick`] clears it once [`STATUS_TTL`] has passed. This is the
+    /// only feedback channel the TUI has: the alternate screen owns the
+    /// terminal, so anything that only reaches the log reaches nobody.
+    pub status: Option<(String, Instant)>,
+    /// The system clipboard, connected on first use.
+    ///
+    /// Held rather than rebuilt per copy because connecting is the expensive
+    /// half and, on X11, the connection is what keeps the pasted selection
+    /// available. A machine with no backend leaves this `None` and every
+    /// `Enter` reports [`CLIPBOARD_UNAVAILABLE`] instead of failing silently.
+    clipboard: Option<Box<dyn Clipboard>>,
     /// Is a load of the active date's data currently in flight
     pub loading: bool,
+    /// The date `data`, `populated_dates` and `weekly_data` describe, or
+    /// `None` before the first load lands.
+    ///
+    /// Compared against `active_date` at render time; see [`DayPane`]. It is
+    /// taken from the payload rather than from `active_date`, because those
+    /// two are exactly what drift apart while a load is in flight.
+    pub loaded_date: Option<Date>,
     /// Which load is the current one; see [`App::spawn_load`].
     ///
     /// Bumped every time a load starts, and stamped on the event that load
@@ -114,7 +216,10 @@ impl App {
             dirty: true,
             mode: Mode::Day,
             overlay: None,
+            status: None,
+            clipboard: None,
             loading: false,
+            loaded_date: None,
             load_gen: 0,
             load_task: None,
             active_date,
@@ -131,6 +236,10 @@ impl App {
     }
 
     /// Open on `date` rather than today.
+    ///
+    /// Call it before any of the `with_*` seeding helpers below: they stand in
+    /// for a load that landed *for the date the app is open on*, so moving the
+    /// date afterwards would leave the seeded content looking stale.
     #[must_use]
     pub fn with_active_date(mut self, date: Date) -> Self {
         self.active_date = date;
@@ -143,6 +252,7 @@ impl App {
     #[must_use]
     pub fn with_data(mut self, data: TimeTrackingData) -> Self {
         self.set_day_data(Some(data));
+        self.loaded_date = Some(self.active_date);
         self
     }
 
@@ -160,6 +270,7 @@ impl App {
     #[must_use]
     pub fn with_weekly_data(mut self, weekly_data: HashMap<Date, u32>) -> Self {
         self.weekly_data = weekly_data;
+        self.loaded_date = Some(self.active_date);
         self
     }
 
@@ -168,6 +279,7 @@ impl App {
     #[must_use]
     pub fn with_populated_dates(mut self, populated_dates: Vec<Date>) -> Self {
         self.populated_dates = populated_dates;
+        self.loaded_date = Some(self.active_date);
         self
     }
 
@@ -183,6 +295,7 @@ impl App {
         // pressing `e` reports the real error when it tries to write.
         if let Err(e) = self.data_svc.ensure_data_dir().await {
             tracing::warn!("could not create the data directory: {e}");
+            self.set_status(format!("Could not create the data directory: {e}"));
         }
         // Nothing polls the terminal until now; see `EventHandler::start`.
         self.events.start();
@@ -211,6 +324,12 @@ impl App {
                 Event::App(app_event) => {
                     if let Err(e) = self.handle_app_event(app_event, &mut terminal).await {
                         tracing::warn!("Failed to handle app event: {e}");
+                        self.set_status(format!("{e}"));
+                        // `handle_app_event` sets `dirty` on the way in, but
+                        // an error means it may have returned before whatever
+                        // it was about to change, so the status still has to
+                        // reach the screen.
+                        self.dirty = true;
                     }
                 }
             }
@@ -246,10 +365,25 @@ impl App {
         match app_event {
             // Returns immediately, but `tokio::spawn` still needs the runtime
             // this loop is running on.
-            AppEvent::ReloadFromDisk => self.spawn_load(),
+            AppEvent::ReloadFromDisk(reload) => {
+                // Here rather than at key-handling time, and immediately
+                // before the generation bump: a memo cleared several loop
+                // turns earlier can be refilled by a payload that is still
+                // the current generation, which is what used to make `r`
+                // answer from the very markers it had just dropped. Doing it
+                // where the reload actually starts also means a reload posted
+                // by a background task — Task 21's file watcher — drops the
+                // markers, which `queue_or_apply` could never have done.
+                if reload == Reload::Rescan {
+                    self.month_memo.clear();
+                }
+                self.spawn_load();
+            }
             AppEvent::Edit => {
                 self.run_editor(terminal).await?;
-                self.events.send(AppEvent::ReloadFromDisk);
+                // The edit may have added time to an empty day or taken the
+                // last of it away, either of which moves a calendar marker.
+                self.events.send(AppEvent::ReloadFromDisk(Reload::Rescan));
             }
             e @ (AppEvent::ToggleZoomBar
             | AppEvent::ToggleHelp
@@ -262,6 +396,7 @@ impl App {
             | AppEvent::FirstProject
             | AppEvent::LastProject
             | AppEvent::CopyNotes
+            | AppEvent::CopyToClipboard(..)
             | AppEvent::DataLoaded(..)
             | AppEvent::LoadFailed(..)
             | AppEvent::Quit) => self.apply_sync_event(e),
@@ -297,7 +432,6 @@ impl App {
             // one. Holding `h` starts a load per key press, and the earlier
             // ones must not overwrite the date the user stopped on.
             AppEvent::DataLoaded(generation, payload) if generation == self.load_gen => {
-                self.loading = false;
                 self.apply_payload(*payload);
             }
             AppEvent::LoadFailed(generation, message) if generation == self.load_gen => {
@@ -316,9 +450,17 @@ impl App {
             | AppEvent::FirstProject
             | AppEvent::LastProject
             | AppEvent::CopyNotes => {
-                if let Some(widget) = &mut self.project_list_widget {
-                    widget.apply(&app_event);
+                // The widget answers `Emit` for `CopyNotes`, so its verdict
+                // has to be queued rather than dropped — otherwise a copy
+                // that reached the list this way would go nowhere.
+                if let Some(widget) = &mut self.project_list_widget
+                    && let Handled::Emit(emitted) = widget.apply(&app_event)
+                {
+                    self.events.send(emitted);
                 }
+            }
+            AppEvent::CopyToClipboard(payload, message) => {
+                self.copy_to_clipboard(payload, message);
             }
             // `handle_app_event` owns these: `Edit` awaits the editor, and
             // `ReloadFromDisk` spawns a load, which needs a runtime.
@@ -326,7 +468,7 @@ impl App {
             // Adding a variant here alone is not enough — list it in
             // `handle_app_event`'s alternation too, or it is dropped in both
             // places and no test fails.
-            AppEvent::ReloadFromDisk | AppEvent::Edit => {}
+            AppEvent::ReloadFromDisk(_) | AppEvent::Edit => {}
         }
     }
 
@@ -359,10 +501,15 @@ impl App {
     }
 
     /// Move to `date` and queue a reload of its data.
+    ///
+    /// The reload is queued rather than started here, so no disk work happens
+    /// on the event loop — which is also why `active_date` and whatever the
+    /// last payload left behind are briefly out of step. See [`DayPane`].
     fn go_to_date(&mut self, date: Date) {
         self.active_date = date;
         self.week_dates = get_week_dates(&date, self.ctx.week_start_day);
-        self.events.send(AppEvent::ReloadFromDisk);
+        self.events
+            .send(AppEvent::ReloadFromDisk(Reload::Navigation));
     }
 
     pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
@@ -386,9 +533,6 @@ impl App {
 
         // Invalidate cache since we just edited the file
         self.data_svc.invalidate_date(&self.active_date).await;
-        // The edit may have added time to an empty day or taken the last of it
-        // away, either of which moves a calendar marker.
-        self.month_memo.clear();
 
         // Restore the TUI after editor exits
         stdout().execute(EnterAlternateScreen)?;
@@ -451,21 +595,122 @@ impl App {
 
     /// Install a completed load. The day, the calendar and the bar chart move
     /// together, so no frame shows two different dates at once.
+    ///
+    /// Everything is keyed off `payload.date`, never off `active_date`. The
+    /// generation guard does *not* establish that the two are the same:
+    /// `go_to_date` moves `active_date` and only *queues* the reload, and keys
+    /// and application events share one channel, so a payload carrying the
+    /// current generation can land a turn or two after the date moved. Filing
+    /// its markers under `active_date`'s month is what put a stale scan behind
+    /// a month the calendar had never scanned — and [`App::month_scan_needed`]
+    /// then reported nothing to do, permanently.
     fn apply_payload(&mut self, payload: LoadPayload) {
         let LoadPayload {
+            date,
             day,
             populated,
             weekly,
         } = payload;
+        // Correct for the month it was scanned for whether or not that month
+        // is still on screen, so the work is never wasted and never misfiled.
+        self.month_memo.insert(month_key(date), populated.clone());
+        if date != self.active_date {
+            // Another date's payload. The reload for the date on screen is
+            // already queued, so `loading` stays set and the rest is dropped
+            // rather than drawn under the wrong header.
+            return;
+        }
+        self.loading = false;
+        self.loaded_date = Some(date);
         self.set_day_data(day);
-        // The generation guard has already established that this payload is
-        // the active date's: every date change goes through `spawn_load`,
-        // which bumps `load_gen`. So the month on screen is the month these
-        // markers were scanned for.
-        self.month_memo
-            .insert(month_key(self.active_date), populated.clone());
         self.populated_dates = populated;
         self.weekly_data = weekly;
+    }
+
+    /// What the day pane should draw; see [`DayPane`].
+    pub fn day_pane(&self) -> DayPane {
+        if self.loaded_date != Some(self.active_date) {
+            // Nothing on hand describes the date on screen. Suppressing the
+            // pane is deliberate: labelling the previous date's projects
+            // "Loading…" would still present them as this date's.
+            return if self.loading {
+                DayPane::Loading
+            } else {
+                DayPane::Empty
+            };
+        }
+        if self.project_list_widget.is_some() {
+            DayPane::Projects
+        } else {
+            DayPane::Empty
+        }
+    }
+
+    /// Does `weekly_data` describe a different week than the one on screen?
+    ///
+    /// The same mismatch as [`DayPane`] on the week axis, and worse than it
+    /// looks: the bar chart totals every value in the map, so a crossed week
+    /// boundary draws the *previous* week's total above seven empty bars.
+    /// [`crate::tui::ui`] withholds the data rather than let it.
+    pub fn week_is_stale(&self) -> bool {
+        !self
+            .loaded_date
+            .is_some_and(|date| self.week_dates.contains(&date))
+    }
+
+    /// The footer's text: a status message if one is up, the loading marker
+    /// while a load is in flight, and the help hint otherwise.
+    ///
+    /// A status message wins over `Loading…` because it answers something the
+    /// user just did, and the suppressed day pane says a load is running
+    /// anyway.
+    pub fn footer_text(&self) -> &str {
+        match &self.status {
+            Some((message, _)) => message,
+            None if self.loading => LOADING_MESSAGE,
+            None => HELP_HINT,
+        }
+    }
+
+    /// Put `payload` on the system clipboard, reporting either way.
+    ///
+    /// The whole point of the event: this used to happen inside the project
+    /// list, where both failure paths went to a log file the alternate screen
+    /// hides, so `Enter` on a machine with no clipboard backend did nothing
+    /// observable at all.
+    fn copy_to_clipboard(&mut self, payload: String, message: String) {
+        if payload.is_empty() {
+            // Nothing to copy, and wiping whatever the user already had on
+            // the clipboard is not what `Enter` promised.
+            self.set_status(NOTHING_TO_COPY);
+            return;
+        }
+        match self.set_clipboard_contents(payload) {
+            Ok(()) => self.set_status(message),
+            Err(e) => {
+                tracing::warn!("could not copy to the clipboard: {e}");
+                self.set_status(CLIPBOARD_UNAVAILABLE);
+            }
+        }
+    }
+
+    /// Hand `payload` to the clipboard, connecting on first use.
+    ///
+    /// A connection that failed is not remembered: it costs one cheap retry
+    /// per `Enter` on a headless box, and it means a session that gains a
+    /// clipboard — an SSH connection re-established with forwarding — starts
+    /// working without a restart.
+    fn set_clipboard_contents(&mut self, payload: String) -> Result<()> {
+        let clipboard = match self.clipboard.as_mut() {
+            Some(clipboard) => clipboard,
+            None => {
+                let context = ClipboardContext::new()
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                    .context("connecting to the system clipboard")?;
+                self.clipboard.insert(Box::new(SystemClipboard(context)))
+            }
+        };
+        clipboard.set_contents(payload)
     }
 
     /// The month key `date` needs a populated-dates scan for, or `None` when
@@ -481,13 +726,15 @@ impl App {
         (!self.month_memo.contains_key(&key)).then_some(key)
     }
 
-    /// Record a one-line message for the user.
+    /// Show a one-line message on the footer for [`STATUS_TTL`].
     ///
-    /// Task 12 gives `App` a status field and a footer to draw it in; until
-    /// then the message only reaches the log, which is enough for the call
-    /// sites to be written once and left alone.
-    fn set_status(&mut self, message: String) {
+    /// Does not set `dirty` itself: every caller is reached from one of the
+    /// three seams that already do, and a status set from anywhere else would
+    /// be a state change nothing repaints for.
+    pub fn set_status(&mut self, message: impl Into<String>) {
+        let message = message.into();
         tracing::debug!("status: {message}");
+        self.status = Some((message, Instant::now()));
     }
 
     /// Offer `key_event` to each key layer in turn, outermost first.
@@ -531,15 +778,6 @@ impl App {
     /// by `j` would move the project list behind the popup that is about to
     /// open.
     fn queue_or_apply(&mut self, app_event: AppEvent) {
-        // `r` is the only key bound straight to a reload, and it means "read
-        // the disk again" — so it has to drop the calendar's month memo too,
-        // or the one gesture a user has for picking up an outside edit would
-        // be answered from it. Moving between dates emits `NextDate` /
-        // `PreviousDate` and reaches `ReloadFromDisk` through `go_to_date`
-        // instead, which is exactly what keeps arrow keys off the scan.
-        if matches!(app_event, AppEvent::ReloadFromDisk) {
-            self.month_memo.clear();
-        }
         if changes_key_routing(&app_event) {
             self.apply_sync_event(app_event);
         } else {
@@ -610,11 +848,22 @@ impl App {
         }
     }
 
-    /// Handles the tick event of the terminal.
+    /// Expire a status message whose [`STATUS_TTL`] has run out.
     ///
-    /// The tick event is where you can update the state of your application with any logic that
-    /// needs to be updated at a fixed frame rate. E.g. polling a server, updating an animation.
-    pub fn tick(&self) {}
+    /// This is the tick's only job. It takes `&mut self` solely for that, and
+    /// sets `dirty` **only when a message actually expired** — a tick that
+    /// changes nothing must not repaint, or the four wakeups a second the
+    /// event loop costs at idle become four *frames* a second again.
+    pub fn tick(&mut self) {
+        let expired = self
+            .status
+            .as_ref()
+            .is_some_and(|(_, set_at)| set_at.elapsed() >= STATUS_TTL);
+        if expired {
+            self.status = None;
+            self.dirty = true;
+        }
+    }
 
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
@@ -675,6 +924,7 @@ async fn load_payload(
     );
 
     Ok(LoadPayload {
+        date,
         day: day.context("Parsing the day")?,
         populated: populated.context("Finding populated dates")?,
         weekly: weekly.context("Loading weekly data")?,
@@ -726,10 +976,11 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::FirstProject
         | AppEvent::LastProject
         | AppEvent::CopyNotes
+        | AppEvent::CopyToClipboard(..)
         | AppEvent::Edit
         | AppEvent::NextDate
         | AppEvent::PreviousDate
-        | AppEvent::ReloadFromDisk
+        | AppEvent::ReloadFromDisk(_)
         | AppEvent::Today
         // Never reach this function at all — a load reports back, it is not
         // emitted by a key — and they touch neither mode nor overlay.
@@ -794,17 +1045,82 @@ fn month_offset(date: Date, offset: i32) -> Result<Date> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::testing::{fixture_date, fixture_day};
+    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
     use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
-    use std::time::Duration;
-    use time::macros::date;
+    use std::{cell::RefCell, rc::Rc, time::Duration};
+    use time::{Weekday, macros::date};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    fn payload_with(populated: Vec<Date>) -> Box<LoadPayload> {
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    fn test_terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 40)).expect("test backend")
+    }
+
+    /// The message on the status line, if there is one.
+    fn status_text(app: &App) -> Option<&str> {
+        app.status.as_ref().map(|(message, _)| message.as_str())
+    }
+
+    /// A clipboard that records what it was handed, so the success path is
+    /// asserted rather than assumed.
+    #[derive(Debug)]
+    struct RecordingClipboard(Rc<RefCell<Vec<String>>>);
+
+    impl Clipboard for RecordingClipboard {
+        fn set_contents(&mut self, payload: String) -> Result<()> {
+            self.0.borrow_mut().push(payload);
+            Ok(())
+        }
+    }
+
+    /// A machine with no clipboard backend — a headless box, or SSH with no
+    /// forwarding. This is the path that used to produce no feedback at all.
+    #[derive(Debug)]
+    struct UnavailableClipboard;
+
+    impl Clipboard for UnavailableClipboard {
+        fn set_contents(&mut self, _payload: String) -> Result<()> {
+            Err(anyhow::anyhow!("no clipboard backend"))
+        }
+    }
+
+    /// Give `app` a recording clipboard, returning the handle to read it back.
+    fn recording_clipboard(app: &mut App) -> Rc<RefCell<Vec<String>>> {
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        app.clipboard = Some(Box::new(RecordingClipboard(Rc::clone(&copied))));
+        copied
+    }
+
+    /// Dispatch the next queued app event the way `App::run` does — through
+    /// `handle_app_event` rather than `apply_sync_event`.
+    ///
+    /// The difference is load-bearing for anything about reloads:
+    /// `ReloadFromDisk` is one of the two events `handle_app_event` keeps for
+    /// itself, so `drain_pending_events` sees it as a no-op and would pass
+    /// whatever the reload does or fails to do.
+    async fn dispatch_next<B: Backend>(app: &mut App, terminal: &mut Terminal<B>) {
+        let Some(Event::App(app_event)) = app.events.try_next() else {
+            panic!("expected an app event to be queued");
+        };
+        app.handle_app_event(app_event, terminal)
+            .await
+            .expect("dispatching the queued event");
+    }
+
+    /// A payload as a load for `date` would report it.
+    ///
+    /// The date is explicit because it is what `apply_payload` files the
+    /// markers under and checks against the date on screen — passing the
+    /// app's own `active_date` is what makes a payload "the current one".
+    fn payload_for(date: Date, populated: Vec<Date>) -> Box<LoadPayload> {
         Box::new(LoadPayload {
+            date,
             day: None,
             populated,
             weekly: HashMap::new(),
@@ -954,7 +1270,7 @@ mod tests {
 
         app.apply_sync_event(AppEvent::DataLoaded(
             6,
-            payload_with(vec![date!(2026 - 01 - 01)]),
+            payload_for(app.active_date, vec![date!(2026 - 01 - 01)]),
         ));
         assert!(
             app.populated_dates.is_empty(),
@@ -964,7 +1280,7 @@ mod tests {
 
         app.apply_sync_event(AppEvent::DataLoaded(
             7,
-            payload_with(vec![date!(2026 - 02 - 02)]),
+            payload_for(app.active_date, vec![date!(2026 - 02 - 02)]),
         ));
         assert_eq!(app.populated_dates, vec![date!(2026 - 02 - 02)]);
         assert!(!app.loading);
@@ -1073,7 +1389,7 @@ mod tests {
         app.dirty = false;
         app.apply_sync_event(AppEvent::DataLoaded(
             app.load_gen,
-            payload_with(vec![date!(2026 - 03 - 03)]),
+            payload_for(app.active_date, vec![date!(2026 - 03 - 03)]),
         ));
         assert!(app.dirty, "a landed load has to repaint");
     }
@@ -1090,7 +1406,7 @@ mod tests {
         let mut app = day_app();
         app.dirty = false;
 
-        app.handle_app_event(AppEvent::ReloadFromDisk, &mut terminal)
+        app.handle_app_event(AppEvent::ReloadFromDisk(Reload::Navigation), &mut terminal)
             .await
             .unwrap();
 
@@ -1204,13 +1520,11 @@ mod tests {
         (App::new(ctx).with_active_date(fixture_date()), dir)
     }
 
-    /// Run one load to completion, the way `App::run` would.
+    /// Apply queued events until the load in flight reports back.
     ///
-    /// Skips past anything else already queued — pressing `r` leaves a
-    /// `ReloadFromDisk` behind, which the real loop turns into the spawn this
-    /// helper makes by hand.
-    async fn load_once(app: &mut App) {
-        app.spawn_load();
+    /// Skips past anything else already queued — a `ReloadFromDisk` left
+    /// behind by a key press is a no-op through `apply_sync_event`.
+    async fn settle(app: &mut App) {
         loop {
             let event = next_app_event(app).await;
             let landed = matches!(event, AppEvent::DataLoaded(..) | AppEvent::LoadFailed(..));
@@ -1219,6 +1533,12 @@ mod tests {
                 return;
             }
         }
+    }
+
+    /// Run one load to completion, the way `App::run` would.
+    async fn load_once(app: &mut App) {
+        app.spawn_load();
+        settle(app).await;
     }
 
     /// The whole point of the memo, asserted on behaviour rather than on a
@@ -1256,12 +1576,15 @@ mod tests {
             .await
             .expect("write the second day file");
 
+        // Through `handle_app_event`, which is where a reload starts and
+        // where the markers are dropped — a loop turn or two after the key.
         app.handle_key_events(key('r')).unwrap();
+        dispatch_next(&mut app, &mut test_terminal()).await;
         assert!(
             app.month_memo.is_empty(),
             "an explicit reload must drop the month markers"
         );
-        load_once(&mut app).await;
+        settle(&mut app).await;
 
         assert_eq!(
             app.populated_dates,
@@ -1269,19 +1592,310 @@ mod tests {
         );
     }
 
-    /// Moving between dates emits `NextDate`/`PreviousDate` and reaches
-    /// `ReloadFromDisk` only through `go_to_date` — which is exactly what
-    /// keeps arrow keys off the scan. If navigation ever emitted the reload
-    /// event directly, the memo would be cleared on every key press and this
-    /// task would silently undo itself.
-    #[test]
-    fn moving_between_dates_does_not_drop_the_memo() {
+    /// Both halves of the memo's policy, because either one alone passes for
+    /// the wrong reason. Moving between dates must cost no directory scan —
+    /// that is what the memo is for — and `r` means "read the disk again",
+    /// markers included.
+    ///
+    /// Driven through `handle_app_event`, which is where a reload actually
+    /// starts. The previous version of this test drained with
+    /// `drain_pending_events`, whose `ReloadFromDisk` arm does nothing, so it
+    /// stayed green whichever policy was in force.
+    #[tokio::test]
+    async fn navigation_keeps_the_month_memo_and_an_explicit_reload_drops_it() {
+        let mut terminal = test_terminal();
         let mut app = day_app();
         app.month_memo.insert((2025, 6), vec![fixture_date()]);
 
         app.handle_key_events(key('l')).unwrap();
+        // `NextDate`, which moves the date and queues the reload ...
+        dispatch_next(&mut app, &mut terminal).await;
+        // ... and the reload itself.
+        dispatch_next(&mut app, &mut terminal).await;
+        assert!(
+            app.month_memo.contains_key(&(2025, 6)),
+            "moving between dates must not rescan the ninety-day window"
+        );
+
+        app.handle_key_events(key('r')).unwrap();
+        dispatch_next(&mut app, &mut terminal).await;
+        assert!(
+            app.month_memo.is_empty(),
+            "`r` means read the disk again, calendar markers included"
+        );
+    }
+
+    /// The window Task 10's review found. `go_to_date` moves `active_date`
+    /// and only *queues* the reload, so a payload still carrying the current
+    /// generation can land after the date on screen has changed. Filing its
+    /// markers under `active_date`'s month put a scan of the wrong ninety
+    /// days behind a month the calendar had never scanned — and
+    /// `month_scan_needed` then reported nothing to do, permanently.
+    #[test]
+    fn a_payload_that_lands_after_the_date_moved_is_filed_under_its_own_month() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(date!(2026 - 08 - 31));
+        app.load_gen = 1;
+        app.loading = true;
+
+        // The date moves; the reload it queued has not been dispatched, so
+        // the generation is still the one the in-flight load carries.
+        app.apply_sync_event(AppEvent::NextDate);
+        assert_eq!(app.active_date, date!(2026 - 09 - 01));
+
+        app.apply_sync_event(AppEvent::DataLoaded(
+            1,
+            payload_for(date!(2026 - 08 - 31), vec![date!(2026 - 08 - 30)]),
+        ));
+
+        assert_eq!(
+            app.month_memo.get(&(2026, 8)).map(Vec::as_slice),
+            Some(&[date!(2026 - 08 - 30)][..]),
+            "the scan belongs to the month it was run for"
+        );
+        assert!(
+            app.month_scan_needed(date!(2026 - 09 - 01)).is_some(),
+            "September was never scanned and must not look as though it was"
+        );
+        assert!(
+            app.populated_dates.is_empty(),
+            "August's markers must not be drawn as September's"
+        );
+        assert!(
+            app.loading,
+            "the reload for the date on screen is still to come"
+        );
+    }
+
+    #[test]
+    fn a_failed_load_surfaces_on_the_status_line() {
+        let mut app = App::new(TuiContext::for_test());
+        app.load_gen = 3;
+        app.loading = true;
+
+        app.apply_sync_event(AppEvent::LoadFailed(3, "permission denied".to_owned()));
+
+        let message = status_text(&app).expect("a failed load must set a status");
+        assert!(message.contains("permission denied"), "got {message:?}");
+    }
+
+    #[test]
+    fn status_expires_after_its_ttl() {
+        let mut app = App::new(TuiContext::for_test());
+        app.set_status("Copied 4 notes for admin");
+        assert!(app.status.is_some());
+
+        app.status = Some(("stale".to_owned(), Instant::now() - STATUS_TTL * 2));
+        app.tick();
+
+        assert!(app.status.is_none(), "an expired status must clear on tick");
+    }
+
+    #[test]
+    fn an_expiring_status_requests_a_redraw() {
+        let mut app = App::new(TuiContext::for_test());
+        app.status = Some(("stale".to_owned(), Instant::now() - STATUS_TTL * 2));
+        app.dirty = false;
+
+        app.tick();
+
+        assert!(
+            app.dirty,
+            "clearing the toast must repaint so it actually disappears"
+        );
+    }
+
+    /// The other half, and what protects Task 7's work: the tick fires four
+    /// times a second, so a tick that changes nothing must not repaint or the
+    /// idle cost that was just taken to zero comes straight back.
+    #[test]
+    fn a_tick_with_nothing_to_expire_leaves_the_screen_alone() {
+        let mut app = App::new(TuiContext::for_test());
+
+        app.dirty = false;
+        app.tick();
+        assert!(!app.dirty, "an idle tick must not force a repaint");
+
+        app.set_status("fresh");
+        app.dirty = false;
+        app.tick();
+        assert!(
+            !app.dirty,
+            "a status still inside its TTL must not force a repaint"
+        );
+        assert!(app.status.is_some());
+    }
+
+    #[test]
+    fn enter_puts_the_selected_projects_notes_on_the_clipboard_and_says_so() {
+        let mut app = day_app();
+        let copied = recording_clipboard(&mut app);
+
+        app.handle_key_events(enter()).unwrap();
         app.drain_pending_events();
 
-        assert!(app.month_memo.contains_key(&(2025, 6)));
+        assert_eq!(copied.borrow().as_slice(), ["- standup\n- inbox triage"]);
+        assert_eq!(status_text(&app), Some("Copied 2 notes for admin"));
+    }
+
+    /// The point of the task. On a headless box or over SSH with no
+    /// forwarding this used to be indistinguishable from a working copy: the
+    /// failure went to a log file the alternate screen hides.
+    #[test]
+    fn a_machine_with_no_clipboard_backend_says_so_rather_than_nothing() {
+        let mut app = day_app();
+        app.clipboard = Some(Box::new(UnavailableClipboard));
+
+        app.handle_key_events(enter()).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(status_text(&app), Some(CLIPBOARD_UNAVAILABLE));
+    }
+
+    #[test]
+    fn a_project_with_no_notes_reports_rather_than_wiping_the_clipboard() {
+        let mut data = fixture_day();
+        data.projects[0].notes.clear();
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_data(data);
+        let copied = recording_clipboard(&mut app);
+
+        app.handle_key_events(enter()).unwrap();
+        app.drain_pending_events();
+
+        assert_eq!(status_text(&app), Some(NOTHING_TO_COPY));
+        assert!(
+            copied.borrow().is_empty(),
+            "the clipboard must be left as the user had it"
+        );
+    }
+
+    /// `apply_sync_event` used to throw the widget's verdict away, so a
+    /// `CopyNotes` arriving through the queue rather than through the mode
+    /// layer would move nothing and copy nothing, silently.
+    #[test]
+    fn a_copy_that_arrives_through_the_queue_still_reaches_the_clipboard() {
+        let mut app = day_app();
+        let copied = recording_clipboard(&mut app);
+
+        app.apply_sync_event(AppEvent::CopyNotes);
+        app.drain_pending_events();
+
+        assert_eq!(copied.borrow().len(), 1, "the copy intent must not be lost");
+    }
+
+    /// Startup, not a keypress: loads run off the event loop, so the first
+    /// frame is drawn before any payload exists and a cold cache used to
+    /// flash "no data" before the day appeared.
+    #[tokio::test]
+    async fn the_frame_before_the_first_load_lands_says_it_is_loading() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(fixture_date());
+
+        app.spawn_load();
+        let screen = render_to_string(&mut app, 80, 40);
+
+        assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
+        assert!(
+            !screen.contains("No data found for date"),
+            "an in-flight load must not render as an empty day:\n{screen}"
+        );
+    }
+
+    /// The regression Task 6 introduced, on the frame that shows it: the day
+    /// pane used to draw the *previous* date's projects underneath the new
+    /// date's header for as long as the load took.
+    #[tokio::test]
+    async fn a_date_change_suppresses_the_previous_dates_projects() {
+        let mut terminal = test_terminal();
+        let mut app = day_app();
+        assert!(
+            render_to_string(&mut app, 80, 40).contains("admin"),
+            "the fixture day has to be on screen for this test to mean anything"
+        );
+
+        app.handle_key_events(key('l')).unwrap();
+        dispatch_next(&mut app, &mut terminal).await;
+        dispatch_next(&mut app, &mut terminal).await;
+
+        // Drawn before the payload arrives; nothing has applied a load.
+        let screen = render_to_string(&mut app, 80, 40);
+        assert!(app.loading, "the reload is in flight");
+        assert!(
+            screen.contains("Thu 2025-06-12"),
+            "the header moved to the new date:\n{screen}"
+        );
+        assert!(
+            !screen.contains("admin"),
+            "the previous date's projects must not be drawn under the new date:\n{screen}"
+        );
+        assert!(screen.contains(LOADING_MESSAGE), "got:\n{screen}");
+    }
+
+    /// The same mismatch on the week axis. The bar chart totals every value
+    /// in the map, so the old week's data under the new week's dates draws
+    /// the previous week's total above seven empty bars.
+    #[tokio::test]
+    async fn crossing_a_week_boundary_suppresses_the_previous_weeks_bars() {
+        let week: HashMap<Date, u32> = get_week_dates(&fixture_date(), Weekday::Saturday)
+            .into_iter()
+            .map(|date| (date, u32::from(date == fixture_date()) * 480))
+            .collect();
+        let mut terminal = test_terminal();
+        let mut app = day_app().with_weekly_data(week);
+        assert!(
+            render_to_string(&mut app, 80, 40).contains("Wed11"),
+            "the loaded week has to be on the chart for this test to mean anything"
+        );
+
+        // 2025-06-11 is a Wednesday and the week starts on Saturday, so three
+        // days forward lands on 2025-06-14, the first day of the next week.
+        for _ in 0..3 {
+            app.handle_key_events(key('l')).unwrap();
+        }
+        for _ in 0..3 {
+            dispatch_next(&mut app, &mut terminal).await;
+        }
+        for _ in 0..3 {
+            dispatch_next(&mut app, &mut terminal).await;
+        }
+
+        assert_eq!(app.active_date, date!(2025 - 06 - 14));
+        assert!(app.week_is_stale());
+        let screen = render_to_string(&mut app, 80, 40);
+        assert!(
+            !screen.contains("Wed11"),
+            "the previous week's bars must not be drawn against the new week:\n{screen}"
+        );
+        assert!(
+            !screen.contains("Sat14"),
+            "and the new week's bars only appear once its data has landed:\n{screen}"
+        );
+    }
+
+    /// What keeps the TUI discoverable: the hint used to live inside the
+    /// project list, so the one screen most likely to be a user's first — a
+    /// day with nothing tracked — showed no keys at all.
+    #[test]
+    fn the_help_hint_survives_a_day_with_no_project_list() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(fixture_date());
+
+        let screen = render_to_string(&mut app, 80, 24);
+
+        assert!(screen.contains("No data found for date"), "got:\n{screen}");
+        assert!(screen.contains(HELP_HINT), "got:\n{screen}");
+    }
+
+    #[test]
+    fn a_status_message_takes_the_footer_over_from_the_hint() {
+        let mut app = day_app();
+        app.set_status("Copied 2 notes for admin");
+
+        let screen = render_to_string(&mut app, 80, 40);
+
+        assert!(
+            screen.contains("Copied 2 notes for admin"),
+            "got:\n{screen}"
+        );
+        assert!(!screen.contains(HELP_HINT), "got:\n{screen}");
     }
 }

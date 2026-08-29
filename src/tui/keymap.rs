@@ -12,7 +12,7 @@ use std::borrow::Cow;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use super::event::AppEvent;
+use super::event::{AppEvent, Reload};
 use super::mode::Mode;
 
 /// A key as [`BINDINGS`] spells it: a code plus the modifiers held with it.
@@ -189,7 +189,7 @@ pub const BINDINGS: &[Binding] = &[
     },
     Binding {
         keys: &[(KeyCode::Char('r'), NONE)],
-        event: AppEvent::ReloadFromDisk,
+        event: AppEvent::ReloadFromDisk(Reload::Rescan),
         modes: ModeMask::ALL,
         group: Group::General,
         description: "reload the current date from disk",

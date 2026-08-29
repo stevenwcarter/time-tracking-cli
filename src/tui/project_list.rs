@@ -168,11 +168,47 @@ impl ProjectListWidget {
             AppEvent::PreviousProject => self.previous_item(),
             AppEvent::FirstProject => self.go_to_first(),
             AppEvent::LastProject => self.go_to_last(),
-            // Task 12 turns this into `Handled::Emit(CopyToClipboard(..))`.
-            AppEvent::CopyNotes => self.copy_selected_notes_to_clipboard(),
+            AppEvent::CopyNotes => return self.copy_intent(),
             _ => return Handled::Ignored,
         }
         Handled::Consumed
+    }
+
+    /// What `Enter` should put on the clipboard, as an intent rather than as
+    /// the copy itself.
+    ///
+    /// The widget knows *what* to yank and what to say about it; the one
+    /// connection to the system clipboard — and the status line that reports
+    /// a machine which has none — belongs to
+    /// [`App`](super::app::App). Doing the I/O here is what made the headline
+    /// action of the TUI fail silently into a log file the alternate screen
+    /// hides.
+    ///
+    /// Answers [`Handled::Consumed`] when there is nothing selected: the key
+    /// belonged to this list either way.
+    fn copy_intent(&self) -> Handled {
+        let Some(project) = self
+            .project_list
+            .state
+            .selected()
+            .and_then(|selected| self.project_list.items.get(selected))
+        else {
+            return Handled::Consumed;
+        };
+
+        let count = project.tasks.len();
+        let noun = if count == 1 { "note" } else { "notes" };
+        Handled::Emit(AppEvent::CopyToClipboard(
+            // Empty for a project with no notes, which `App` reports rather
+            // than wiping whatever the user already had on the clipboard.
+            project
+                .tasks
+                .iter()
+                .map(|task| format!("- {task}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            format!("Copied {count} {noun} for {}", project.name),
+        ))
     }
 
     fn next_item(&mut self) {
@@ -212,24 +248,6 @@ impl ProjectListWidget {
         }
     }
 
-    fn copy_selected_notes_to_clipboard(&self) {
-        if let Some(selected) = self.project_list.state.selected()
-            && let Some(project) = self.project_list.items.get(selected)
-        {
-            let notes_text = format!("- {}", project.tasks.join("\n- "));
-
-            use copypasta::ClipboardProvider;
-            match copypasta::ClipboardContext::new() {
-                Ok(mut ctx) => {
-                    if let Err(e) = ctx.set_contents(notes_text) {
-                        tracing::warn!("Failed to copy notes to clipboard: {e}");
-                    }
-                }
-                Err(e) => tracing::warn!("Failed to access clipboard: {e}"),
-            }
-        }
-    }
-
     pub fn selected_item(&self) -> Option<usize> {
         self.project_list.state.selected()
     }
@@ -241,15 +259,16 @@ impl ProjectListWidget {
 
 impl Widget for &mut ProjectListWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let [header_area, main_area, footer_area] = Layout::vertical([
+        // No footer row: the status line is drawn by `App`, across the whole
+        // width and in every mode, so the help hint survives a day with no
+        // project list at all.
+        let [header_area, main_area] = Layout::vertical([
             Constraint::Length(self.header_height()),
             Constraint::Fill(1),
-            Constraint::Length(1),
         ])
         .areas(area);
 
         self.render_header(header_area, buf);
-        self.render_footer(footer_area, buf);
         self.render_list(main_area, buf);
     }
 }
@@ -316,13 +335,6 @@ impl ProjectListWidget {
                 style,
             ),
         ])
-    }
-
-    fn render_footer(&self, area: Rect, buf: &mut Buffer) {
-        Paragraph::new("? for help")
-            .wrap(Wrap { trim: true })
-            .centered()
-            .render(area, buf);
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
@@ -578,6 +590,43 @@ mod tests {
         let lines = wrap_note("alpha beta gamma", 3, 5);
         for l in &lines {
             assert!(l.width() <= 3, "line {l:?} exceeds width 3");
+        }
+    }
+
+    /// `Enter` answers with an intent; the clipboard connection and the
+    /// status line that reports a machine without one belong to `App`.
+    #[test]
+    fn enter_emits_a_copy_intent_rather_than_doing_io() {
+        let mut widget = ProjectListWidget::new(&fixture_day(), &Theme::none());
+
+        match widget.apply(&AppEvent::CopyNotes) {
+            Handled::Emit(AppEvent::CopyToClipboard(payload, message)) => {
+                assert_eq!(
+                    payload, "- standup\n- inbox triage",
+                    "notes are copied as a bullet list"
+                );
+                assert!(
+                    message.contains("admin"),
+                    "the toast names the project: {message:?}"
+                );
+            }
+            other => panic!("expected a copy intent, got {other:?}"),
+        }
+    }
+
+    /// An empty payload rather than a lone `"- "`: `App` reads it as "nothing
+    /// to copy" and leaves whatever the user already had on the clipboard.
+    #[test]
+    fn a_project_with_no_notes_yields_an_empty_payload() {
+        let mut data = fixture_day();
+        data.projects[0].notes.clear();
+        let mut widget = ProjectListWidget::new(&data, &Theme::none());
+
+        match widget.apply(&AppEvent::CopyNotes) {
+            Handled::Emit(AppEvent::CopyToClipboard(payload, _)) => {
+                assert!(payload.is_empty(), "got {payload:?}");
+            }
+            other => panic!("expected a copy intent, got {other:?}"),
         }
     }
 

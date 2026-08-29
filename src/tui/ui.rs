@@ -4,7 +4,7 @@ use time::Date;
 
 use crate::{DATE_FORMAT, time_utils::WeekdayExt};
 
-use super::app::App;
+use super::app::{App, DayPane, LOADING_MESSAGE};
 use super::mode::{Mode, Overlay};
 use super::theme::Theme;
 use super::widgets::HelpPopup;
@@ -12,13 +12,21 @@ use super::widgets::{Calendar, WeeklyBarChart};
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // The status line is `App`'s, not the project list's, and it is drawn
+        // in every mode: the help hint has to survive a day with no project
+        // list at all, which is the one screen a new user is most likely to
+        // meet first.
+        let [main_area, status_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+
         match self.mode {
-            Mode::Day => self.render_day(area, buf),
-            Mode::ZoomedWeek => self.render_zoomed_week(area, buf),
+            Mode::Day => self.render_day(main_area, buf),
+            Mode::ZoomedWeek => self.render_zoomed_week(main_area, buf),
             // Tasks 20 and 16 replace these with the real views.
-            Mode::Week => render_placeholder("Week view", &self.ctx.theme, area, buf),
-            Mode::RawFile => render_placeholder("Raw file view", &self.ctx.theme, area, buf),
+            Mode::Week => render_placeholder("Week view", &self.ctx.theme, main_area, buf),
+            Mode::RawFile => render_placeholder("Raw file view", &self.ctx.theme, main_area, buf),
         }
+        self.render_status(status_area, buf);
         // Drawn last, and in every mode: the help popup used to be skipped
         // entirely while the bar chart was zoomed.
         self.render_overlay(area, buf);
@@ -57,16 +65,29 @@ impl App {
             .title(format_pane_title(self.active_date))
             .border_type(BorderType::Rounded);
 
-        if let Some(widget) = &mut self.project_list_widget {
-            let inner = block.inner(chunks[1]);
-            block.render(chunks[1], buf);
-            widget.render(inner, buf);
-        } else {
-            let tt_par = Paragraph::new("No data found for date")
-                .block(block)
-                .style(self.ctx.theme.warning)
-                .alignment(Alignment::Left);
-            tt_par.render(chunks[1], buf);
+        // Computed before the pane is borrowed mutably, and *not* simply
+        // "is there a widget?": a project list left over from the previous
+        // date must not be drawn under this date's title. See `DayPane`.
+        match self.day_pane() {
+            DayPane::Projects => {
+                let inner = block.inner(chunks[1]);
+                block.render(chunks[1], buf);
+                if let Some(widget) = &mut self.project_list_widget {
+                    widget.render(inner, buf);
+                }
+            }
+            DayPane::Loading => {
+                render_pane_message(
+                    LOADING_MESSAGE,
+                    self.ctx.theme.status,
+                    block,
+                    chunks[1],
+                    buf,
+                );
+            }
+            DayPane::Empty => {
+                render_pane_message(EMPTY_TEXT, self.ctx.theme.warning, block, chunks[1], buf);
+            }
         }
     }
 
@@ -84,16 +105,46 @@ impl App {
         }
     }
 
-    /// Build the weekly bar chart for the active date, pre-populated with any
-    /// week data that has already been loaded.
+    /// Build the weekly bar chart for the active date, pre-populated with the
+    /// week data already loaded — but only when it is *this* week's.
+    ///
+    /// Crossing a week boundary moves `week_dates` at once and `weekly_data`
+    /// only when the load lands, and the chart totals every value in the map:
+    /// feeding it the old week's data would print the previous week's total
+    /// above seven empty bars. Withholding it draws no bars at all, which is
+    /// what an unloaded week should look like.
     fn weekly_bar_chart(&self) -> WeeklyBarChart<'_> {
         let mut bar_chart =
             WeeklyBarChart::new(self.active_date, &self.week_dates, &self.ctx.theme);
-        if !self.weekly_data.is_empty() {
+        bar_chart.set_daily_target_hours(self.ctx.daily_target_hours);
+        if !self.weekly_data.is_empty() && !self.week_is_stale() {
             bar_chart.set_weekly_data(&self.weekly_data);
         }
         bar_chart
     }
+
+    /// The status line: whatever `App::footer_text` says the footer should
+    /// carry right now.
+    fn render_status(&self, area: Rect, buf: &mut Buffer) {
+        Paragraph::new(self.footer_text())
+            .style(self.ctx.theme.status)
+            .wrap(Wrap { trim: true })
+            .centered()
+            .render(area, buf);
+    }
+}
+
+/// What the day pane says when there is nothing to show for the date on
+/// screen.
+const EMPTY_TEXT: &str = "No data found for date";
+
+/// A one-line message where the project list would be.
+fn render_pane_message(text: &str, style: Style, block: Block<'_>, area: Rect, buf: &mut Buffer) {
+    Paragraph::new(text)
+        .block(block)
+        .style(style)
+        .alignment(Alignment::Left)
+        .render(area, buf);
 }
 
 /// Stand-in for a mode whose view has not been built yet.
