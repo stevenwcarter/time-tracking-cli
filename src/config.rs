@@ -51,6 +51,22 @@ impl From<Formatter> for String {
     }
 }
 
+impl Formatter {
+    /// The concrete [`DisplayFormatter`] this variant selects.
+    ///
+    /// The one mapping from a configured formatter to its implementation,
+    /// shared by [`Config::get_formatter`] and the TUI's yank commands so the
+    /// two render the same setting the same way rather than drifting onto a
+    /// second copy of this match.
+    pub fn build(&self) -> Box<dyn DisplayFormatter> {
+        match self {
+            Formatter::Default => Box::new(DefaultDisplayFormatter),
+            Formatter::Markdown => Box::new(MarkdownDisplayFormatter),
+            Formatter::Plain => Box::new(PlainDisplayFormatter),
+        }
+    }
+}
+
 /// Time tracking CLI utility
 #[cfg(feature = "cli")]
 #[derive(Parser)]
@@ -392,12 +408,11 @@ impl Config {
     pub fn get_suffix(&self) -> Option<&str> {
         self.suffix.as_deref()
     }
+    /// The formatter this config selects, built via [`Formatter::build`].
     pub fn get_formatter(&self) -> Box<dyn DisplayFormatter> {
-        match self.get_configured_formatter() {
-            Some(Formatter::Plain) => Box::new(PlainDisplayFormatter),
-            Some(Formatter::Markdown) => Box::new(MarkdownDisplayFormatter),
-            _ => Box::new(DefaultDisplayFormatter),
-        }
+        self.get_configured_formatter()
+            .unwrap_or(&Formatter::Default)
+            .build()
     }
 }
 

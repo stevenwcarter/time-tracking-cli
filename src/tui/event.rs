@@ -7,6 +7,8 @@ use time::Date;
 use time_tracking_parser::TimeTrackingData;
 use tokio::sync::mpsc;
 
+use crate::data_svc::WeeklySummary;
+
 /// The frequency at which tick events are emitted.
 ///
 /// The event loop no longer redraws on every turn — see `App::run`, which
@@ -66,6 +68,12 @@ pub enum AppEvent {
     ///
     /// [`ProjectListWidget`]: super::project_list::ProjectListWidget
     CopyToClipboard(String, String),
+    /// Copy the active date's summary — with hours, unlike [`Self::CopyNotes`]
+    /// — to the clipboard.
+    YankDay,
+    /// Copy the active week's totals and per-project rollup to the
+    /// clipboard.
+    YankWeek,
     /// Edit the current date in $EDITOR
     Edit,
     /// Go to the next date
@@ -136,12 +144,43 @@ pub struct LoadPayload {
     pub date: Date,
     /// The loaded date's parsed day, or `None` when it has no file yet.
     pub day: Option<TimeTrackingData>,
+    /// [`LoadPayload::date`]'s file exactly as it is on disk, for `y`'s
+    /// day-summary yank.
+    ///
+    /// [`crate::display::DisplayFormatter::day_summary`] reparses its own
+    /// `content` argument, so only the raw text will do — `day` alone cannot
+    /// reconstruct it.
+    pub raw: Option<String>,
     /// Dates with tracked hours, for the calendar's markers. Scanned for the
     /// ninety-day window around [`LoadPayload::date`].
     pub populated: Vec<Date>,
     /// Tracked minutes per day of [`LoadPayload::date`]'s week, for the bar
     /// chart.
+    ///
+    /// A projection of [`LoadPayload::weekly_summary`], not a second
+    /// aggregation of it — see [`DataService::get_weekly_data`]'s doc.
+    ///
+    /// [`DataService::get_weekly_data`]: crate::DataService::get_weekly_data
     pub weekly: HashMap<Date, u32>,
+    /// The full weekly rollup `weekly` is a projection of, for `Y`'s
+    /// per-project yank.
+    pub weekly_summary: WeeklySummary,
+}
+
+/// [`WeeklySummary`] does not derive [`PartialEq`] where it is defined in
+/// `data_svc.rs`; implemented here, field by field, purely so [`LoadPayload`]
+/// — and therefore [`AppEvent`] — can keep deriving it. Every field is
+/// already comparable on its own; only the derive on the struct itself is
+/// missing.
+impl PartialEq for WeeklySummary {
+    fn eq(&self, other: &Self) -> bool {
+        self.total_minutes == other.total_minutes
+            && self.dead_time_minutes == other.dead_time_minutes
+            && self.projects == other.projects
+            && self.warnings == other.warnings
+            && self.per_day == other.per_day
+            && self.days == other.days
+    }
 }
 
 /// A cloneable handle for queueing [`AppEvent`]s.

@@ -230,6 +230,20 @@ pub const BINDINGS: &[Binding] = &[
         description: "edit the current date's notes in $EDITOR",
     },
     Binding {
+        keys: &[(KeyCode::Char('y'), NONE)],
+        event: AppEvent::YankDay,
+        modes: ModeMask::ALL,
+        group: Group::General,
+        description: "copy the day's summary (with hours) to the clipboard",
+    },
+    Binding {
+        keys: &[(KeyCode::Char('Y'), NONE)],
+        event: AppEvent::YankWeek,
+        modes: ModeMask::ALL,
+        group: Group::General,
+        description: "copy the week's summary (with hours) to the clipboard",
+    },
+    Binding {
         keys: &[(KeyCode::Char('?'), NONE)],
         event: AppEvent::ToggleHelp,
         modes: ModeMask::ALL,

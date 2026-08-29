@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::{DataService, editor::open_in_editor};
+use crate::{DataService, data_svc::WeeklySummary, editor::open_in_editor};
 
 use super::{
     context::TuiContext,
@@ -57,8 +57,9 @@ pub(crate) const LOADING_MESSAGE: &str = "Loading…";
 /// session with no forwarding, where `Enter` used to do nothing at all.
 const CLIPBOARD_UNAVAILABLE: &str = "Clipboard unavailable";
 
-/// Shown when the selected project has no notes to yank.
-const NOTHING_TO_COPY: &str = "No notes to copy";
+/// Shown when there is nothing to put on the clipboard: the selected project
+/// has no notes, or the date or week being yanked has no data at all.
+const NOTHING_TO_COPY: &str = "Nothing to copy";
 
 /// Somewhere [`AppEvent::CopyToClipboard`] can put a payload.
 ///
@@ -194,6 +195,13 @@ pub struct App {
     pub events: EventHandler,
     /// Time tracking data for current date
     pub data: Option<TimeTrackingData>,
+    /// `data`'s date exactly as its file is on disk, for `y`'s day-summary
+    /// yank.
+    ///
+    /// [`crate::display::DisplayFormatter::day_summary`] reparses its own
+    /// `content` argument, so only the raw text will do; `data` alone cannot
+    /// reconstruct it. Private: [`App::yank_day`] is the only reader.
+    raw_content: Option<String>,
     /// Project list widget
     pub project_list_widget: Option<ProjectListWidget>,
     /// Populated dates (have hours)
@@ -210,6 +218,10 @@ pub struct App {
     pub month_memo: HashMap<(i32, u8), Vec<Date>>,
     /// Weekly time tracking data (Date -> minutes)
     pub weekly_data: HashMap<Date, u32>,
+    /// The full weekly rollup `weekly_data` is a projection of, for `Y`'s
+    /// per-project yank. `None` until the first load lands, same as
+    /// `weekly_data`. Private: [`App::yank_week`] is the only reader.
+    weekly_summary: Option<WeeklySummary>,
     /// Reader for the day files under `ctx.data_dir`
     pub data_svc: DataService,
     /// Environment the app runs against (week start, data dir, theme, ...)
@@ -267,10 +279,12 @@ impl App {
             week_dates,
             events: EventHandler::new(),
             data: None,
+            raw_content: None,
             project_list_widget: None,
             populated_dates: Vec::new(),
             month_memo: HashMap::new(),
             weekly_data: HashMap::new(),
+            weekly_summary: None,
             data_svc,
             ctx,
             watch: None,
@@ -301,9 +315,10 @@ impl App {
     /// Seed the app by parsing the body of a day file.
     #[cfg(test)]
     #[must_use]
-    pub fn with_raw_content(self, content: &str) -> Self {
+    pub fn with_raw_content(mut self, content: &str) -> Self {
         use time_tracking_parser::parse_time_tracking_data;
 
+        self.raw_content = Some(content.to_owned());
         self.with_data(parse_time_tracking_data(content, None, None))
     }
 
@@ -450,6 +465,8 @@ impl App {
             | AppEvent::LastProject
             | AppEvent::CopyNotes
             | AppEvent::CopyToClipboard(..)
+            | AppEvent::YankDay
+            | AppEvent::YankWeek
             | AppEvent::DataLoaded(..)
             | AppEvent::LoadFailed(..)
             | AppEvent::Quit) => self.apply_sync_event(e),
@@ -519,6 +536,8 @@ impl App {
             AppEvent::CopyToClipboard(payload, message) => {
                 self.copy_to_clipboard(payload, message);
             }
+            AppEvent::YankDay => self.yank_day(),
+            AppEvent::YankWeek => self.yank_week(),
             // `handle_app_event` owns these: `Edit` awaits the editor, and
             // `ReloadFromDisk` spawns a load, which needs a runtime.
             //
@@ -537,6 +556,29 @@ impl App {
                 self.apply_sync_event(app_event);
             }
         }
+    }
+
+    /// Drain the queue looking for the first [`AppEvent::CopyToClipboard`] a
+    /// key produces, applying everything else along the way.
+    ///
+    /// `y`/`Y` do not change key routing, so [`App::queue_or_apply`] queues
+    /// them rather than applying them inline — a test that only calls
+    /// `handle_key_events` never sees the `CopyToClipboard` they go on to
+    /// emit. This drains far enough to find it, but returns it rather than
+    /// applying it, so a test can inspect what a key intended to copy
+    /// without a real clipboard, or `App::status`, standing in the way.
+    #[cfg(test)]
+    pub fn take_pending_copy(&mut self) -> Option<(String, String)> {
+        while let Some(event) = self.events.try_next() {
+            let Event::App(app_event) = event else {
+                continue;
+            };
+            if let AppEvent::CopyToClipboard(payload, message) = app_event {
+                return Some((payload, message));
+            }
+            self.apply_sync_event(app_event);
+        }
+        None
     }
 
     /// Open the active date's week full screen, or go back to the day view.
@@ -688,8 +730,10 @@ impl App {
         let LoadPayload {
             date,
             day,
+            raw,
             populated,
             weekly,
+            weekly_summary,
         } = payload;
         // Correct for the month it was scanned for whether or not that month
         // is still on screen, so the work is never wasted and never misfiled.
@@ -703,8 +747,10 @@ impl App {
         self.loading = false;
         self.loaded_date = Some(date);
         self.set_day_data(day);
+        self.raw_content = raw;
         self.populated_dates = populated;
         self.weekly_data = weekly;
+        self.weekly_summary = Some(weekly_summary);
     }
 
     /// What the day pane should draw; see [`DayPane`].
@@ -750,6 +796,61 @@ impl App {
             None if self.loading => LOADING_MESSAGE,
             None => HELP_HINT,
         }
+    }
+
+    /// Build the active date's summary — with hours, which `Enter`'s
+    /// per-project yank cannot show — and queue it for the clipboard.
+    ///
+    /// `raw_content` and `data` are set together by [`App::apply_payload`],
+    /// so `data` being `None` — no file, or a file with no projects — is
+    /// exactly the condition [`App::set_day_data`] already treats as "no
+    /// meaningful day". A day in that state still has a `day_summary`
+    /// rendering (all "N/A" and an empty projects section), and copying that
+    /// boilerplate over whatever the user already had would be worse than
+    /// doing nothing.
+    fn yank_day(&mut self) {
+        if self.data.is_none() {
+            self.set_status(NOTHING_TO_COPY);
+            return;
+        }
+        let content = self.raw_content.as_deref().unwrap_or_default();
+        let payload = self.ctx.formatter.build().day_summary(
+            content,
+            "",
+            self.ctx.prefix.as_deref(),
+            self.ctx.suffix.as_deref(),
+        );
+        self.events.send(AppEvent::CopyToClipboard(
+            payload,
+            "Copied day summary".to_owned(),
+        ));
+    }
+
+    /// Build the active week's totals and per-project rollup and queue it
+    /// for the clipboard.
+    ///
+    /// `weekly_totals` alone always renders something — a zeroed week still
+    /// gets a header and "None" for dead time — so the emptiness this guards
+    /// against is read off `weekly_summary.projects` instead, the same way
+    /// [`App::yank_day`] reads it off `data` rather than off the rendered
+    /// text.
+    fn yank_week(&mut self) {
+        let has_projects = self
+            .weekly_summary
+            .as_ref()
+            .is_some_and(|summary| !summary.projects.is_empty());
+        if !has_projects {
+            self.set_status(NOTHING_TO_COPY);
+            return;
+        }
+        let summary = self.weekly_summary.as_ref().expect("checked above");
+        let formatter = self.ctx.formatter.build();
+        let mut payload = formatter.weekly_totals(summary.total_minutes, summary.dead_time_minutes);
+        payload.push_str(&formatter.weekly_projects(&summary.projects));
+        self.events.send(AppEvent::CopyToClipboard(
+            payload,
+            "Copied week summary".to_owned(),
+        ));
     }
 
     /// Put `payload` on the system clipboard, reporting either way.
@@ -1024,19 +1125,26 @@ async fn load_payload(
         }
     };
 
-    // All three concurrently; the day file is usually cached, the two scans
-    // are not.
-    let (day, populated, weekly) = tokio::join!(
+    // All four concurrently; the day file is usually cached, the two scans
+    // are not. `get_weekly_summary` rather than the narrower
+    // `get_weekly_data`: the latter is only a projection of the former (see
+    // its doc), so calling it here would pay for the whole weekly rollup and
+    // then throw away everything `Y`'s yank needs.
+    let (day, populated, weekly_summary, raw) = tokio::join!(
         data_svc.parse_day(&date),
         populated,
-        data_svc.get_weekly_data(week_dates),
+        data_svc.get_weekly_summary(week_dates),
+        data_svc.read_day(&date),
     );
+    let weekly_summary = weekly_summary.context("Loading weekly data")?;
 
     Ok(LoadPayload {
         date,
         day: day.context("Parsing the day")?,
+        raw: raw.context("Reading the day's raw content")?,
         populated: populated.context("Finding populated dates")?,
-        weekly: weekly.context("Loading weekly data")?,
+        weekly: weekly_summary.per_day.clone(),
+        weekly_summary,
     })
 }
 
@@ -1127,6 +1235,8 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::LastProject
         | AppEvent::CopyNotes
         | AppEvent::CopyToClipboard(..)
+        | AppEvent::YankDay
+        | AppEvent::YankWeek
         | AppEvent::Edit
         | AppEvent::NextDate
         | AppEvent::PreviousDate
@@ -1229,6 +1339,7 @@ fn shift_months(date: Date, offset: i32) -> Result<Date> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_svc::WeeklyProject;
     use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
     use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
     use std::{
@@ -1321,8 +1432,10 @@ mod tests {
         Box::new(LoadPayload {
             date,
             day: None,
+            raw: None,
             populated,
             weekly: HashMap::new(),
+            weekly_summary: WeeklySummary::default(),
         })
     }
 
@@ -2093,6 +2206,74 @@ mod tests {
             copied_payloads(&copied).len(),
             1,
             "the copy intent must not be lost"
+        );
+    }
+
+    /// A week with one project, standing in for a load having landed. Named
+    /// after `testing::fixture_day`'s "client-bd" project so a payload that
+    /// carries it proves the yank reached the right rollup.
+    fn fixture_week_summary() -> WeeklySummary {
+        WeeklySummary {
+            total_minutes: 240,
+            dead_time_minutes: 0,
+            projects: vec![WeeklyProject {
+                name: "client-bd".to_owned(),
+                total_minutes: 240,
+                notes: vec!["Wed 2025-06-11: discovery call".to_owned()],
+            }],
+            warnings: Vec::new(),
+            per_day: HashMap::new(),
+            days: Vec::new(),
+        }
+    }
+
+    /// The point of the task: `Enter` yanks one project's bullets without
+    /// its hours, so a standup paste needs `y` instead.
+    #[tokio::test]
+    async fn y_yanks_a_day_summary_containing_project_hours() {
+        let mut app = App::new(TuiContext::for_test()).with_raw_content("8-10 admin\n  - note\n");
+
+        app.handle_key_events(key('y')).unwrap();
+
+        match app.take_pending_copy() {
+            Some((payload, _)) => {
+                assert!(payload.contains("admin"));
+                assert!(payload.contains('2'), "hours must be in the yanked summary");
+            }
+            None => panic!("y must emit a copy intent"),
+        }
+    }
+
+    #[tokio::test]
+    async fn capital_y_yanks_the_week_summary() {
+        let mut app = App::new(TuiContext::for_test());
+        app.weekly_summary = Some(fixture_week_summary());
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT))
+            .unwrap();
+
+        let (payload, _) = app.take_pending_copy().expect("Y must emit a copy intent");
+        assert!(payload.contains("client-bd"));
+    }
+
+    /// The day yank's half of the invariant `a_project_with_no_notes_...`
+    /// pins for `Enter`: a day with no file, or no projects, has nothing
+    /// worth pasting into a standup note, and copying `day_summary`'s own
+    /// boilerplate over the clipboard would be worse than doing nothing.
+    #[tokio::test]
+    async fn yanking_an_empty_day_reports_rather_than_copying_nothing() {
+        let mut app = App::new(TuiContext::for_test());
+
+        app.handle_key_events(key('y')).unwrap();
+
+        assert!(app.take_pending_copy().is_none());
+        assert!(
+            app.status
+                .as_ref()
+                .unwrap()
+                .0
+                .to_lowercase()
+                .contains("nothing")
         );
     }
 
