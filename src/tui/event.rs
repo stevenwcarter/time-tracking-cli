@@ -159,6 +159,17 @@ impl AppEventSender {
         // an in-flight task finding the loop already gone. Expected; ignore.
         let _ = self.0.send(Event::App(app_event));
     }
+
+    /// Build a sender directly from a raw channel half.
+    ///
+    /// `EventHandler::next` takes `&mut self`, so a test that only needs a
+    /// sender — a background watcher, say — cannot borrow a whole handler
+    /// without also owning its receiver. This lets such a test drive a bare
+    /// channel instead.
+    #[cfg(test)]
+    pub fn from_raw(tx: mpsc::UnboundedSender<Event>) -> Self {
+        Self(tx)
+    }
 }
 
 /// Terminal event handler.

@@ -3,14 +3,15 @@ use std::{
     collections::HashMap,
     fmt,
     io::stdout,
-    time::{Duration, Instant},
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{DataService, editor::open_in_editor};
 
 use super::{
     context::TuiContext,
-    event::{AppEvent, Event, EventHandler, LoadPayload, Reload},
+    event::{AppEvent, AppEventSender, Event, EventHandler, LoadPayload, Reload},
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
@@ -28,7 +29,15 @@ use ratatui::{
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
+use tokio::fs;
 use tokio::task::JoinHandle;
+
+/// How often [`spawn_mtime_watch`] stats the watched file.
+///
+/// Once a second is frequent enough that an outside edit shows up before a
+/// user would notice the delay, and infrequent enough to cost nothing
+/// measurable in disk I/O while idle.
+const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How long a status message stays on the footer before [`App::tick`] clears
 /// it. Long enough to read a toast, short enough that the help hint is what
@@ -205,6 +214,12 @@ pub struct App {
     pub data_svc: DataService,
     /// Environment the app runs against (week start, data dir, theme, ...)
     pub ctx: TuiContext,
+    /// The background task polling `active_date`'s file for outside edits.
+    ///
+    /// Retargeted at `active_date`'s file whenever a reload runs — see
+    /// [`App::retarget_watch`] — and aborted on [`App::quit`], so nothing is
+    /// left polling a stale path or polling after the TUI has exited.
+    watch: Option<JoinHandle<()>>,
 }
 
 /// `App` has to be [`Send`]: `cli/src/main.rs` spawns [`tui`] into a
@@ -258,6 +273,7 @@ impl App {
             weekly_data: HashMap::new(),
             data_svc,
             ctx,
+            watch: None,
         }
     }
 
@@ -328,6 +344,9 @@ impl App {
         // Off the loop, so the first frame is drawn from the empty state
         // instead of behind three file scans.
         self.spawn_load();
+        // Starts watching the date the app opened on; `retarget_watch` moves
+        // it whenever a reload runs from here on.
+        self.retarget_watch().await;
         while self.running {
             // A frame rebuilds the calendar's event store from ninety dates
             // and re-derives the week's bar labels, so it is only worth paying
@@ -404,6 +423,10 @@ impl App {
                     self.month_memo.clear();
                 }
                 self.spawn_load();
+                // Every reload is a point where `active_date` is known to be
+                // current — a navigation just moved it, a rescan just re-read
+                // it — so this is also where the watch catches up to it.
+                self.retarget_watch().await;
             }
             AppEvent::Edit => {
                 self.run_editor(terminal).await?;
@@ -925,6 +948,35 @@ impl App {
     /// Set running to false to quit the application.
     pub fn quit(&mut self) {
         self.running = false;
+        // A watch left running after quit would poll the disk forever —
+        // nothing else ever aborts it once the loop that owns `self` exits.
+        self.stop_watch();
+    }
+
+    /// Abort the file watch, if one is running.
+    ///
+    /// Synchronous: `JoinHandle::abort` needs no runtime interaction, which
+    /// is what lets [`App::quit`] call this without becoming `async` itself.
+    fn stop_watch(&mut self) {
+        if let Some(watch) = self.watch.take() {
+            watch.abort();
+        }
+    }
+
+    /// Point the file watch at `active_date`'s file, replacing whatever it
+    /// was watching before.
+    ///
+    /// Called once at start-up and again every time a reload runs — a
+    /// navigation just moved `active_date`, a rescan just re-read it — so the
+    /// watch is never left polling a date the user has moved away from. A
+    /// path [`DataService::get_file_path`] cannot resolve is logged and
+    /// leaves no watch running rather than failing the reload it rides in on.
+    async fn retarget_watch(&mut self) {
+        self.stop_watch();
+        match self.data_svc.get_file_path(self.active_date).await {
+            Ok(path) => self.watch = Some(spawn_mtime_watch(path, self.events.sender())),
+            Err(e) => tracing::warn!("could not resolve a path to watch: {e}"),
+        }
     }
 
     /// Install a freshly loaded day, dropping the project list when the day
@@ -1005,6 +1057,47 @@ fn abort_superseded_load(handle: JoinHandle<()>) {
             tracing::error!("a background load panicked: {e}");
         }
     });
+}
+
+/// Poll `path`'s modification time once a second, posting
+/// [`AppEvent::ReloadFromDisk`] through `tx` whenever it changes.
+///
+/// This is the whole watcher: no filesystem-event API, just a stat once a
+/// second — cheap enough to run for as long as the TUI is open, and immune to
+/// whatever notification quirks the platform or the editor doing the writing
+/// might have (many editors replace-and-rename rather than write in place,
+/// which some `inotify` setups miss).
+///
+/// Always posts [`Reload::Rescan`], never [`Reload::Navigation`]: the
+/// calendar's month memo is dropped only on `Rescan` (see [`Reload`]'s docs),
+/// and an outside edit can just as easily create a day's first entry or
+/// empty its last one — exactly the marker a `Navigation` reload would leave
+/// stale. A file that does not exist yet reads as `None`, so its later
+/// creation — the neovim plugin, or `e` run from another session — is itself
+/// a change and is reported the same way.
+///
+/// Returned so the caller can abort it: [`App::retarget_watch`] does, every
+/// time `active_date` moves, and [`App::quit`] does, so nothing is left
+/// polling a stale path or polling after the TUI has exited.
+pub fn spawn_mtime_watch(path: PathBuf, tx: AppEventSender) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last = mtime(&path).await;
+        let mut ticker = tokio::time::interval(WATCH_INTERVAL);
+        loop {
+            ticker.tick().await;
+            let now = mtime(&path).await;
+            if now != last {
+                last = now;
+                tx.send(AppEvent::ReloadFromDisk(Reload::Rescan));
+            }
+        }
+    })
+}
+
+/// `path`'s last-modified time, or `None` when it cannot be read — most often
+/// because the file does not exist yet.
+async fn mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).await.ok()?.modified().ok()
 }
 
 /// Does applying `app_event` change which layer sees the next key, or what
@@ -2159,5 +2252,153 @@ mod tests {
             "got:\n{screen}"
         );
         assert!(!screen.contains(HELP_HINT), "got:\n{screen}");
+    }
+
+    /// The primary requirement, and the reason a watcher was worth building
+    /// carefully rather than just polling every second unconditionally: Task
+    /// 7 took the idle cost of this event loop to zero, and a spurious
+    /// reload once a second would both undo that and spin the disk. An
+    /// unchanged file must produce nothing at all.
+    #[tokio::test]
+    async fn the_watcher_is_quiet_when_nothing_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("2026-08-24.md");
+        std::fs::write(&path, "8-10 admin\n").expect("write the fixture day file");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _watch = spawn_mtime_watch(path, AppEventSender::from_raw(tx));
+
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "an unchanged file must not trigger any reload"
+        );
+    }
+
+    /// The other half: an outside edit — Obsidian, neovim, another `e` — has
+    /// to be noticed without a keypress, and posted as a `Rescan` rather than
+    /// a `Navigation` reload. A background edit can create a day's first
+    /// entry or remove its last one, either of which moves a calendar
+    /// marker, and only `Rescan` drops the memo that guards it.
+    #[tokio::test]
+    async fn the_watcher_posts_a_rescan_when_the_file_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("2026-08-24.md");
+        std::fs::write(&path, "8-10 admin\n").expect("write the fixture day file");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _watch = spawn_mtime_watch(path.clone(), AppEventSender::from_raw(tx));
+
+        // Sleep past filesystem mtime granularity before touching the file.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        std::fs::write(&path, "8-12 admin\n").expect("rewrite the fixture day file");
+
+        let got = tokio::time::timeout(Duration::from_secs(4), async {
+            while let Some(ev) = rx.recv().await {
+                if matches!(ev, Event::App(AppEvent::ReloadFromDisk(Reload::Rescan))) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(got.is_ok(), "watcher did not post a reload within 4s");
+    }
+
+    /// A file that does not exist yet must not be silently unwatchable: its
+    /// later creation — the neovim plugin, or `e` run from another session —
+    /// is itself the change the very first day's tracking depends on.
+    #[tokio::test]
+    async fn the_watcher_notices_a_file_created_after_it_started() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("2026-08-24.md");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let _watch = spawn_mtime_watch(path.clone(), AppEventSender::from_raw(tx));
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        std::fs::write(&path, "8-10 admin\n").expect("create the fixture day file");
+
+        let got = tokio::time::timeout(Duration::from_secs(4), async {
+            while let Some(ev) = rx.recv().await {
+                if matches!(ev, Event::App(AppEvent::ReloadFromDisk(Reload::Rescan))) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(got.is_ok(), "watcher did not notice the new file within 4s");
+    }
+
+    /// The watch has to move with `active_date`, or the date the user
+    /// navigated away from keeps being polled while the one on screen is not
+    /// watched at all.
+    #[tokio::test]
+    async fn retargeting_the_watch_stops_the_previous_one() {
+        let mut app = App::new(TuiContext::for_test());
+        app.retarget_watch().await;
+        let first = app
+            .watch
+            .as_ref()
+            .expect("a watch is running")
+            .abort_handle();
+
+        app.active_date = app.active_date.next_day().expect("a next day exists");
+        app.retarget_watch().await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            first.is_finished(),
+            "the watch for the old date must be stopped"
+        );
+        assert!(
+            app.watch.is_some(),
+            "a watch for the new date must be running"
+        );
+    }
+
+    /// Dispatching a reload — a navigation, `r`, or the watcher itself — is
+    /// where `active_date` is known current, so it is also where the watch
+    /// has to catch up to it.
+    #[tokio::test]
+    async fn dispatching_a_reload_retargets_the_watch() {
+        let mut terminal = test_terminal();
+        let mut app = day_app();
+        app.retarget_watch().await;
+        let first = app
+            .watch
+            .as_ref()
+            .expect("a watch is running")
+            .abort_handle();
+
+        app.handle_key_events(key('l')).unwrap();
+        dispatch_next(&mut app, &mut terminal).await; // NextDate
+        dispatch_next(&mut app, &mut terminal).await; // the reload it queued
+        tokio::task::yield_now().await;
+
+        assert!(
+            first.is_finished(),
+            "the old watch must stop once the reload retargets it"
+        );
+        assert!(app.watch.is_some(), "a new watch should be running");
+    }
+
+    /// A watch left running after quit would poll the disk forever — nothing
+    /// else ever aborts it once the loop that owns `App` returns.
+    #[tokio::test]
+    async fn quitting_stops_the_watch() {
+        let mut app = App::new(TuiContext::for_test());
+        app.retarget_watch().await;
+        let handle = app
+            .watch
+            .as_ref()
+            .expect("a watch is running")
+            .abort_handle();
+
+        app.quit();
+        tokio::task::yield_now().await;
+
+        assert!(app.watch.is_none(), "quit must drop the watch handle");
+        assert!(handle.is_finished(), "quit must stop the watch task");
     }
 }
