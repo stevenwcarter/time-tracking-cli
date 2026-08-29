@@ -17,16 +17,27 @@ use crossterm::{
 };
 use ratatui::{
     DefaultTerminal,
-    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+    crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
+use tokio::task::JoinHandle;
 
 /// Application.
 #[derive(Debug)]
 pub struct App {
     /// Is the application running?
     pub running: bool,
+    /// Does the screen need repainting before the next event is awaited?
+    ///
+    /// [`App::run`] draws only when this is set, so a state change that fails
+    /// to set it shows up as a *frozen* screen — no error, no panic, just a UI
+    /// that quietly stops updating. It is therefore set centrally, at the
+    /// three seams every change passes through — [`App::handle_key_events`],
+    /// [`App::handle_app_event`] and [`App::apply_sync_event`] — rather than
+    /// at each individual call site. A terminal resize sets it too: nothing in
+    /// the app changed, but the frame on screen was laid out for another size.
+    pub dirty: bool,
     /// The view currently filling the screen.
     pub mode: Mode,
     /// The modal layer drawn over `mode`, if any.
@@ -42,6 +53,9 @@ pub struct App {
     /// reports back with, so a result that arrives after the user has already
     /// moved on can be recognised as superseded and dropped.
     pub load_gen: u64,
+    /// The load [`App::spawn_load`] last started, held so a newer one can
+    /// abort it instead of leaving it to run out unwatched.
+    load_task: Option<JoinHandle<()>>,
     /// Current active date
     pub active_date: Date,
     /// The seven dates of `active_date`'s week, per `ctx.week_start_day`.
@@ -81,10 +95,13 @@ impl App {
         );
         Self {
             running: true,
+            // Nothing has been drawn yet, so the loop's first turn must paint.
+            dirty: true,
             mode: Mode::Day,
             overlay: None,
             loading: false,
             load_gen: 0,
+            load_task: None,
             active_date,
             week_dates,
             events: EventHandler::new(),
@@ -139,6 +156,10 @@ impl App {
     }
 
     /// Run the application's main loop.
+    ///
+    /// The loop turns once per event but draws only when [`App::dirty`] is
+    /// set, so an idle terminal costs the tick rate in wakeups a second and no
+    /// rendering at all.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         // Nothing polls the terminal until now; see `EventHandler::start`.
         self.events.start();
@@ -146,17 +167,24 @@ impl App {
         // instead of behind three file scans.
         self.spawn_load();
         while self.running {
-            terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
+            // A frame rebuilds the calendar's event store from ninety dates
+            // and re-derives the week's bar labels, so it is only worth paying
+            // for when something actually changed.
+            if self.dirty {
+                terminal.draw(|frame| frame.render_widget(&mut self, frame.area()))?;
+                self.dirty = false;
+            }
             match self.events.next().await.context("couldn't read events")? {
                 Event::Tick => self.tick(),
-                Event::Crossterm(event) => match event {
-                    crossterm::event::Event::Key(key_event)
-                        if key_event.kind == crossterm::event::KeyEventKind::Press =>
-                    {
-                        self.handle_key_events(key_event)?
-                    }
-                    _ => {}
-                },
+                // Nothing in the app changed, but the frame on screen was laid
+                // out for the old size.
+                Event::Crossterm(CrosstermEvent::Resize(..)) => self.dirty = true,
+                Event::Crossterm(CrosstermEvent::Key(key_event))
+                    if key_event.kind == KeyEventKind::Press =>
+                {
+                    self.handle_key_events(key_event)?;
+                }
+                Event::Crossterm(_) => {}
                 Event::App(app_event) => {
                     if let Err(e) = self.handle_app_event(app_event, &mut terminal).await {
                         tracing::warn!("Failed to handle app event: {e}");
@@ -181,6 +209,12 @@ impl App {
         app_event: AppEvent,
         terminal: &mut DefaultTerminal,
     ) -> Result<()> {
+        // Set here as well as in `apply_sync_event`, because the two arms this
+        // function keeps for itself never reach it: `ReloadFromDisk` flips
+        // `loading`, and `Edit` tears the terminal down and clears it. Setting
+        // it once at the dispatch point is what stops an arm added later from
+        // quietly freezing the screen.
+        self.dirty = true;
         match app_event {
             // Returns immediately, but `tokio::spawn` still needs the runtime
             // this loop is running on.
@@ -214,6 +248,11 @@ impl App {
     /// send a key and then assert on the resulting state without standing up
     /// the terminal or the event loop; see `App::drain_pending_events`.
     pub fn apply_sync_event(&mut self, app_event: AppEvent) {
+        // Centrally rather than per arm: every variant below is a state change
+        // the screen has to catch up with, and the handful that occasionally
+        // change nothing — a superseded load — cost one redundant frame, which
+        // is the cheap side of the trade.
+        self.dirty = true;
         match app_event {
             AppEvent::ToggleZoomBar => self.toggle_zoom_bar(),
             AppEvent::ToggleHelp => self.toggle_help(),
@@ -340,6 +379,12 @@ impl App {
     /// generation is applied, so the date the user stopped on wins however
     /// the scans happen to interleave.
     ///
+    /// The superseded load is aborted rather than left to finish: the
+    /// generation guard drops its *result*, but only aborting bounds its
+    /// *work*. One load fans out to a task per date over a ninety-day window
+    /// plus the week, so a held-down date key would otherwise pile up
+    /// thousands of tasks contending on the one cache mutex.
+    ///
     /// Must be called from inside the Tokio runtime — `App::run` and
     /// [`App::handle_app_event`] both are.
     fn spawn_load(&mut self) {
@@ -352,12 +397,15 @@ impl App {
         let week_dates = self.week_dates;
         self.loading = true;
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             match load_payload(&data_svc, date, &week_dates).await {
                 Ok(payload) => tx.send(AppEvent::DataLoaded(generation, Box::new(payload))),
                 Err(e) => tx.send(AppEvent::LoadFailed(generation, e.to_string())),
             }
         });
+        if let Some(superseded) = self.load_task.replace(handle) {
+            abort_superseded_load(superseded);
+        }
     }
 
     /// Install a completed load. The day, the calendar and the bar chart move
@@ -390,24 +438,28 @@ impl App {
     /// 2. The active [`Mode`], which owns the keys belonging to whatever is
     ///    on screen.
     /// 3. The global bindings, which mean the same thing everywhere.
+    ///
+    /// A key some layer acted on marks the app [dirty](App::dirty); one no
+    /// layer wanted leaves the screen exactly as it was, and must not cost a
+    /// frame.
     pub fn handle_key_events(&mut self, key_event: KeyEvent) -> Result<()> {
-        if self.overlay.is_some() {
-            if let Handled::Emit(app_event) = self.handle_overlay_key(key_event) {
-                self.queue_or_apply(app_event);
+        let handled = if self.overlay.is_some() {
+            // Overlays are modal, so a key the overlay did not handle stops
+            // here rather than falling through to the view it covers.
+            self.handle_overlay_key(key_event)
+        } else {
+            match self.handle_mode_key(key_event) {
+                Handled::Ignored => self.handle_global_key(key_event),
+                stopped => stopped,
             }
-            return Ok(());
-        }
+        };
 
-        match self.handle_mode_key(key_event) {
-            Handled::Consumed => return Ok(()),
-            Handled::Emit(app_event) => {
-                self.queue_or_apply(app_event);
-                return Ok(());
-            }
-            Handled::Ignored => {}
+        if !matches!(handled, Handled::Ignored) {
+            self.dirty = true;
         }
-
-        self.handle_global_key(key_event);
+        if let Handled::Emit(app_event) = handled {
+            self.queue_or_apply(app_event);
+        }
         Ok(())
     }
 
@@ -476,13 +528,17 @@ impl App {
 
     /// The global layer: whatever the mode did not claim, straight from the
     /// binding table.
-    fn handle_global_key(&mut self, key_event: KeyEvent) {
+    ///
+    /// Answers rather than acts, like the two layers above it, so
+    /// [`App::handle_key_events`] has one place to queue from and one place to
+    /// decide whether the key earned a redraw.
+    fn handle_global_key(&self, key_event: KeyEvent) -> Handled {
         if is_ctrl_c(key_event) {
-            self.events.send(AppEvent::Quit);
-            return;
+            return Handled::Emit(AppEvent::Quit);
         }
-        if let Some(binding) = keymap::lookup(key_event, self.mode) {
-            self.queue_or_apply(binding.event.clone());
+        match keymap::lookup(key_event, self.mode) {
+            Some(binding) => Handled::Emit(binding.event.clone()),
+            None => Handled::Ignored,
         }
     }
 
@@ -545,6 +601,25 @@ async fn load_payload(
         populated: populated.context("Finding populated dates")?,
         weekly: weekly.context("Loading weekly data")?,
     })
+}
+
+/// Abort a load a newer one has superseded, reporting a panic it may already
+/// have hit.
+///
+/// Nothing ever awaits a load's `JoinHandle` — results come back through the
+/// event queue instead — so a panic inside one would disappear along with the
+/// handle. Reaping it in a detached task keeps [`App::spawn_load`] synchronous
+/// while still putting the bug in the log. A clean cancellation is the
+/// expected outcome and says nothing.
+fn abort_superseded_load(handle: JoinHandle<()>) {
+    handle.abort();
+    tokio::spawn(async move {
+        if let Err(e) = handle.await
+            && e.is_panic()
+        {
+            tracing::error!("a background load panicked: {e}");
+        }
+    });
 }
 
 /// Does applying `app_event` change which layer sees the next key, or what
@@ -861,6 +936,120 @@ mod tests {
         assert_eq!(app.data.map(|d| d.total_minutes), Some(90));
         assert_eq!(app.populated_dates, vec![fixture_date()]);
         assert_eq!(app.weekly_data.get(&fixture_date()).copied(), Some(90));
+    }
+
+    /// The loop draws only when `dirty` is set, so a key that changes what is
+    /// on screen without setting it renders as a frozen UI — no error, no
+    /// panic, just a screen that stops updating.
+    #[test]
+    fn a_handled_key_marks_the_app_dirty() {
+        let mut app = day_app();
+        app.dirty = false;
+
+        app.handle_key_events(key('l')).unwrap();
+
+        assert!(app.dirty, "a handled key must request a redraw");
+    }
+
+    /// The mode layer answers `Consumed` rather than emitting an event, so
+    /// nothing further downstream would ever set the flag on its behalf.
+    #[test]
+    fn a_key_the_project_list_consumed_marks_the_app_dirty() {
+        let mut app = day_app();
+        app.dirty = false;
+
+        app.handle_key_events(key('j')).unwrap();
+
+        assert_eq!(selection(&app), Some(1));
+        assert!(app.dirty, "moving the selection has to repaint");
+    }
+
+    /// The other half of the rule, and the whole point of the task: a key no
+    /// layer wanted changed nothing, so repainting for it would put the cost
+    /// of the old unconditional draw straight back under another name.
+    #[test]
+    fn an_unbound_key_does_not_mark_the_app_dirty() {
+        let mut app = day_app();
+        app.dirty = false;
+
+        app.handle_key_events(key('\u{1}')).unwrap();
+
+        assert!(!app.dirty, "an unbound key must not force a repaint");
+    }
+
+    /// The second seam: everything that reaches `apply_sync_event` is a state
+    /// change, including the loads that arrive with no key behind them.
+    #[test]
+    fn applying_a_sync_event_marks_the_app_dirty() {
+        let mut app = day_app();
+
+        app.dirty = false;
+        app.apply_sync_event(AppEvent::ToggleHelp);
+        assert!(app.dirty, "opening the help popup has to repaint");
+
+        app.dirty = false;
+        app.apply_sync_event(AppEvent::DataLoaded(
+            app.load_gen,
+            payload_with(vec![date!(2026 - 03 - 03)]),
+        ));
+        assert!(app.dirty, "a landed load has to repaint");
+    }
+
+    /// The generation guard drops a superseded load's *result*; aborting is
+    /// what bounds its *work*. One load fans out to a task per date across a
+    /// ninety-day window, so a held-down date key would otherwise leave
+    /// thousands of them contending on the single cache mutex.
+    #[tokio::test]
+    async fn aborting_a_superseded_load_stops_it() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            let _ = tx.send(());
+        });
+        let superseded = handle.abort_handle();
+
+        abort_superseded_load(handle);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !superseded.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the superseded load should stop rather than run on");
+        assert!(
+            rx.await.is_err(),
+            "the aborted load must never reach its work"
+        );
+    }
+
+    /// ... and `spawn_load` is what hands the old one over: without that call
+    /// the abort above is dead code and a scrubbed-past load runs out in full.
+    #[tokio::test]
+    async fn a_new_load_aborts_the_one_it_supersedes() {
+        let mut app = App::new(TuiContext::for_test());
+
+        app.spawn_load();
+        let superseded = app
+            .load_task
+            .as_ref()
+            .expect("a load is in flight")
+            .abort_handle();
+        app.spawn_load();
+
+        // One turn of the current-thread runtime is enough to drop an aborted
+        // task, and nowhere near enough for a live load to finish its three
+        // file scans — so this distinguishes the two without a sleep.
+        tokio::task::yield_now().await;
+        assert!(
+            superseded.is_finished(),
+            "the superseded load must be aborted, not left to run out"
+        );
+        assert_ne!(
+            superseded.id(),
+            app.load_task.as_ref().expect("a load is in flight").id(),
+            "the newer load must hold the slot"
+        );
     }
 
     /// Scrubbing dates touches no disk on the event loop: each key moves the

@@ -8,7 +8,12 @@ use time_tracking_parser::TimeTrackingData;
 use tokio::sync::mpsc;
 
 /// The frequency at which tick events are emitted.
-const TICK_FPS: f64 = 30.0;
+///
+/// The event loop no longer redraws on every turn — see `App::run`, which
+/// draws only when `App::dirty` is set — so this is not a frame rate. It only
+/// has to be often enough for whatever keys off elapsed time rather than off
+/// input to feel prompt, and four wakeups a second is imperceptible there.
+const TICK_FPS: f64 = 4.0;
 
 /// Representation of all possible events.
 #[derive(Clone, Debug)]
