@@ -61,6 +61,14 @@ const CLIPBOARD_UNAVAILABLE: &str = "Clipboard unavailable";
 /// has no notes, or the date or week being yanked has no data at all.
 const NOTHING_TO_COPY: &str = "Nothing to copy";
 
+/// Shown when `Y` is pressed in the window `week_is_stale` names: the screen
+/// already shows a new week, but the reload that would describe it has only
+/// been queued, not applied, so `weekly_summary` still holds the *previous*
+/// week's totals. Copying them here — under a message claiming success —
+/// would be silently wrong data in a billing artefact, so this reports
+/// instead, the same way `ui.rs` withholds the bar chart in this window.
+const WEEK_STILL_LOADING: &str = "Week still loading";
+
 /// Somewhere [`AppEvent::CopyToClipboard`] can put a payload.
 ///
 /// A trait rather than [`ClipboardContext`] directly so the failure that makes
@@ -922,21 +930,34 @@ impl App {
     /// Build the active week's totals and per-project rollup and queue it
     /// for the clipboard.
     ///
+    /// Gated on [`App::week_is_stale`] first: `go_to_date` moves
+    /// `active_date` and `week_dates` synchronously but only *queues* the
+    /// reload, so `weekly_summary` still describes the *previous* week for
+    /// as long as that reload sits unapplied — the same window
+    /// [`crate::tui::ui`] already reads this same predicate to withhold the
+    /// bar chart for. Copying in that window would put the wrong week's
+    /// per-project totals on the clipboard under a message claiming
+    /// success, which is worse than the day yank's "nothing tracked" case:
+    /// it looks right.
+    ///
     /// `weekly_totals` alone always renders something — a zeroed week still
     /// gets a header and "None" for dead time — so the emptiness this guards
     /// against is read off `weekly_summary.projects` instead, the same way
     /// [`App::yank_day`] reads it off `data` rather than off the rendered
     /// text.
     fn yank_week(&mut self) {
-        let has_projects = self
-            .weekly_summary
-            .as_ref()
-            .is_some_and(|summary| !summary.projects.is_empty());
-        if !has_projects {
-            self.set_status(NOTHING_TO_COPY);
+        if self.week_is_stale() {
+            self.set_status(WEEK_STILL_LOADING);
             return;
         }
-        let summary = self.weekly_summary.as_ref().expect("checked above");
+        let Some(summary) = self
+            .weekly_summary
+            .as_ref()
+            .filter(|summary| !summary.projects.is_empty())
+        else {
+            self.set_status(NOTHING_TO_COPY);
+            return;
+        };
         let formatter = self.ctx.formatter.build();
         let mut payload = formatter.weekly_totals(summary.total_minutes, summary.dead_time_minutes);
         payload.push_str(&formatter.weekly_projects(&summary.projects));
@@ -2460,12 +2481,67 @@ mod tests {
     async fn capital_y_yanks_the_week_summary() {
         let mut app = App::new(TuiContext::for_test());
         app.weekly_summary = Some(fixture_week_summary());
+        // `week_is_stale` reads `loaded_date` against `week_dates`, the same
+        // way `with_weekly_data` seeds it for the bar chart — a payload
+        // fixture with no matching `loaded_date` is indistinguishable from
+        // one that has not landed yet.
+        app.loaded_date = Some(app.active_date);
 
         app.handle_key_events(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT))
             .unwrap();
 
         let (payload, _) = app.take_pending_copy().expect("Y must emit a copy intent");
         assert!(payload.contains("client-bd"));
+    }
+
+    /// The critical case: `go_to_date` moves `active_date` and `week_dates`
+    /// synchronously but only *queues* the reload (see
+    /// `scrubbing_dates_only_queues_reloads`), so `weekly_summary` still
+    /// describes the *previous* week for as long as that reload sits
+    /// unapplied. Yanking in that window used to copy the wrong week's
+    /// per-project totals under "Copied week summary" while the screen
+    /// already showed the new week — silently wrong data in a billing
+    /// artefact, and worse than the empty-day case because it looks right.
+    #[test]
+    fn yanking_a_stale_week_reports_rather_than_copying_it() {
+        let mut app = App::new(TuiContext::for_test()).with_active_date(fixture_date());
+        app.weekly_summary = Some(fixture_week_summary());
+        app.loaded_date = Some(fixture_date());
+
+        // Queues `NextWeek`, applies it (moving into the following week and
+        // queuing `ReloadFromDisk`), then applies that reload's no-op arm —
+        // never `handle_app_event`, so no load is ever spawned and
+        // `weekly_summary` has no way to catch up.
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT))
+            .unwrap();
+        app.drain_pending_events();
+        assert!(app.week_is_stale(), "the reload must not have landed yet");
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT))
+            .unwrap();
+
+        assert!(
+            app.take_pending_copy().is_none(),
+            "a stale week must not be copied"
+        );
+        assert_eq!(status_text(&app), Some(WEEK_STILL_LOADING));
+    }
+
+    /// The week yank's half of the invariant
+    /// `yanking_an_empty_day_reports_rather_than_copying_nothing` pins for
+    /// `y`: a week with no tracked projects has nothing worth pasting into
+    /// a standup note.
+    #[test]
+    fn yanking_an_empty_week_reports_rather_than_copying_nothing() {
+        let mut app = App::new(TuiContext::for_test());
+        app.weekly_summary = Some(WeeklySummary::default());
+        app.loaded_date = Some(app.active_date);
+
+        app.handle_key_events(KeyEvent::new(KeyCode::Char('Y'), KeyModifiers::SHIFT))
+            .unwrap();
+
+        assert!(app.take_pending_copy().is_none());
+        assert_eq!(status_text(&app), Some(NOTHING_TO_COPY));
     }
 
     /// The day yank's half of the invariant `a_project_with_no_notes_...`
