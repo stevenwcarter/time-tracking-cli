@@ -50,6 +50,12 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// an idle screen shows.
 const STATUS_TTL: Duration = Duration::from_secs(4);
 
+/// How close together two clicks at the same cell count as a double click.
+///
+/// Terminals do not report double clicks, so this is measured here. 400ms is
+/// the common desktop default; shorter starts dropping deliberate doubles.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
+
 /// The footer's resting text, and the only hint a day with no data gives that
 /// the TUI has any keys at all.
 const HELP_HINT: &str = "? for help";
@@ -226,6 +232,11 @@ pub struct App {
     /// only feedback channel the TUI has: the alternate screen owns the
     /// terminal, so anything that only reaches the log reaches nobody.
     pub status: Option<(String, Instant)>,
+    /// When and where the last left-click landed, for detecting a double.
+    ///
+    /// `Instant` is already the status line's clock; this reuses it rather
+    /// than reaching for a second time source.
+    last_click: Option<(Instant, u16, u16)>,
     /// The system clipboard, connected on first use.
     ///
     /// Held rather than rebuilt per copy because connecting is the expensive
@@ -369,6 +380,7 @@ impl App {
             overlay: None,
             layout: LayoutRects::default(),
             status: None,
+            last_click: None,
             clipboard: None,
             loading: false,
             loaded_date: None,
@@ -1350,12 +1362,28 @@ impl App {
     pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Result<()> {
         let (x, y) = (event.column, event.row);
         match event.kind {
-            MouseEventKind::Down(MouseButton::Left) => self.handle_click(x, y),
+            MouseEventKind::Down(MouseButton::Left) => {
+                let doubled = self.is_double_click(x, y);
+                self.handle_click(x, y, doubled);
+            }
             MouseEventKind::ScrollDown => self.scroll_at(x, y, true),
             MouseEventKind::ScrollUp => self.scroll_at(x, y, false),
             _ => {}
         }
         Ok(())
+    }
+
+    /// Is this click the second of a double at the same cell?
+    ///
+    /// Records the click either way, so three fast clicks read as one double
+    /// and then a fresh single rather than two overlapping doubles.
+    fn is_double_click(&mut self, x: u16, y: u16) -> bool {
+        let now = Instant::now();
+        let doubled = self
+            .last_click
+            .is_some_and(|(at, px, py)| px == x && py == y && now - at < DOUBLE_CLICK_WINDOW);
+        self.last_click = if doubled { None } else { Some((now, x, y)) };
+        doubled
     }
 
     /// Dispatch a left click at (`x`, `y`) to whichever region it landed in.
@@ -1372,7 +1400,12 @@ impl App {
     ///
     /// Hits are resolved against [`App::layout`], which the previous frame
     /// filled in, so a region that was not drawn cannot be clicked.
-    fn handle_click(&mut self, x: u16, y: u16) {
+    ///
+    /// `doubled` is computed once by the caller, from the same (x, y) this
+    /// dispatches on — a double click is a single click plus an open, so
+    /// only the calendar and project-list branches act on it, on top of
+    /// (never instead of) their ordinary single-click behaviour.
+    fn handle_click(&mut self, x: u16, y: u16, doubled: bool) {
         if self.overlay.is_some() {
             if !hits(self.layout.overlay, x, y) {
                 self.overlay = None;
@@ -1395,8 +1428,13 @@ impl App {
             let date = Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
                 .date_at(area, x, y);
             if let Some(date) = date {
+                // Navigate first: a double click must open the editor on the
+                // day just clicked, not on wherever `active_date` was.
                 self.go_to_date(date);
                 self.dirty = true;
+                if doubled {
+                    self.events.send(AppEvent::Edit);
+                }
             }
             return;
         }
@@ -1424,6 +1462,9 @@ impl App {
             {
                 widget.select_index(index);
                 self.dirty = true;
+                if doubled {
+                    self.events.send(AppEvent::Edit);
+                }
             }
             return;
         }
@@ -3950,6 +3991,68 @@ mod tests {
         assert!(
             selection(&app).is_some(),
             "a click in the list must select something"
+        );
+    }
+
+    /// A second click at the same cell inside the window opens the editor
+    /// on that day — the natural "open" gesture, reusing `AppEvent::Edit`.
+    #[test]
+    fn double_clicking_a_calendar_day_queues_an_edit() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("first");
+        app.handle_mouse_event(click(x, y)).expect("second");
+
+        assert_eq!(app.active_date, expected);
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "a double click queues an Edit, got {queued:?}"
+        );
+    }
+
+    #[test]
+    fn two_clicks_at_different_cells_are_not_a_double_click() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, _) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("first");
+        app.handle_mouse_event(click(x, y + 1))
+            .expect("second, elsewhere");
+
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            !queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "clicks at different cells must not open the editor"
+        );
+    }
+
+    /// Same gesture, the other branch that acts on it: the project list.
+    #[test]
+    fn double_clicking_a_project_row_queues_an_edit() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+
+        app.handle_mouse_event(click(list.x + 1, list.y + 1))
+            .expect("first");
+        app.handle_mouse_event(click(list.x + 1, list.y + 1))
+            .expect("second");
+
+        assert!(selection(&app).is_some());
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "a double click on a project row queues an Edit, got {queued:?}"
         );
     }
 
