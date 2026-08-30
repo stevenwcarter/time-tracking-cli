@@ -321,12 +321,15 @@ impl DataService {
     /// backing file hasn't changed. This is the hot path for the TUI: a
     /// single navigation key can call this ~97 times, and on a full cache
     /// hit none of those calls should re-run the markdown parser.
+    ///
+    /// Deliberately does **no** up-front existence check. A synchronous
+    /// `Path::exists` here was a blocking syscall on the async task that ran
+    /// even on a full cache hit, ~97 times per keystroke, and answered a
+    /// question two later steps already answer: `get_valid_entry` re-stats
+    /// before certifying a cache hit, and `read_day` maps `NotFound` to
+    /// `Ok(None)`.
     pub async fn parse_day(&self, date: &Date) -> Result<Option<TimeTrackingData>> {
         let file_path = self.get_file_path(*date).await?;
-
-        if !file_path.exists() {
-            return Ok(None);
-        }
 
         if let Some(parsed) = self.get_cached_parsed(date, &file_path).await? {
             return Ok(Some(parsed));
@@ -1239,6 +1242,42 @@ mod tests {
         let result = service.read_day(&test_date).await.unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn parse_day_for_a_missing_file_reads_as_absent() {
+        let (service, _dir) = hermetic_service(60);
+
+        let never_written = date!(2001 - 10 - 15);
+        assert!(
+            service.parse_day(&never_written).await.unwrap().is_none(),
+            "a date with no day file must parse as absent, not error"
+        );
+        assert_eq!(
+            service.parse_count(),
+            0,
+            "a missing file must not reach the parser at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn parse_day_for_a_file_deleted_after_caching_reads_as_absent() {
+        // The `Path::exists` guard this test outlives used to be the only
+        // thing answering "no file" once an entry was already cached.
+        // `get_valid_entry`'s re-stat and `read_day`'s NotFound mapping cover
+        // it; this pins that they actually do.
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 24);
+        let path = service.get_file_path(test_date).await.unwrap();
+
+        tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+        assert!(service.parse_day(&test_date).await.unwrap().is_some());
+
+        tokio::fs::remove_file(&path).await.unwrap();
+        assert!(
+            service.parse_day(&test_date).await.unwrap().is_none(),
+            "a deleted day file must read as absent even with a warm cache entry"
+        );
     }
 
     #[tokio::test]
