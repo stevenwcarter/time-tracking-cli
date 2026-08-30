@@ -639,15 +639,28 @@ mod tests {
     fn registered_routes_still_resolve() {
         // The other half of the assertion: the catch-alls must not shadow
         // anything real.
-        assert_ne!(
-            get_status("/api/day/2026-08-24"),
-            StatusCode::NOT_FOUND,
-            "a registered day route must still resolve"
+        //
+        // Deliberately an unparseable date, not a valid one: both
+        // `get_day_data_by_date` and `get_week_data_by_date` call
+        // `Date::parse` as their first statement and bail with 400 before
+        // ever reaching `DataService::get()` / `Config::get()`. A valid
+        // date would reach those process-wide singletons, which — on a
+        // machine or CI runner with no config file yet — write to the
+        // real `~/.config`, and under the `cli` feature can abort the
+        // whole test process when `Config::load` parses real argv. Do not
+        // "fix" this back to a valid date. A 400 is still strictly
+        // stronger evidence than a bare `!= NOT_FOUND`: the catch-all
+        // would have answered 404, so 400 proves the registered route
+        // matched *and* its handler actually ran.
+        assert_eq!(
+            get_status("/api/day/not-a-date"),
+            StatusCode::BAD_REQUEST,
+            "a registered day route must still resolve, not fall to the catch-all"
         );
-        assert_ne!(
-            get_status("/api/week/2026-08-24"),
-            StatusCode::NOT_FOUND,
-            "a registered week route must still resolve"
+        assert_eq!(
+            get_status("/api/week/not-a-date"),
+            StatusCode::BAD_REQUEST,
+            "a registered week route must still resolve, not fall to the catch-all"
         );
         assert_ne!(
             get_status("/graphql/graphiql"),
