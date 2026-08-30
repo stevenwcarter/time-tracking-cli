@@ -65,12 +65,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Extract `async fn spawn_webserver_if_configured(config: &Config, set: &mut JoinSet<()>, rx: ...) -> bool` for the `#[cfg(feature = "webapp")]` block (lines 43-62), `async fn show_report(config: &Config, week_start_weekday: Weekday) -> Result<()>` to replace both verbatim copies of the weekly/single-day dispatch (lines 82-88 and the `#[cfg(not(feature = "tui"))]` copy at 94-100), and `async fn wait_for_background_tasks(set: JoinSet<()>, webserver_running: bool) -> Result<()>` for lines 103-113; the doc-fixer queue independently deletes redundant comments at lines 83, 86, 95 and 98 and relocates the misplaced "Load configuration…" comment at lines 15-16, so those exact lines may already have shifted when this runs, and T40 fixes a typo at line 19 inside the same function.
 - [x] execute   [ ] skip
 
-### T19. Drop the inline style that duplicates the textarea's Tailwind classes: DateEditor textarea (site/src/components/DateEditor.tsx:77)
-- Lenses: idioms
-- Risk: low
-- Proposed fix: The textarea carries `style={{ width: '50%', height: '100%' }}` even though `className` already sets `w-1/2` (width 50%), and `h-full` is the codebase's established way to say height 100% (see PageTemplate.tsx); drop the `style` prop entirely and use `className="w-1/2 p-2 border rounded mr-4 bg-gray-900 text-white h-full"`.
-- [x] execute   [ ] skip
-
 ### T20. Extract a shared clipboard-copy-with-toast helper: `copyProjectNotesToClipboard` / `copyNotesToClipboard` (site/src/components/DateSummary.tsx:22, +1 site)
 - Lenses: duplication
 - Risk: medium
