@@ -193,12 +193,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Change the error context string at cli/src/main.rs:19 from "Coult not initialize tracing" to "Could not initialize tracing"; this line sits inside `main_impl`, which T11 splits and the doc-fixer queue also edits at lines 15-16, so re-locate it if either lands first.
 - [ ] execute   [ ] skip
 
-### T42. Add a shared local-date string helper for the five toISOString call sites: `toDateString` (site/src/hooks/useDateData.ts:11, +4 sites)
-- Lenses: duplication
-- Risk: low
-- Proposed fix: `date.toISOString().split('T')[0]` is repeated at site/src/hooks/useDateData.ts:11, site/src/hooks/useWeekData.ts:6, site/src/components/DateSelector.tsx:23 (`formatDate`), and site/src/page/DateEditorPage.tsx:10 and :20; add a single `toDateString(date: Date): string` helper in a new site/src/utils/date.ts (no utils module exists yet) and use it at all five call sites. Critically, the helper MUST format from LOCAL components — `` `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` `` — not `toISOString()`, because T2, T4 and T5 are the same UTC-versus-local bug seen at three of these call sites and a helper that merely centralises `toISOString()` would enshrine it; land this first, then T2, T4 and T5 become calls to it.
-- [x] execute   [ ] skip
-
 ### T43. Replace the exists()-then-write config race with an atomic create-if-absent open: default config write (src/config.rs:273)
 - Lenses: opportunistic
 - Risk: medium

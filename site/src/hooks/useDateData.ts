@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from '@apollo/client';
 import { toast } from 'react-toastify';
+import { toDateString } from 'utils/date';
 import {
   FILE_CONTENT_FOR_DATE_QUERY,
   GET_DAY_DATA_FOR_DATE_QUERY,
@@ -8,7 +9,7 @@ import {
 } from './queries';
 
 export const useDateData = (date: Date) => {
-  const dateString = date.toISOString().split('T')[0];
+  const dateString = toDateString(date);
   const { data } = useQuery(FILE_CONTENT_FOR_DATE_QUERY, {
     variables: { date: dateString },
     skip: !dateString,
