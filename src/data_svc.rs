@@ -682,14 +682,28 @@ impl DataService {
     /// Cache content for a date. Freshly read content has no known parse
     /// yet, so `parsed` starts `None` and is filled in by `cache_parsed`
     /// once `parse_day` actually runs the parser.
+    ///
+    /// Also the map's one growth point in production — `cache_parsed` only
+    /// mutates an existing entry — so it is where expired entries get swept.
+    /// The TTL used to be enforced only on read, by `get_valid_entry`
+    /// declining to serve a stale entry; nothing ever removed one, so a
+    /// long-lived `--serve` process held every date it had ever been asked
+    /// for. The sweep runs before the insert, so the entry being written
+    /// always survives it.
     async fn cache_content(&self, date: Date, file_mod_time: Option<SystemTime>, content: &str) {
         let mut cache = self.cache.lock().await;
+
+        let now = SystemTime::now();
+        cache.retain(|_, entry| {
+            now.duration_since(entry.cached_at)
+                .is_ok_and(|age| age.as_secs() < self.cache_timeout)
+        });
 
         let entry = CacheEntry {
             data: Some(content.to_string()),
             parsed: None,
             file_mod_time,
-            cached_at: SystemTime::now(),
+            cached_at: now,
         };
 
         cache.insert(date, entry);
@@ -1159,6 +1173,63 @@ mod tests {
             ParseSettings::default(),
         );
         (service, dir)
+    }
+
+    #[tokio::test]
+    async fn caching_a_day_sweeps_entries_that_have_expired() {
+        // The 30s TTL was enforced only by `get_valid_entry` refusing to
+        // *return* a stale entry; nothing removed it. A `--serve` daemon
+        // accumulated one entry — raw content plus parsed struct — per
+        // distinct date ever requested, for the life of the process.
+        let (service, _dir) = hermetic_service(0);
+
+        let old = date!(2026 - 08 - 24);
+        let new = date!(2026 - 08 - 25);
+        for day in [old, new] {
+            let path = service.get_file_path(day).await.unwrap();
+            tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+        }
+
+        service.read_day(&old).await.unwrap();
+        {
+            let cache = service.cache.lock().await;
+            assert_eq!(cache.len(), 1, "the first read caches its own day");
+        }
+
+        service.read_day(&new).await.unwrap();
+        {
+            let cache = service.cache.lock().await;
+            assert_eq!(
+                cache.len(),
+                1,
+                "caching a day must evict entries already past the TTL, not \
+                 grow the map forever"
+            );
+            assert!(
+                cache.contains_key(&new),
+                "the entry just written must survive its own sweep"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn caching_a_day_keeps_entries_still_inside_the_ttl() {
+        let (service, _dir) = hermetic_service(60);
+
+        let first = date!(2026 - 08 - 24);
+        let second = date!(2026 - 08 - 25);
+        for day in [first, second] {
+            let path = service.get_file_path(day).await.unwrap();
+            tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+            service.read_day(&day).await.unwrap();
+        }
+
+        let cache = service.cache.lock().await;
+        assert_eq!(
+            cache.len(),
+            2,
+            "a sweep must not evict entries that are still fresh"
+        );
     }
 
     #[tokio::test]
