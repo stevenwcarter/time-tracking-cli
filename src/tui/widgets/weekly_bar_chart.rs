@@ -415,7 +415,10 @@ mod tests {
                 "at width {width} every one of the seven days should be reachable, got {seen:?}"
             );
             for (i, d) in seen.iter().enumerate() {
-                assert_eq!(*d, week[i], "bars must resolve left-to-right at width {width}");
+                assert_eq!(
+                    *d, week[i],
+                    "bars must resolve left-to-right at width {width}"
+                );
             }
         }
     }
