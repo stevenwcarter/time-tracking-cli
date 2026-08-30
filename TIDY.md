@@ -15,12 +15,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 
 ## High severity
 
-### T2. Format the date picker's value from local components instead of UTC: `formatDate` (site/src/components/DateSelector.tsx:23)
-- Lenses: opportunistic
-- Risk: high — needs characterization tests first
-- Proposed fix: Blocked by T42 — land the shared helper first and call it here rather than hand-rolling a second formatter, because T42's helper must itself format from local components or this bug gets enshrined in it. `formatDate` builds its string with `d.toISOString().split('T')[0]`, so the "Today" button and the current-date display show the UTC calendar day rather than the user's; format from `getFullYear()` / `getMonth() + 1` / `getDate()`, zero-padded, so "today" matches the user's local calendar day at any hour.
-- [x] execute   [ ] skip
-
 ### T3. Split WeeklySummary into two hooks and two row subcomponents: `WeeklySummary` (site/src/components/WeeklySummary.tsx:37-255, 219 lines)
 - Lenses: long-methods
 - Risk: high — needs characterization tests first
