@@ -378,7 +378,15 @@ impl App {
     /// feeding it the old week's data would print the previous week's total
     /// above seven empty bars. Withholding it draws no bars at all, which is
     /// what an unloaded week should look like.
-    fn weekly_bar_chart(&self) -> WeeklyBarChart<'_> {
+    ///
+    /// `pub(super)` rather than private: this is the single assembly point
+    /// for the chart, and [`App::handle_click`](super::app::App::handle_click)'s
+    /// bar-chart hit-test has to build the identical instance `render` does —
+    /// otherwise the two could silently drift apart (a variable-width bar, a
+    /// legend column) with nothing to catch it, since `date_at` reads its
+    /// geometry off whatever instance it is called on. Narrowing this back to
+    /// private reopens that hole; both call sites must keep going through it.
+    pub(super) fn weekly_bar_chart(&self) -> WeeklyBarChart<'_> {
         let mut bar_chart =
             WeeklyBarChart::new(self.active_date, &self.week_dates, &self.ctx.theme);
         bar_chart.set_daily_target_hours(self.ctx.daily_target_hours);

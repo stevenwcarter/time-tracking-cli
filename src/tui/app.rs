@@ -21,7 +21,7 @@ use super::{
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
     week_list::WeekListState,
-    widgets::{Calendar, WeeklyBarChart, date_prompt},
+    widgets::{Calendar, date_prompt},
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
@@ -1411,6 +1411,12 @@ impl App {
                 self.overlay = None;
                 self.dirty = true;
             }
+            // Spent on the modal layer, whether it dismissed the overlay or
+            // landed inertly inside it — either way not a click on whatever
+            // is under it, so it must not pair with the next click there to
+            // arm a double (which would fire `AppEvent::Edit` on a cell the
+            // user only ever single-clicked).
+            self.last_click = None;
             return;
         }
 
@@ -1440,14 +1446,10 @@ impl App {
         }
 
         if hits(self.layout.bar_chart, x, y) {
-            // Built directly rather than through the private
-            // `App::weekly_bar_chart` helper in `ui.rs`: `date_at` only
-            // reads geometry and `week_dates`, never the chart's data, so
-            // the daily-target/weekly-data setup that helper also does
-            // would be wasted work here.
+            // Shares `weekly_bar_chart()` with the renderer rather than
+            // building a second instance here: see that method's doc for why.
             let area = self.layout.bar_chart.expect("hits confirmed Some");
-            let date = WeeklyBarChart::new(self.active_date, &self.week_dates, &self.ctx.theme)
-                .date_at(area, x, y);
+            let date = self.weekly_bar_chart().date_at(area, x, y);
             if let Some(date) = date {
                 self.go_to_date(date);
                 self.dirty = true;
@@ -3978,6 +3980,33 @@ mod tests {
         assert_eq!(app.active_date, expected);
     }
 
+    /// The first cell `date_at` resolves inside the recorded bar-chart rect.
+    ///
+    /// Goes through `App::weekly_bar_chart` — the same instance `render` and
+    /// `handle_click` build — rather than constructing a `WeeklyBarChart`
+    /// here directly: a test computing its expected target from a second,
+    /// independent construction could stay green even if the click handler's
+    /// and the renderer's ever drifted apart from each other.
+    fn a_bar_chart_cell(app: &App) -> (u16, u16, Date) {
+        let area = app.layout.bar_chart.expect("bar chart drawn");
+        let chart = app.weekly_bar_chart();
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .find_map(|(x, y)| chart.date_at(area, x, y).map(|d| (x, y, d)))
+            .expect("some bar chart cell resolves")
+    }
+
+    #[test]
+    fn clicking_a_bar_chart_day_goes_to_it() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_bar_chart_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert_eq!(app.active_date, expected);
+    }
+
     #[test]
     fn clicking_a_project_row_selects_it() {
         let mut app = day_app();
@@ -4071,6 +4100,35 @@ mod tests {
 
         assert!(app.overlay.is_none(), "the click dismissed the popup");
         assert_eq!(app.active_date, before, "and did not reach the calendar");
+    }
+
+    /// The click that dismisses an overlay was spent on the modal, not on
+    /// whatever is under it — so the natural follow-through of clicking the
+    /// same cell again (now that the popup is gone) must read as a fresh
+    /// single click, not as the second half of a double. Before this was
+    /// guarded, that sequence queued `AppEvent::Edit` and launched `$EDITOR`
+    /// on a day the user never double-clicked.
+    #[test]
+    fn dismissing_an_overlay_does_not_arm_a_double_click() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("dismiss");
+        app.handle_mouse_event(click(x, y)).expect("navigate");
+
+        assert_eq!(
+            app.active_date, expected,
+            "the second click still navigates, as an ordinary single click"
+        );
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            !queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "the dismiss click must not pair with the next one, got {queued:?}"
+        );
     }
 
     #[test]
