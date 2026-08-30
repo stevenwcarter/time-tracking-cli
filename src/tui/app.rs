@@ -12,7 +12,7 @@ use crate::{
     editor::open_in_editor,
 };
 
-use super::layout_rects::LayoutRects;
+use super::layout_rects::{LayoutRects, hits};
 use super::terminal::{TerminalModes, with_suspended_terminal};
 use super::{
     context::TuiContext,
@@ -21,14 +21,17 @@ use super::{
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
     week_list::WeekListState,
-    widgets::date_prompt,
+    widgets::{Calendar, WeeklyBarChart, date_prompt},
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
 use ratatui::{
     DefaultTerminal, Terminal,
     backend::Backend,
-    crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
@@ -493,6 +496,9 @@ impl App {
                     if key_event.kind == KeyEventKind::Press =>
                 {
                     self.handle_key_events(key_event)?;
+                }
+                Event::Crossterm(CrosstermEvent::Mouse(mouse_event)) => {
+                    self.handle_mouse_event(mouse_event)?;
                 }
                 Event::Crossterm(_) => {}
                 Event::App(app_event) => {
@@ -1331,6 +1337,148 @@ impl App {
             self.queue_or_apply(app_event);
         }
         Ok(())
+    }
+
+    /// Route a mouse event to whatever [`App::layout`] says was drawn under
+    /// it.
+    ///
+    /// Only a left-button press and the two wheel directions are acted on
+    /// (see [`App::handle_click`] and [`App::scroll_at`]); motion and drags
+    /// are ignored outright — crossterm's `EnableMouseCapture` uses mode
+    /// 1002 (button-event tracking), so an idle mouse generates nothing at
+    /// all and the loop is never woken by the cursor merely moving.
+    pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Result<()> {
+        let (x, y) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.handle_click(x, y),
+            MouseEventKind::ScrollDown => self.scroll_at(x, y, true),
+            MouseEventKind::ScrollUp => self.scroll_at(x, y, false),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Dispatch a left click at (`x`, `y`) to whichever region it landed in.
+    ///
+    /// Dispatch is **overlay-first**, the same rule
+    /// [`Overlay`] states for keys: while one is open, a click inside it is
+    /// inert and a click outside dismisses it, and nothing behind it is
+    /// reachable. Below that, a hit is checked footer first and then each
+    /// mode-specific region; each arm returns as soon as it recognises the
+    /// click as its own, even when the click resolves to nothing inside it
+    /// (a gutter column, an empty row) — the rect was drawn there, so the
+    /// click belongs to it rather than falling through to whatever is
+    /// underneath.
+    ///
+    /// Hits are resolved against [`App::layout`], which the previous frame
+    /// filled in, so a region that was not drawn cannot be clicked.
+    fn handle_click(&mut self, x: u16, y: u16) {
+        if self.overlay.is_some() {
+            if !hits(self.layout.overlay, x, y) {
+                self.overlay = None;
+                self.dirty = true;
+            }
+            return;
+        }
+
+        if hits(self.layout.help_hint, x, y) {
+            self.toggle_help();
+            self.dirty = true;
+            return;
+        }
+
+        if hits(self.layout.calendar, x, y) {
+            // The `Calendar` only borrows `populated_dates`/`ctx.theme` long
+            // enough to resolve `date`; that borrow has to end before
+            // `go_to_date` can take `&mut self`.
+            let area = self.layout.calendar.expect("hits confirmed Some");
+            let date = Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
+                .date_at(area, x, y);
+            if let Some(date) = date {
+                self.go_to_date(date);
+                self.dirty = true;
+            }
+            return;
+        }
+
+        if hits(self.layout.bar_chart, x, y) {
+            // Built directly rather than through the private
+            // `App::weekly_bar_chart` helper in `ui.rs`: `date_at` only
+            // reads geometry and `week_dates`, never the chart's data, so
+            // the daily-target/weekly-data setup that helper also does
+            // would be wasted work here.
+            let area = self.layout.bar_chart.expect("hits confirmed Some");
+            let date = WeeklyBarChart::new(self.active_date, &self.week_dates, &self.ctx.theme)
+                .date_at(area, x, y);
+            if let Some(date) = date {
+                self.go_to_date(date);
+                self.dirty = true;
+            }
+            return;
+        }
+
+        if hits(self.layout.project_list, x, y) {
+            let area = self.layout.project_list.expect("hits confirmed Some");
+            if let Some(widget) = &mut self.project_list_widget
+                && let Some(index) = widget.index_at(area, y)
+            {
+                widget.select_index(index);
+                self.dirty = true;
+            }
+            return;
+        }
+
+        if hits(self.layout.week_list, x, y) {
+            let area = self.layout.week_list.expect("hits confirmed Some");
+            // `weekly_summary` is the rollup `week_projects` reads; `weekly_data`
+            // is the bar chart's per-day minutes and has no project list.
+            // Going through `week_projects` also means a click cannot select
+            // into last week's list once `week_is_stale` says this week's
+            // rollup is not the one on screen.
+            let count = week_projects(self.weekly_summary.as_ref(), self.week_is_stale()).len();
+            if let Some(index) = self.week_list.index_at(area, y, count) {
+                self.week_list.select_index(index);
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Move the selection in whichever list the wheel is over `(x, y)` by
+    /// one row (`down`) or by one bar-chart column.
+    ///
+    /// The selection moves rather than a detached viewport, because
+    /// [`ratatui::widgets::ListState`] carries no scroll offset independent
+    /// of the selection — scrolling one without the other would leave the
+    /// highlight off-screen. Ignored entirely while an overlay is open: the
+    /// overlay is modal, so the wheel must not reach a widget behind it.
+    fn scroll_at(&mut self, x: u16, y: u16, down: bool) {
+        if self.overlay.is_some() {
+            return;
+        }
+
+        let event = if hits(self.layout.project_list, x, y) {
+            if down {
+                AppEvent::NextProject
+            } else {
+                AppEvent::PreviousProject
+            }
+        } else if hits(self.layout.week_list, x, y) {
+            if down {
+                AppEvent::NextWeekProject
+            } else {
+                AppEvent::PreviousWeekProject
+            }
+        } else if hits(self.layout.raw_file, x, y) {
+            if down {
+                AppEvent::ScrollRawFileDown
+            } else {
+                AppEvent::ScrollRawFileUp
+            }
+        } else {
+            return;
+        };
+
+        self.apply_sync_event(event);
     }
 
     /// Queue `app_event`, unless it decides which layer sees the next key.
@@ -3717,7 +3865,7 @@ mod tests {
         use crate::tui::keymap::{BINDINGS, Key};
         use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-        let key: Key = (KeyCode::Char('Z'), KeyModifiers::CONTROL);
+        let key: Key = (KeyCode::Char('z'), KeyModifiers::CONTROL);
         let binding = BINDINGS
             .iter()
             .find(|b| b.keys.contains(&key))
@@ -3748,5 +3896,127 @@ mod tests {
             "description must name the platform limit, got {:?}",
             binding.description
         );
+    }
+
+    fn click(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn wheel(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// The first cell `date_at` resolves inside the recorded calendar rect.
+    fn a_calendar_cell(app: &App) -> (u16, u16, Date) {
+        let area = app.layout.calendar.expect("calendar drawn");
+        let calendar = Calendar::new(app.active_date, &app.populated_dates, &app.ctx.theme);
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .find_map(|(x, y)| calendar.date_at(area, x, y).map(|d| (x, y, d)))
+            .expect("some calendar cell resolves")
+    }
+
+    #[test]
+    fn clicking_a_calendar_day_goes_to_it() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert_eq!(app.active_date, expected);
+    }
+
+    #[test]
+    fn clicking_a_project_row_selects_it() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+
+        // The second row of the list body.
+        app.handle_mouse_event(click(list.x + 1, list.y + 1))
+            .expect("mouse");
+
+        assert!(
+            selection(&app).is_some(),
+            "a click in the list must select something"
+        );
+    }
+
+    /// Overlay-first: nothing behind a modal is reachable, and a click
+    /// outside it dismisses. This is the rule `mode.rs` already states for
+    /// keys, applied to clicks.
+    #[test]
+    fn clicking_outside_an_open_overlay_dismisses_it_and_nothing_else() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let before = app.active_date;
+        let (x, y, _) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert!(app.overlay.is_none(), "the click dismissed the popup");
+        assert_eq!(app.active_date, before, "and did not reach the calendar");
+    }
+
+    #[test]
+    fn clicking_inside_an_open_overlay_leaves_it_open() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let popup = app.layout.overlay.expect("popup drawn");
+
+        app.handle_mouse_event(click(popup.x + 1, popup.y + 1))
+            .expect("mouse");
+
+        assert!(app.overlay.is_some(), "a click inside the popup is inert");
+    }
+
+    #[test]
+    fn clicking_the_footer_opens_help() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let footer = app.layout.help_hint.expect("footer drawn");
+
+        app.handle_mouse_event(click(footer.x, footer.y))
+            .expect("mouse");
+
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_project_selection() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, list.x + 1, list.y + 1))
+            .expect("mouse");
+
+        assert_ne!(before, selection(&app), "the wheel moved the selection");
+    }
+
+    /// Nothing was drawn, so nothing is hittable — the guard that keeps a
+    /// stale rect from a previous frame from being clicked.
+    #[test]
+    fn clicks_before_the_first_render_do_nothing() {
+        let mut app = day_app();
+        let before = app.active_date;
+
+        app.handle_mouse_event(click(5, 5)).expect("mouse");
+
+        assert_eq!(app.active_date, before);
     }
 }
