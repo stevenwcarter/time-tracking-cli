@@ -11,7 +11,12 @@ describe('DateEditor mount', () => {
     // clobbered by the stale in-browser copy.
     const updater = vi.fn();
     const spy = vi.spyOn(useDateDataModule, 'useDateData');
-    spy.mockReturnValue({ content: 'loaded from server', parsedData: null, updater });
+    spy.mockReturnValue({
+      content: 'loaded from server',
+      parsedData: null,
+      updater,
+      error: undefined,
+    });
 
     render(<DateEditor date={new Date('2026-08-29T00:00:00')} />);
 
@@ -22,7 +27,12 @@ describe('DateEditor mount', () => {
   it('still saves once the user actually edits', async () => {
     const updater = vi.fn();
     const spy = vi.spyOn(useDateDataModule, 'useDateData');
-    spy.mockReturnValue({ content: 'loaded from server', parsedData: null, updater });
+    spy.mockReturnValue({
+      content: 'loaded from server',
+      parsedData: null,
+      updater,
+      error: undefined,
+    });
 
     const { getByRole } = render(<DateEditor date={new Date('2026-08-29T00:00:00')} />);
     await new Promise((r) => setTimeout(r, 700));

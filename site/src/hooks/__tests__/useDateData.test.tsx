@@ -38,3 +38,25 @@ describe('useDateData.updater', () => {
     });
   });
 });
+
+describe('useDateData error surfacing', () => {
+  beforeEach(() => {
+    mutate.mockReset();
+    mutate.mockResolvedValue({});
+    useQueryMock.mockReset();
+  });
+
+  it('returns the query error rather than swallowing it', () => {
+    // Discarding `error` left `content` permanently undefined with no log
+    // and no toast; DateEditor's init effect then never fired, so its
+    // debounced save never fired either and a whole session of typing was
+    // silently dropped.
+    const boom = new Error('network down');
+    useQueryMock.mockReturnValue({ data: undefined, error: boom });
+
+    const { result } = renderHook(() => useDateData(new Date('2026-08-27T00:00:00')));
+
+    expect(result.current.error).toBe(boom);
+    expect(result.current.content).toBeNull();
+  });
+});

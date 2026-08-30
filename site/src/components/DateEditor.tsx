@@ -9,7 +9,7 @@ interface DateEditorProps {
 
 export const DateEditor = (props: DateEditorProps) => {
   const { date } = props;
-  const { content, updater, parsedData } = useDateData(date);
+  const { content, updater, parsedData, error } = useDateData(date);
   const [localData, setLocalData] = useState('');
   const [hasInitialized, setHasInitialized] = useState(false);
   const lastSentData = useRef<string | null>(null);
@@ -84,26 +84,35 @@ export const DateEditor = (props: DateEditorProps) => {
   }, [debouncedData, localData, updater, date, hasInitialized]);
 
   return (
-    <div className="w-full p-4 rounded shadow flex">
-      <textarea
-        value={localData}
-        className="w-1/2 h-full p-2 border rounded mr-4 bg-gray-900 text-white"
-        onChange={(e) => setLocalData(e.target.value)}
-      />
-      <div className="w-1/2 p-4 border-l overflow-y-auto">
-        <DateSummary
-          parsedData={
-            parsedData || {
-              date: 'N/A',
-              totalHours: 0,
-              deadTimeHours: 0,
-              startTime: null,
-              endTime: null,
-              projects: [],
-              warnings: [],
-            }
-          }
+    <div className="w-full p-4 rounded shadow flex flex-col">
+      {error && (
+        <div role="alert" className="mb-4 p-3 rounded bg-red-900 text-white border border-red-500">
+          Could not load this day&apos;s file. Editing is disabled so your typing isn&apos;t
+          silently discarded — reload once the server is reachable.
+        </div>
+      )}
+      <div className="w-full flex">
+        <textarea
+          value={localData}
+          disabled={Boolean(error)}
+          className="w-1/2 h-full p-2 border rounded mr-4 bg-gray-900 text-white disabled:opacity-50"
+          onChange={(e) => setLocalData(e.target.value)}
         />
+        <div className="w-1/2 p-4 border-l overflow-y-auto">
+          <DateSummary
+            parsedData={
+              parsedData || {
+                date: 'N/A',
+                totalHours: 0,
+                deadTimeHours: 0,
+                startTime: null,
+                endTime: null,
+                projects: [],
+                warnings: [],
+              }
+            }
+          />
+        </div>
       </div>
     </div>
   );

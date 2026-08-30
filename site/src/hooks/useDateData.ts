@@ -9,11 +9,11 @@ import {
 
 export const useDateData = (date: Date) => {
   const dateString = toDateString(date);
-  const { data } = useQuery(FILE_CONTENT_FOR_DATE_QUERY, {
+  const { data, error: contentError } = useQuery(FILE_CONTENT_FOR_DATE_QUERY, {
     variables: { date: dateString },
     skip: !dateString,
   });
-  const { data: parsedData } = useQuery(GET_DAY_DATA_FOR_DATE_QUERY, {
+  const { data: parsedData, error: parsedError } = useQuery(GET_DAY_DATA_FOR_DATE_QUERY, {
     variables: { date: dateString },
     skip: !dateString,
   });
@@ -36,9 +36,21 @@ export const useDateData = (date: Date) => {
     });
   };
 
+  // Widened to `Error` rather than left as `ApolloError` so a test can hand
+  // the hook's consumers a plain `new Error(...)` without a cast.
+  const error: Error | undefined = contentError ?? parsedError;
+
   return {
+    // `||`, not `??`, deliberately left as it was. Switching would change how
+    // an empty day file behaves, which is a separate question from error
+    // surfacing and not this batch's to answer.
     content: data?.fileContentForDate || null,
     parsedData: parsedData?.dataForDate || null,
     updater,
+    // Surfaced, not swallowed. The mutation path below has logged and toasted
+    // its failures since it was written; the read path did neither, so a
+    // failed load looked identical to an empty day and quietly disabled
+    // saving for the rest of the session.
+    error,
   };
 };

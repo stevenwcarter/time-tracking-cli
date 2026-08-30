@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '@testing-library/jest-dom';
 
 vi.mock('hooks/useDateData', () => ({
-  useDateData: () => ({ content: '', parsedData: null, updater: vi.fn() }),
+  useDateData: () => ({ content: '', parsedData: null, updater: vi.fn(), error: undefined }),
 }));
 
 import DateEditorPage from '../DateEditorPage';

@@ -7,9 +7,10 @@ import { useWeeklyTableData } from './WeeklySummary/useWeeklyTableData';
 
 interface WeeklySummaryProps {
   data: { weekDataForDate?: WeekData } | null;
+  error?: unknown;
 }
 
-const WeeklySummary = ({ data }: WeeklySummaryProps) => {
+const WeeklySummary = ({ data, error }: WeeklySummaryProps) => {
   const weekData = data?.weekDataForDate;
   const navigate = useNavigate();
 
@@ -20,7 +21,9 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
   if (!weekData) {
     return (
       <div className="p-4 bg-gray-900 text-white rounded">
-        <p>No data available</p>
+        {/* A failed query used to render this same "No data available",
+            indistinguishable from a genuinely empty week. */}
+        <p>{error ? 'Could not load this week. Please try again.' : 'No data available'}</p>
       </div>
     );
   }
