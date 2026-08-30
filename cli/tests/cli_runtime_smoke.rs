@@ -121,3 +121,28 @@ fn serving_prints_no_banner_to_stdout() {
          TUI's alternate screen under `--serve --tui`. Got:\n{stdout}"
     );
 }
+
+/// A mistyped date must not silently become today.
+#[test]
+fn an_unparseable_date_exits_non_zero() {
+    use std::time::Duration;
+
+    let data_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let config_home = tempfile::tempdir().expect("failed to create config dir");
+
+    let mut cmd = common::ttcli();
+    cmd.args(["--noedit", "--date", "definitely-not-a-date"]);
+    common::scoped(&mut cmd, data_dir.path(), config_home.path());
+
+    let output = common::output_within(cmd, Duration::from_secs(20));
+
+    assert!(
+        !output.status.success(),
+        "an unparseable --date must exit non-zero, not report the wrong day"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("definitely-not-a-date"),
+        "the message must name the value that failed: {stderr}"
+    );
+}

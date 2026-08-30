@@ -18,7 +18,11 @@ async fn main_impl() -> Result<()> {
         .await
         .context("Coult not initialize tracing")?;
     // Load configuration and apply CLI argument overrides.
-    let config = Config::get();
+    // `try_get`, not `get`: a mistyped `--date` used to be swallowed and
+    // replaced with today, exiting 0 with a report for the wrong day. It is
+    // now a load error, and it should reach the user as a message and a
+    // non-zero exit rather than as a panic out of `Config::get`'s `.expect`.
+    let config = Config::try_get()?;
 
     if config.stdin {
         let formatter = config.get_formatter();

@@ -276,6 +276,19 @@ impl Config {
         Self::init(true)
     }
 
+    /// [`Config::get`]'s fallible twin: the process-wide configuration,
+    /// parsing real argv on the first call, surfacing a load failure instead
+    /// of panicking on it.
+    ///
+    /// `get` reaches [`Config::init`], which `.expect`s. That is fine for a
+    /// missing config directory and wrong for a mistyped `--date`, which
+    /// should exit non-zero with a message rather than dump a panic. The CLI
+    /// entry point uses this; the library paths that cannot report an error
+    /// usefully still use `get`.
+    pub fn try_get() -> anyhow::Result<&'static Config> {
+        Self::try_init(true)
+    }
+
     #[cfg(feature = "cli")]
     fn load(use_args: bool) -> Result<Config> {
         let args = if use_args {
@@ -288,7 +301,7 @@ impl Config {
         let mut config = load_or_create_config_file(&config_path)?;
 
         apply_arg_overrides(&mut config, &args);
-        config.date = resolve_requested_date(args.date.or(args.positional_date));
+        config.date = resolve_requested_date(args.date.or(args.positional_date))?;
         resolve_data_directory(&mut config)?;
 
         Ok(config)
@@ -476,27 +489,24 @@ fn resolve_data_directory(config: &mut Config) -> Result<()> {
 }
 
 #[cfg(feature = "cli")]
-fn resolve_requested_date(date_str: Option<String>) -> Date {
-    match date_str {
-        Some(date_str) => {
-            // Parse the provided date
+fn resolve_requested_date(date_str: Option<String>) -> Result<Date> {
+    let Some(date_str) = date_str else {
+        // No date argument at all is not a failure — it means today.
+        return Ok(today_date());
+    };
 
-            use interim::{Dialect, parse_date_string};
-            let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-            let date_time = parse_date_string(&date_str, now, Dialect::Us);
-            match date_time {
-                Ok(date_time) => date_time.date(),
-                Err(e) => {
-                    eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
-                    today_date()
-                }
-            }
-        }
-        None => {
-            // Use today's date
-            today_date()
-        }
-    }
+    use interim::{Dialect, parse_date_string};
+    let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+    parse_date_string(&date_str, now, Dialect::Us)
+        .map(|date_time| date_time.date())
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .with_context(|| format!("could not parse the requested date '{date_str}'"))
+        .inspect_err(|err| {
+            // Durably record the failure regardless of screen state: under
+            // `--tui`, `ratatui::init()` enters the alternate screen moments
+            // after this returns, hiding stderr for the rest of the session.
+            tracing::error!("could not parse the requested date '{date_str}': {err:#}");
+        })
 }
 
 fn write_config_comments(file: &mut impl Write) -> Result<()> {
@@ -542,6 +552,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use time::macros::date;
 
     fn create_test_config() -> Config {
         Config {
@@ -974,20 +985,54 @@ mod tests {
 
     #[test]
     fn config_load_date_literal_today_resolves_to_todays_date() {
-        let resolved = resolve_requested_date(Some("today".to_string()));
+        let resolved =
+            resolve_requested_date(Some("today".to_string())).expect("'today' must resolve");
         assert_eq!(resolved, today_date());
     }
 
     #[test]
     fn config_load_date_explicit_yyyy_mm_dd_resolves_to_that_date() {
-        let resolved = resolve_requested_date(Some("2024-03-15".to_string()));
-        assert_eq!(resolved, time::macros::date!(2024 - 03 - 15));
+        let resolved = resolve_requested_date(Some("2024-03-15".to_string()))
+            .expect("an explicit date must resolve");
+        assert_eq!(resolved, date!(2024 - 03 - 15));
     }
 
     #[test]
     fn config_load_date_relative_phrase_resolves_relative_to_today() {
-        let resolved = resolve_requested_date(Some("yesterday".to_string()));
+        let resolved = resolve_requested_date(Some("yesterday".to_string()))
+            .expect("'yesterday' must resolve");
         assert_eq!(resolved, today_date().previous_day().unwrap());
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn an_unparseable_date_is_an_error_not_a_silent_fallback_to_today() {
+        // Silently substituting today meant `--date <typo>` exited 0 with a
+        // full report for the wrong day — undetectable from a script, and
+        // under `--tui` the eprintln was hidden by the alternate screen for
+        // the whole session and never written to the log.
+        let err = resolve_requested_date(Some("definitely-not-a-date".to_owned()))
+            .expect_err("an unparseable date must be an error");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("definitely-not-a-date"),
+            "the error must quote the value that failed: {message}"
+        );
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_parseable_date_still_resolves() {
+        let resolved = resolve_requested_date(Some("2026-08-24".to_owned()))
+            .expect("a well-formed date must resolve");
+        assert_eq!(resolved, date!(2026 - 08 - 24));
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn no_date_argument_still_defaults_to_today() {
+        let resolved = resolve_requested_date(None).expect("no date is not an error");
+        assert_eq!(resolved, today_date());
     }
 
     #[test]
