@@ -224,6 +224,7 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 | ↑ / k        | Raw file      | scroll the raw file up                                         |
 | r            | All           | reload the current date from disk                              |
 | e            | All           | edit the current date's notes in $EDITOR                       |
+| Ctrl-Z       | All           | suspend to the shell, resume with fg (Unix only)               |
 | y            | All           | copy the day's summary (with hours) to the clipboard           |
 | Y            | All           | copy the week's summary (with hours) to the clipboard          |
 | ?            | All           | show the help popup                                            |

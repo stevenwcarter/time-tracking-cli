@@ -344,6 +344,13 @@ pub const BINDINGS: &[Binding] = &[
         description: "edit the current date's notes in $EDITOR",
     },
     Binding {
+        keys: &[(KeyCode::Char('Z'), KeyModifiers::CONTROL)],
+        event: AppEvent::Suspend,
+        modes: ModeMask::ALL,
+        group: Group::General,
+        description: "suspend to the shell, resume with fg (Unix only)",
+    },
+    Binding {
         keys: &[(KeyCode::Char('y'), NONE)],
         event: AppEvent::YankDay,
         modes: ModeMask::ALL,

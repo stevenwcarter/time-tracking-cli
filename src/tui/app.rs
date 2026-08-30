@@ -558,6 +558,11 @@ impl App {
                 // last of it away, either of which moves a calendar marker.
                 self.events.send(AppEvent::ReloadFromDisk(Reload::Rescan));
             }
+            AppEvent::Suspend => {
+                self.suspend(terminal).await?;
+                self.dirty = true;
+                self.events.send(AppEvent::ReloadFromDisk(Reload::Rescan));
+            }
             e @ (AppEvent::ToggleZoomBar
             | AppEvent::ToggleHelp
             | AppEvent::CloseOverlay
@@ -693,13 +698,14 @@ impl App {
             }
             AppEvent::YankDay => self.yank_day(),
             AppEvent::YankWeek => self.yank_week(),
-            // `handle_app_event` owns these: `Edit` awaits the editor, and
-            // `ReloadFromDisk` spawns a load, which needs a runtime.
+            // `handle_app_event` owns these: `Edit` and `Suspend` both await
+            // the terminal handover, and `ReloadFromDisk` spawns a load,
+            // which needs a runtime.
             //
             // Adding a variant here alone is not enough — list it in
             // `handle_app_event`'s alternation too, or it is dropped in both
             // places and no test fails.
-            AppEvent::ReloadFromDisk(_) | AppEvent::Edit => {}
+            AppEvent::ReloadFromDisk(_) | AppEvent::Edit | AppEvent::Suspend => {}
         }
     }
 
@@ -921,6 +927,40 @@ impl App {
         let date = *active_date;
         let modes = TerminalModes { mouse: ctx.mouse };
         with_suspended_terminal(events, terminal, modes, || edit_date(data_svc, date)).await
+    }
+
+    /// Stop the process and hand the terminal back to the shell, resuming
+    /// where it left off when the user runs `fg`.
+    ///
+    /// Rust installs no `SIGTSTP` handler, so the signal's default action
+    /// stops the process and `raise` returns only once `SIGCONT` arrives —
+    /// which makes the statement after it the resume path. No `SIGCONT`
+    /// handler is needed, and none is installed.
+    #[cfg(unix)]
+    pub async fn suspend<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        let Self { events, ctx, .. } = self;
+        let modes = TerminalModes { mouse: ctx.mouse };
+        with_suspended_terminal(events, terminal, modes, || async {
+            // SAFETY: `raise` is async-signal-safe and takes no pointers.
+            // SIGTSTP's default disposition stops the process; nothing here
+            // has installed a handler that would change that.
+            let rc = unsafe { libc::raise(libc::SIGTSTP) };
+            if rc != 0 {
+                anyhow::bail!("could not suspend: raise(SIGTSTP) returned {rc}");
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Windows has no `SIGTSTP`, and the binding is deliberately not
+    /// `cfg`-gated — one `BINDINGS` table keeps the help popup and the
+    /// generated README identical on every platform — so the key has to
+    /// answer for itself here instead of doing nothing.
+    #[cfg(not(unix))]
+    pub async fn suspend<B: Backend>(&mut self, _terminal: &mut Terminal<B>) -> Result<()> {
+        self.set_status("Suspend is not available on Windows");
+        Ok(())
     }
 
     /// Start loading the active date in the background, superseding whatever
@@ -1697,6 +1737,7 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::YankDay
         | AppEvent::YankWeek
         | AppEvent::Edit
+        | AppEvent::Suspend
         | AppEvent::NextDate
         | AppEvent::PreviousDate
         | AppEvent::NextWeek
@@ -3601,5 +3642,46 @@ mod tests {
 
         assert!(app.watch.is_none(), "quit must drop the watch handle");
         assert!(handle.is_finished(), "quit must stop the watch task");
+    }
+
+    /// Ctrl-Z must pause the poller and resume it, exactly as the editor
+    /// handover does. Driven through the event rather than through a real
+    /// `SIGTSTP`: raising it in a test would stop the test runner.
+    #[test]
+    fn ctrl_z_is_bound_to_suspend_in_every_mode() {
+        use crate::tui::keymap::{BINDINGS, Key};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let key: Key = (KeyCode::Char('Z'), KeyModifiers::CONTROL);
+        let binding = BINDINGS
+            .iter()
+            .find(|b| b.keys.contains(&key))
+            .expect("Ctrl-Z is bound");
+        assert_eq!(binding.event, AppEvent::Suspend);
+        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+            assert!(
+                binding.modes.contains(mode),
+                "Ctrl-Z must be live in {mode:?}"
+            );
+        }
+    }
+
+    /// The row is unconditional so BINDINGS, the help popup, the generated
+    /// README table and the test that compares it stay identical on every
+    /// platform — only the handler is cfg-gated. The description therefore
+    /// has to say where it works.
+    #[test]
+    fn the_suspend_binding_says_it_is_unix_only() {
+        use crate::tui::keymap::BINDINGS;
+
+        let binding = BINDINGS
+            .iter()
+            .find(|b| b.event == AppEvent::Suspend)
+            .expect("suspend binding");
+        assert!(
+            binding.description.contains("Unix only"),
+            "description must name the platform limit, got {:?}",
+            binding.description
+        );
     }
 }
