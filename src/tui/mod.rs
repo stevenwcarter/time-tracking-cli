@@ -9,6 +9,7 @@ pub mod event;
 pub mod keymap;
 pub mod mode;
 pub mod project_list;
+pub mod terminal;
 pub mod theme;
 pub mod ui;
 pub mod week_list;

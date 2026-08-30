@@ -2,7 +2,6 @@ use crate::time_utils::get_week_dates;
 use std::{
     collections::HashMap,
     fmt,
-    io::stdout,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
@@ -13,6 +12,7 @@ use crate::{
     editor::open_in_editor,
 };
 
+use super::terminal::{TerminalModes, with_suspended_terminal};
 use super::{
     context::TuiContext,
     event::{AppEvent, AppEventSender, Event, EventHandler, LoadPayload, Reload},
@@ -24,10 +24,6 @@ use super::{
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
-use crossterm::{
-    ExecutableCommand,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use ratatui::{
     DefaultTerminal, Terminal,
     backend::Backend,
@@ -906,20 +902,25 @@ impl App {
     /// this path as how a broken data directory gets *reported*; it hung
     /// instead.
     ///
-    /// So the poller is resumed by [`PausedPoller`]'s `Drop` and the screen
-    /// is restored by an unconditional statement, with the two results
-    /// combined at the end rather than propagated where they happen.
+    /// [`with_suspended_terminal`] is what pins that invariant now — see its
+    /// doc comment for how the pause/restore pairing is kept structural.
     ///
     /// [`EventTask`]: super::event::EventHandler
     pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
-        let edited = {
-            // Borrowed field by field so the guard and the edit below are
-            // visibly two different fields of `self`.
-            let _paused = PausedPoller::new(&mut self.events);
-            edit_date(&self.data_svc, self.active_date).await
-        };
-        let restored = restore_terminal(terminal);
-        edited.and(restored)
+        // Destructured rather than borrowed through `self` twice: the helper
+        // takes `&mut self.events` and the body captures `&self.data_svc`,
+        // which the borrow checker only sees as disjoint when the two are
+        // named separately.
+        let Self {
+            events,
+            data_svc,
+            active_date,
+            ..
+        } = self;
+        let date = *active_date;
+        // Task 2 replaces this with ctx.mouse.
+        let modes = TerminalModes { mouse: false };
+        with_suspended_terminal(events, terminal, modes, || edit_date(data_svc, date)).await
     }
 
     /// Start loading the active date in the background, superseding whatever
@@ -1512,40 +1513,14 @@ impl App {
     }
 }
 
-/// Holds the event poller paused for as long as it lives, and resumes it on
-/// the way out — including the way out an `?` takes.
+/// Open `$EDITOR` on `date`'s file — creating it if it does not exist — and
+/// drop the cache entry the edit invalidates.
 ///
-/// A `Drop` guard rather than a matching `resume()` call at the bottom of
-/// [`App::run_editor`] because the failure mode is invisible: a paused poller
-/// emits nothing at all, so a missed resume does not error, it hangs. The
-/// pairing has to be structural, not remembered.
-struct PausedPoller<'a>(&'a mut EventHandler);
-
-impl<'a> PausedPoller<'a> {
-    /// Pause `events` until the returned guard is dropped.
-    fn new(events: &'a mut EventHandler) -> Self {
-        events.pause();
-        Self(events)
-    }
-}
-
-impl Drop for PausedPoller<'_> {
-    fn drop(&mut self) {
-        self.0.resume();
-    }
-}
-
-/// Leave the alternate screen, open `$EDITOR` on `date`'s file — creating it
-/// if it does not exist — and drop the cache entry the edit invalidates.
-///
-/// A free function taking the fields it needs so [`App::run_editor`] can hold
-/// [`PausedPoller`] over it: the guard borrows `App::events` and this borrows
-/// `App::data_svc`, which the borrow checker only sees as disjoint when the
-/// two are named separately.
+/// A free function rather than a method: it is the body [`App::run_editor`]
+/// hands to [`with_suspended_terminal`], borrowing only `App::data_svc` —
+/// `App::events` goes to the helper directly, which is what keeps the two
+/// borrows disjoint.
 async fn edit_date(data_svc: &DataService, date: Date) -> Result<()> {
-    stdout().execute(LeaveAlternateScreen)?;
-    disable_raw_mode()?;
-
     let file_path = data_svc.create_day_file_if_not_exists(&date).await?;
     // Reported rather than propagated: the file exists either way, so the
     // TUI coming back with a complaint beats the error unwinding the loop.
@@ -1553,15 +1528,6 @@ async fn edit_date(data_svc: &DataService, date: Date) -> Result<()> {
         eprintln!("Failed to open editor: {e}");
     }
     data_svc.invalidate_date(&date).await;
-    Ok(())
-}
-
-/// Put the alternate screen and raw mode back, and clear whatever the editor
-/// left on the way out.
-fn restore_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
-    stdout().execute(EnterAlternateScreen)?;
-    enable_raw_mode()?;
-    terminal.clear()?;
     Ok(())
 }
 
@@ -3222,38 +3188,6 @@ mod tests {
             "a stale week must not be copied"
         );
         assert_eq!(status_text(&app), Some(WEEK_STILL_LOADING));
-    }
-
-    /// Regression: `run_editor` paused the poller and left the alternate
-    /// screen before doing anything fallible, and the `?` on
-    /// `create_day_file_if_not_exists` skipped both the restore and
-    /// `events.resume()`. A paused `EventTask` emits neither ticks nor keys
-    /// and never notices its receiver closing, so the loop's next
-    /// `events.next().await` blocked forever — a wedged app outside the
-    /// alternate screen with raw mode off, and under `--tui --serve` a
-    /// process that never exited.
-    ///
-    /// Driven through `PausedPoller` rather than through `run_editor`
-    /// itself on purpose: `run_editor` calls `enable_raw_mode`, and
-    /// crossterm reaches for `/dev/tty` directly rather than for the
-    /// captured stdout, so a test that ran it would leave the developer's
-    /// own terminal in raw mode. The guard is the seam that carries the
-    /// invariant, and it is the seam this asserts on.
-    #[test]
-    fn the_pause_guard_resumes_the_poller_on_the_way_out_of_a_failure() {
-        let mut events = EventHandler::new();
-
-        let handover: Result<()> = (|| {
-            let _paused = PausedPoller::new(&mut events);
-            anyhow::bail!("create_day_file_if_not_exists: Read-only file system")
-        })();
-
-        assert!(handover.is_err(), "the fixture must model a failure");
-        assert_eq!(
-            events.drain_pause_signals(),
-            vec![true, false],
-            "a failed handover must leave the poller running, not paused"
-        );
     }
 
     /// The day-axis twin of the test above, and of the bug it pins.
