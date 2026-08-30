@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{Json, Response},
-    routing::{MethodFilter, get, on},
+    routing::{MethodFilter, any, get, on},
 };
 use axum_embed::{FallbackBehavior, ServeEmbed};
 use juniper::GraphQLObject;
@@ -93,15 +93,12 @@ pub struct WeekData {
     pub project_summaries: Vec<ProjectSummary>,
 }
 
-/// Serve the web app on `port` of localhost: the `/api` REST endpoints, the
-/// Juniper schema under `/graphql`, and the embedded React build for
-/// everything else.
+/// Everything [`run_server`] assembles except the listener: the GraphQL
+/// routes, the embedded SPA, the API routes and the middleware stack.
 ///
-/// This is the crate's webapp entry point, re-exported from the crate root.
-/// It runs until ctrl-c or a message on `rx` — which is how the TUI exiting
-/// takes the server down with it — then drains the in-flight requests.
-pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::Result<()> {
-    let state = AppState { config };
+/// A separate function so tests can drive the real router with
+/// `ServiceExt::oneshot` instead of binding a port and issuing HTTP.
+fn build_router(state: AppState) -> Router {
     let context = GraphQLContext::new(state.clone());
     let qm_schema = create_schema();
 
@@ -119,6 +116,12 @@ pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::
             "/playground",
             get(playground("/graphql", "/graphql/subscriptions")),
         )
+        // The GraphQL side gets its own fallback rather than an outer
+        // `/graphql/{*rest}` catch-all: `nest` already installs an internal
+        // catch-all for its prefix, and a second one on the outer router is a
+        // route conflict that panics at build time. A nested router's own
+        // fallback wins inside its prefix, which is exactly the scope wanted.
+        .fallback(api_not_found)
         .layer(Extension(context.clone()))
         .layer(Extension(Arc::new(qm_schema)))
         .layer(middleware.clone());
@@ -131,19 +134,45 @@ pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::
 
     let fallback_serve_assets = serve_assets.clone();
 
-    let app = Router::new()
+    Router::new()
         .route_service("/assets/{*uri}", serve_assets)
         .layer(middleware::from_fn(set_static_cache_control))
         .route("/api/day", get(get_day_data))
         .route("/api/day/{date}", get(get_day_data_by_date))
         .route("/api/week", get(get_week_data))
         .route("/api/week/{date}", get(get_week_data_by_date))
+        // Unmatched `/api/*` must 404 rather than fall through to the SPA —
+        // see `api_not_found` below. Nothing nests under `/api`, so a plain
+        // catch-all route is safe here.
+        .route("/api/{*rest}", any(api_not_found))
         .nest("/graphql", graphql_routes)
         .fallback_service(fallback_serve_assets)
         .layer(CorsLayer::permissive())
         .layer(Extension(context))
         .layer(middleware)
-        .with_state(state);
+        .with_state(state)
+}
+
+/// The 404 the SPA fallback would otherwise swallow.
+///
+/// `axum-embed`'s `FallbackBehavior::Ok` forces HTTP 200 with index.html for
+/// *any* unresolved path, so `/api/dayz`, `/api/day/2026-01-01/extra` and
+/// `/graphql/nonexistent` all looked like successes to a probing monitor or
+/// a client with a typo. The SPA fallback is right for app routes and wrong
+/// for the API surface; these catch-alls draw that line.
+async fn api_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+/// Serve the web app on `port` of localhost: the `/api` REST endpoints, the
+/// Juniper schema under `/graphql`, and the embedded React build for
+/// everything else.
+///
+/// This is the crate's webapp entry point, re-exported from the crate root.
+/// It runs until ctrl-c or a message on `rx` — which is how the TUI exiting
+/// takes the server down with it — then drains the in-flight requests.
+pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::Result<()> {
+    let app = build_router(AppState { config });
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await?;
 
@@ -382,10 +411,13 @@ async fn set_static_cache_control(request: Request, next: Next) -> Response {
 mod tests {
     use super::*;
     use crate::data_svc::ParseSettings;
+    use axum::body::Body;
+    use axum::http::Request;
     use std::io::Write as _;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use time::macros::date;
+    use tower::ServiceExt as _;
 
     /// A `tracing` writer that keeps everything written to it in memory.
     #[derive(Clone, Default)]
@@ -568,6 +600,75 @@ mod tests {
         assert!(
             logged.contains("failed to read day data") && logged.contains("2026-08-24"),
             "the read-failure log must survive the parse_day rewrite: {logged}"
+        );
+    }
+
+    fn get_status(uri: &str) -> StatusCode {
+        let rt = runtime();
+        rt.block_on(async {
+            build_router(AppState::default())
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response")
+                .status()
+        })
+    }
+
+    #[test]
+    fn unmatched_api_and_graphql_paths_are_not_found() {
+        for uri in [
+            "/api/dayz",
+            "/api/day/2026-01-01/extra",
+            "/api/nope",
+            "/graphql/nonexistent",
+        ] {
+            assert_eq!(
+                get_status(uri),
+                StatusCode::NOT_FOUND,
+                "{uri} must 404, not return 200 with the SPA's index.html"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_routes_still_resolve() {
+        // The other half of the assertion: the catch-alls must not shadow
+        // anything real.
+        assert_ne!(
+            get_status("/api/day/2026-08-24"),
+            StatusCode::NOT_FOUND,
+            "a registered day route must still resolve"
+        );
+        assert_ne!(
+            get_status("/api/week/2026-08-24"),
+            StatusCode::NOT_FOUND,
+            "a registered week route must still resolve"
+        );
+        assert_ne!(
+            get_status("/graphql/graphiql"),
+            StatusCode::NOT_FOUND,
+            "the nested graphiql route must still resolve"
+        );
+    }
+
+    #[test]
+    fn spa_routes_still_fall_through_to_index() {
+        // The SPA fallback is right for app routes; only the API surface
+        // changed.
+        assert_eq!(
+            get_status("/editor/2026-08-24"),
+            StatusCode::OK,
+            "a client-side route must still be served the SPA"
+        );
+        assert_eq!(
+            get_status("/api"),
+            StatusCode::OK,
+            "a bare /api has no trailing segment and is not an API path"
         );
     }
 }
