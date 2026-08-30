@@ -10,6 +10,7 @@ mod band;
 pub mod context;
 pub mod event;
 pub mod keymap;
+pub mod layout_rects;
 pub mod mode;
 pub mod project_list;
 pub mod terminal;

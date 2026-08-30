@@ -98,6 +98,9 @@ fn breakpoint(area: Rect) -> Breakpoint {
 
 impl Widget for &mut App {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // A region not drawn this frame must not be hittable next frame.
+        self.layout.clear();
+
         // The status line is `App`'s, not the project list's, and it is drawn
         // in every mode: the help hint has to survive a day with no project
         // list at all, which is the one screen a new user is most likely to
@@ -158,6 +161,7 @@ impl App {
             DayPane::Projects => {
                 let inner = block.inner(chunks[1]);
                 block.render(chunks[1], buf);
+                self.layout.project_list = Some(inner);
                 if let Some(widget) = &mut self.project_list_widget {
                     widget.render(inner, buf);
                 }
@@ -249,6 +253,7 @@ impl App {
     fn render_day_header(&mut self, bp: Breakpoint, area: Rect, buf: &mut Buffer) {
         if bp == Breakpoint::Narrow {
             self.weekly_bar_chart().render(area, buf);
+            self.layout.bar_chart = Some(area);
             draw_header_border(area, buf);
             return;
         }
@@ -264,6 +269,8 @@ impl App {
         Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
             .render(calendar_area, buf);
         self.weekly_bar_chart().render(bar_chart_area, buf);
+        self.layout.calendar = Some(calendar_area);
+        self.layout.bar_chart = Some(bar_chart_area);
 
         if let Some(group_rect) = bounding_rect(&header_area) {
             draw_header_border(group_rect, buf);
@@ -273,6 +280,7 @@ impl App {
     /// The weekly bar chart, full screen.
     fn render_zoomed_week(&mut self, area: Rect, buf: &mut Buffer) {
         self.weekly_bar_chart().render(area, buf);
+        self.layout.bar_chart = Some(area);
     }
 
     /// The week's per-project rollup: the billing question the bar chart
@@ -308,6 +316,7 @@ impl App {
                         buf,
                         &mut self.week_list,
                     );
+                    self.layout.week_list = Some(inner);
                 }
             }
             WeekPane::Loading => {
@@ -342,13 +351,19 @@ impl App {
             None => RawFileContent::Missing,
         };
         RawFileView::new(&path, content, self.raw_scroll, &self.ctx.theme).render(area, buf);
+        self.layout.raw_file = Some(area);
     }
 
     /// Draw the modal layer, if one is open, over whatever the mode drew.
     fn render_overlay(&mut self, area: Rect, buf: &mut Buffer) {
         match &self.overlay {
-            Some(Overlay::Help) => HelpPopup::new(&self.ctx.theme, self.mode).render(area, buf),
+            Some(Overlay::Help) => {
+                let popup = HelpPopup::new(&self.ctx.theme, self.mode);
+                self.layout.overlay = Some(popup.popup_rect(area));
+                popup.render(area, buf);
+            }
             Some(Overlay::DatePrompt(input)) => {
+                self.layout.overlay = Some(DatePrompt::popup_rect(area));
                 DatePrompt::new(&self.ctx.theme, input).render(area, buf);
             }
             None => {}
@@ -375,12 +390,13 @@ impl App {
 
     /// The status line: whatever `App::footer_text` says the footer should
     /// carry right now.
-    fn render_status(&self, area: Rect, buf: &mut Buffer) {
+    fn render_status(&mut self, area: Rect, buf: &mut Buffer) {
         Paragraph::new(self.footer_text())
             .style(self.ctx.theme.status)
             .wrap(Wrap { trim: true })
             .centered()
             .render(area, buf);
+        self.layout.help_hint = Some(area);
     }
 }
 

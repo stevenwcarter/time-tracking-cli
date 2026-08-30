@@ -12,6 +12,7 @@ use crate::{
     editor::open_in_editor,
 };
 
+use super::layout_rects::LayoutRects;
 use super::terminal::{TerminalModes, with_suspended_terminal};
 use super::{
     context::TuiContext,
@@ -212,6 +213,9 @@ pub struct App {
     /// While this is `Some` the overlay is the only layer that sees a key;
     /// see [`App::handle_key_events`].
     pub overlay: Option<Overlay>,
+    /// Where each clickable region was drawn on the most recent frame; see
+    /// [`LayoutRects`].
+    pub layout: LayoutRects,
     /// The one-line message on the footer and the moment it was set, or
     /// `None` when the footer is free to show the loading or help text.
     ///
@@ -360,6 +364,7 @@ impl App {
             dirty: true,
             mode: Mode::Day,
             overlay: None,
+            layout: LayoutRects::default(),
             status: None,
             clipboard: None,
             loading: false,
@@ -1991,6 +1996,66 @@ mod tests {
 
     fn selection(app: &App) -> Option<usize> {
         app.project_list_widget.as_ref()?.selected_item()
+    }
+
+    /// Hit-testing reads these, so a region that was not drawn this frame
+    /// must not be hittable. A terminal too small for the band is the case
+    /// that matters: the calendar is simply absent.
+    #[test]
+    fn rendering_records_the_regions_it_drew() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+
+        assert!(app.layout.calendar.is_some(), "calendar was drawn");
+        assert!(app.layout.bar_chart.is_some(), "bar chart was drawn");
+        assert!(app.layout.project_list.is_some(), "project list was drawn");
+        assert!(app.layout.help_hint.is_some(), "status line was drawn");
+        assert!(app.layout.overlay.is_none(), "no overlay is open");
+    }
+
+    /// Narrower than `NARROW_COLS`: the calendar is dropped and the chart
+    /// takes the header's full width, so this asserts the reason the
+    /// calendar is absent rather than merely that it is.
+    #[test]
+    fn a_narrow_terminal_drops_the_calendar_but_keeps_the_chart() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 80, 30);
+
+        assert!(
+            app.layout.calendar.is_none(),
+            "narrower than NARROW_COLS drops the calendar"
+        );
+        assert!(
+            app.layout.bar_chart.is_some(),
+            "the chart takes the header's full width instead"
+        );
+    }
+
+    /// Shorter than `COMPACT_ROWS`: the whole calendar/chart band is
+    /// dropped, so neither region was drawn at all.
+    #[test]
+    fn a_short_terminal_drops_the_whole_band() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 80, 20);
+
+        assert!(
+            app.layout.calendar.is_none(),
+            "the band was not drawn, so nothing there is clickable"
+        );
+        assert!(
+            app.layout.bar_chart.is_none(),
+            "the band was not drawn, so nothing there is clickable"
+        );
+    }
+
+    #[test]
+    fn an_open_overlay_records_its_rect() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+
+        let overlay = app.layout.overlay.expect("help popup was drawn");
+        assert!(overlay.width > 0 && overlay.height > 0);
     }
 
     /// Keys and application events share one channel, so a second key the

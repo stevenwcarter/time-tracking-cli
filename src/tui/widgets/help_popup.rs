@@ -50,6 +50,15 @@ impl<'a> HelpPopup<'a> {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Where [`HelpPopup::render`] would draw its box in `area`.
+    ///
+    /// Recomputes the content rather than caching it: the popup is sized to
+    /// fit its rows, so the rect cannot be known without them, and this runs
+    /// once per frame on a table of about thirty entries.
+    pub fn popup_rect(&self, area: Rect) -> Rect {
+        popup_area(area, &self.content())
+    }
 }
 
 impl Widget for HelpPopup<'_> {
