@@ -30,7 +30,7 @@ export const useWeeklyTableData = (weekData: WeekData | undefined): WeeklyTableD
 
     // Sort dates
     const sortedDates = [...weekData.days].sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+      (a, b) => parseDateString(a.date).getTime() - parseDateString(b.date).getTime(),
     );
 
     // Create project data with hours for each date

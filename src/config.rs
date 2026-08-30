@@ -6,7 +6,7 @@ use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
 
@@ -379,7 +379,7 @@ fn synthetic_args() -> Args {
 /// Reads `config_path` if it exists, otherwise writes a freshly defaulted
 /// config there (plus its explanatory comments) and returns that default.
 #[cfg(feature = "cli")]
-fn load_or_create_config_file(config_path: &std::path::Path) -> Result<Config> {
+fn load_or_create_config_file(config_path: &Path) -> Result<Config> {
     if config_path.exists() {
         let content = fs::read_to_string(config_path)?;
         let config: Config = toml::from_str(&content)?;
@@ -472,6 +472,8 @@ fn resolve_requested_date(date_str: Option<String>) -> Date {
 }
 
 fn write_config_comments(file: &mut impl Write) -> Result<()> {
+    file.write_all(b"\n# Optional data directory where day files are stored\n")?;
+    file.write_all(b"#data_directory = \"~/.time-tracking\"\n")?;
     file.write_all(b"\n# Optional template file which will be used to create each new day note\n")?;
     file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
     file.write_all(
