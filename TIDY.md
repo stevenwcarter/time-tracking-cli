@@ -71,12 +71,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Delete site/src/components/BorderedTableCell.tsx outright; confirmed via `git grep -n BorderedTableCell` scoped to site/ — only the file's own definition matches, with no imports in App.tsx, WeeklySummary.tsx, or any other page or component.
 - [x] execute   [ ] skip
 
-### T17. Delete the now-unused getVariant export: `getVariant` (site/src/components/Button/ButtonTypes.ts:10-21)
-- Lenses: dead-code
-- Risk: low
-- Proposed fix: Delete `getVariant` (ButtonTypes.ts:10-21); confirmed via `grep -rn getVariant site/src` — the only non-definition hit is the commented-out call at site/src/components/Button/index.tsx:40 that T41 removes. Pair this with T41: either both land (delete the commented call and the helper) or neither, since the alternative resolution is to restore the call and actually wire the variant up.
-- [x] execute   [ ] skip
-
 ### T18. Remove the unread `content` dependency from the debounced-save effect: DateEditor save effect (site/src/components/DateEditor.tsx:55)
 - Lenses: idioms
 - Risk: low
