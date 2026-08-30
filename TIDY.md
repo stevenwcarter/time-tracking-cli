@@ -47,12 +47,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: `clear_cache` is `pub` in non-test code but its only caller is a `#[cfg(test)]` test (data_svc.rs:1139, inside `mod tests` at line 723); either delete it and rebuild that test to clear the cache via `invalidate_date` per key, or move it under `#[cfg(test)]` alongside the analogous test-only helpers already in this file (e.g. `parse_count`). Confirmed via `git grep -n 'clear_cache'` — only the definition and that one in-test call exist repo-wide. Public-API removal — needs an explicit decision before execution.
 - [ ] execute   [ ] skip
 
-### T25. Split get_weekly_summary into load, fold and finalize phases: `DataService::get_weekly_summary` (src/data_svc.rs:505-591, 87 lines)
-- Lenses: long-methods
-- Risk: low
-- Proposed fix: Extract `async fn load_days(&self, dates: &[Date]) -> Result<Vec<DayLoad>>` for the JoinSet spawn, collect and reorder (lines 506-528), `fn fold_day(summary: &mut WeeklySummary, week_projects: &mut HashMap<String, (u32, Vec<String>)>, day_date: Date, content: Option<String>, parsed: Option<TimeTrackingData>)` for the per-day accumulation (lines 531-563), and `fn finalize_projects(week_projects: HashMap<String, (u32, Vec<String>)>) -> Vec<WeeklyProject>` for the sort and collect (lines 566-577), so `get_weekly_summary` reads as three calls; T26 deletes the thin `get_weekly_data` wrapper just below at lines 597-599, and T39 extracts the same load/fold shape from `web.rs::aggregate_week_days`, so consider whether the two can share the fold once both are extracted.
-- [x] execute   [ ] skip
-
 ### T26. Delete or gate the test-only DataService::get_weekly_data wrapper: `DataService::get_weekly_data` (src/data_svc.rs:597-599)
 - Lenses: dead-code
 - Risk: medium

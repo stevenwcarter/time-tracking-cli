@@ -532,8 +532,29 @@ impl DataService {
     /// cache, so a week that is already cached costs no file reads and no
     /// reparses; a cold week pays for its slowest day rather than all seven.
     pub async fn get_weekly_summary(&self, dates: &[Date]) -> Result<WeeklySummary> {
-        // Load phase: one task per date. The dates are distinct, so no two
-        // tasks can race to parse the same day.
+        let loaded = self.load_week(dates).await?;
+
+        let mut summary = WeeklySummary::default();
+        let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+
+        // Fold phase: sequential, in date order.
+        for (_, day_date, content, parsed) in loaded {
+            fold_day_into_summary(&mut summary, &mut week_projects, day_date, content, parsed);
+        }
+
+        summary.projects = finalize_weekly_projects(week_projects);
+
+        Ok(summary)
+    }
+
+    /// Load phase of [`Self::get_weekly_summary`]: one task per date, each
+    /// reading and parsing through the per-date cache. The dates are
+    /// distinct, so no two tasks can race to parse the same day.
+    ///
+    /// Returned in the caller's `dates` order, which is what keeps the
+    /// per-day prefixes on warnings and project notes in day order once
+    /// folded.
+    async fn load_week(&self, dates: &[Date]) -> Result<Vec<DayLoad>> {
         let mut set = tokio::task::JoinSet::new();
         for (idx, &date) in dates.iter().enumerate() {
             let svc = self.clone();
@@ -555,68 +576,10 @@ impl DataService {
         while let Some(result) = set.join_next().await {
             loaded.push(result?);
         }
-        // Restore the caller's order before folding: the fold below is where
-        // the day prefixes on notes and warnings get their sequence.
+        // Restore the caller's order before folding: the fold is where the
+        // day prefixes on notes and warnings get their sequence.
         loaded.sort_unstable_by_key(|(idx, ..)| *idx);
-
-        let mut summary = WeeklySummary::default();
-        let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
-
-        // Fold phase: sequential, in date order.
-        for (_, day_date, content, parsed) in loaded {
-            let (Some(content), Some(data)) = (content, parsed) else {
-                summary.per_day.insert(day_date, 0);
-                summary.days.push((day_date, String::new(), None));
-                continue;
-            };
-
-            summary.total_minutes += data.total_minutes;
-            summary.dead_time_minutes += data.dead_time_minutes;
-            summary.per_day.insert(day_date, data.total_minutes);
-
-            for warning in &data.warnings {
-                if !warning.contains("Error parsing time range '#'") {
-                    // Skip markdown header warnings
-                    summary.warnings.push(format!(
-                        "{}: {}",
-                        format_day_with_date(&day_date),
-                        warning
-                    ));
-                }
-            }
-
-            for project in &data.projects {
-                let entry = week_projects
-                    .entry(project.name.clone())
-                    .or_insert((0, Vec::new()));
-                entry.0 += project.total_minutes;
-                for note in &project.notes {
-                    entry
-                        .1
-                        .push(format!("{}: {}", format_day_with_date(&day_date), note));
-                }
-            }
-
-            summary.days.push((day_date, content, Some(data)));
-        }
-
-        summary.projects = week_projects
-            .into_iter()
-            .map(|(name, (total_minutes, notes))| WeeklyProject {
-                name,
-                total_minutes,
-                notes,
-            })
-            .collect();
-        // Ties on minutes fall back to the name so the ordering is stable from
-        // run to run; iterating the `HashMap` alone is not.
-        summary.projects.sort_by(|a, b| {
-            b.total_minutes
-                .cmp(&a.total_minutes)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        Ok(summary)
+        Ok(loaded)
     }
 
     /// Working minutes per day for `dates`.
@@ -735,6 +698,77 @@ fn day_or_skip<T>(date: Date, result: Result<T>) -> Option<T> {
     result
         .inspect_err(|e| warn!("skipping the day file for {date}: {e:#}"))
         .ok()
+}
+
+/// Fold phase of [`DataService::get_weekly_summary`]: accumulate one day's
+/// load into the running `summary` and `week_projects` rollup.
+///
+/// A day with neither content nor a parse (no file on disk, or unreadable)
+/// counts as a zero day rather than being dropped from `summary.days`, so the
+/// week's day list always has one entry per requested date.
+fn fold_day_into_summary(
+    summary: &mut WeeklySummary,
+    week_projects: &mut HashMap<String, (u32, Vec<String>)>,
+    day_date: Date,
+    content: Option<String>,
+    parsed: Option<TimeTrackingData>,
+) {
+    let (Some(content), Some(data)) = (content, parsed) else {
+        summary.per_day.insert(day_date, 0);
+        summary.days.push((day_date, String::new(), None));
+        return;
+    };
+
+    summary.total_minutes += data.total_minutes;
+    summary.dead_time_minutes += data.dead_time_minutes;
+    summary.per_day.insert(day_date, data.total_minutes);
+
+    for warning in &data.warnings {
+        if !warning.contains("Error parsing time range '#'") {
+            // Skip markdown header warnings
+            summary
+                .warnings
+                .push(format!("{}: {}", format_day_with_date(&day_date), warning));
+        }
+    }
+
+    for project in &data.projects {
+        let entry = week_projects
+            .entry(project.name.clone())
+            .or_insert((0, Vec::new()));
+        entry.0 += project.total_minutes;
+        for note in &project.notes {
+            entry
+                .1
+                .push(format!("{}: {}", format_day_with_date(&day_date), note));
+        }
+    }
+
+    summary.days.push((day_date, content, Some(data)));
+}
+
+/// Finalize phase of [`DataService::get_weekly_summary`]: turn the
+/// project-rollup map into the sorted [`WeeklyProject`] list.
+///
+/// Ties on minutes fall back to the name so the ordering is stable from run
+/// to run; iterating the `HashMap` alone is not.
+fn finalize_weekly_projects(
+    week_projects: HashMap<String, (u32, Vec<String>)>,
+) -> Vec<WeeklyProject> {
+    let mut projects: Vec<WeeklyProject> = week_projects
+        .into_iter()
+        .map(|(name, (total_minutes, notes))| WeeklyProject {
+            name,
+            total_minutes,
+            notes,
+        })
+        .collect();
+    projects.sort_by(|a, b| {
+        b.total_minutes
+            .cmp(&a.total_minutes)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    projects
 }
 
 /// The date a day file's name encodes, or `None` for anything else that
