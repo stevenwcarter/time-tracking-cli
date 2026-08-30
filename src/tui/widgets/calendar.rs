@@ -67,17 +67,20 @@ impl<'a> Calendar<'a> {
             return None;
         }
 
-        // " Su Mo Tu ..." — a one-column gutter, then two columns per day.
-        // Each day is a fixed two-character run (`Monthly` formats it with
-        // `{:2?}`): `column % 3 == 0` is the gutter and `== 2` is the run's
-        // second character. Only `== 1`, the run's first column, is a hit —
-        // `date_at_agrees_with_what_monthly_actually_drew` reads two
-        // characters forward from whatever position this returns, and
-        // that read only lines up with the day's digits from the run's
-        // start; from the second column it would read half a two-digit
-        // day plus the gutter after it.
+        // " Su Mo Tu ..." — a one-column gutter, then a two-column run per
+        // day. Only the gutter (`column.is_multiple_of(3)`) belongs to no day; **both**
+        // columns of the run are the same day and must both be clickable.
+        //
+        // This deliberately does not accept only the run's first column.
+        // `Monthly` right-aligns each day into its two columns
+        // (`format!("{:2?}", day)`), so a single-digit day draws its only
+        // visible character in the *second* column — accepting just the first
+        // left every day from the 1st to the 9th unclickable on the digit
+        // itself, while the blank beside it worked. That was a real shipped
+        // bug, reported as "only some of the calendar accepts clicks"; see
+        // `a_single_digit_day_is_clickable_on_its_digit`.
         let column = x - inner.x;
-        if column % 3 != 1 {
+        if column.is_multiple_of(3) {
             return None;
         }
         let weekday_index = column / 3;
@@ -155,21 +158,51 @@ mod tests {
         buf
     }
 
-    /// The two-character day number drawn at (`x`, `y`), or `None` if that
-    /// cell is not the start of one.
-    fn day_number_at(buf: &Buffer, x: u16, y: u16) -> Option<u32> {
-        let text: String = (x..x + 2).map(|cx| buf[(cx, y)].symbol()).collect();
+    /// The day number drawn in the two-character run that *contains* column
+    /// `x`, or `None` when `x` is a gutter column or the run holds no digits.
+    ///
+    /// Reads from the run's start rather than from `x`, which is the whole
+    /// point: `Monthly` right-aligns each day into two columns
+    /// (`format!("{:2?}", day)`), so a single-digit day puts its only visible
+    /// character in the run's *second* column. A helper that read two
+    /// characters forward from an arbitrary `x` could only parse a run from
+    /// its first column — and an earlier version of this file narrowed
+    /// `date_at` itself to match that limitation, which is exactly the bug
+    /// this pair of functions now exists to prevent.
+    fn day_in_run_at(buf: &Buffer, area: Rect, x: u16, y: u16) -> Option<u32> {
+        let inner_x = area.x + 1;
+        let column = x.checked_sub(inner_x)?;
+        if column.is_multiple_of(3) {
+            // The gutter between two day cells belongs to neither.
+            return None;
+        }
+        let run_start = inner_x + (column / 3) * 3 + 1;
+        // A run clipped by the buffer's right edge is not a drawn day.
+        let run_end = run_start.checked_add(2)?;
+        if run_end > buf.area.right() {
+            return None;
+        }
+        let text: String = (run_start..run_end)
+            .map(|cx| buf[(cx, y)].symbol())
+            .collect();
         text.trim().parse().ok()
     }
 
     /// The load-bearing test for this whole feature.
     ///
     /// `Monthly` exposes no hit-test, so `date_at` replicates its geometry.
-    /// This walks every cell of a real rendered calendar and asserts that
-    /// wherever `date_at` claims a date, the digits actually on screen are
-    /// that date's day number. If ratatui ever changes `Monthly`'s layout
-    /// this fails loudly, instead of the app silently jumping to a day the
-    /// user did not click.
+    /// This walks every cell of the day grid and asserts agreement **in both
+    /// directions**: every cell `date_at` claims shows that day's number, and
+    /// every cell showing a day number is claimed by `date_at`.
+    ///
+    /// The second direction is the one that matters and the one an earlier
+    /// version of this test lacked. It skipped rejected cells with a
+    /// `continue`, so narrowing `date_at` to claim fewer cells passed
+    /// trivially — and that is precisely what happened: `date_at` was
+    /// restricted to the first column of each two-character day run, which
+    /// left every single-digit day unclickable on its only visible character,
+    /// because `Monthly` right-aligns days into their two columns. The suite
+    /// stayed green while half the calendar ignored clicks.
     #[test]
     fn date_at_agrees_with_what_monthly_actually_drew() {
         let active = date!(2025 - 06 - 11);
@@ -178,27 +211,77 @@ mod tests {
         let populated: Vec<Date> = Vec::new();
         let calendar = Calendar::new(active, &populated, &theme);
 
+        // One row of block padding, then the month header, then the weekday
+        // header. Split here rather than parsing every row, because the month
+        // header legitimately contains digits ("June 2025") that are not days.
+        // An off-by-one in `date_at`'s own grid origin is still caught below:
+        // it would attribute each screen row to the wrong week and the day
+        // numbers would stop matching.
+        let grid_y = AREA.y + 3;
+
         let mut matched = 0;
         for y in AREA.y..AREA.y + AREA.height {
             for x in AREA.x..AREA.x + AREA.width {
-                let Some(hit) = calendar.date_at(AREA, x, y) else {
+                let hit = calendar.date_at(AREA, x, y).map(|d| u32::from(d.day()));
+                if y < grid_y {
+                    assert_eq!(hit, None, "({x},{y}) is a header row, not a day");
                     continue;
-                };
-                let drawn = day_number_at(&buf, x, y).unwrap_or_else(|| {
-                    panic!("date_at claimed {hit} at ({x},{y}) but no day number is drawn there")
-                });
+                }
+                let drawn = day_in_run_at(&buf, AREA, x, y);
                 assert_eq!(
-                    u32::from(hit.day()),
-                    drawn,
-                    "date_at said {hit} at ({x},{y}) but the screen shows {drawn}"
+                    hit, drawn,
+                    "disagreement at ({x},{y}): date_at says {hit:?}, the screen shows {drawn:?}"
                 );
-                matched += 1;
+                if hit.is_some() {
+                    matched += 1;
+                }
             }
         }
+        // Two columns per day across a month, so a correct implementation
+        // matches far more than the day count. A number near 30 would mean
+        // only one column per day is being claimed — the original bug.
         assert!(
-            matched >= 28,
-            "expected to hit at least a month of days, only matched {matched}"
+            matched >= 56,
+            "expected both columns of ~28+ days to be clickable, only matched {matched}"
         );
+    }
+
+    /// A single-digit day must be clickable on the digit itself.
+    ///
+    /// `Monthly` right-aligns into two columns, so day 5 renders as `" 5"` and
+    /// its only visible character sits in the run's *second* column. The
+    /// original `date_at` accepted only the first, so clicking the number did
+    /// nothing while clicking the blank beside it worked — the user-visible
+    /// symptom that "only some of the calendar accepts clicks".
+    #[test]
+    fn a_single_digit_day_is_clickable_on_its_digit() {
+        let active = date!(2025 - 06 - 11);
+        let buf = render_calendar(active);
+        let theme = Theme::none();
+        let populated: Vec<Date> = Vec::new();
+        let calendar = Calendar::new(active, &populated, &theme);
+
+        // Find the cell whose rendered symbol is the lone digit of day 5.
+        let mut found = false;
+        for y in AREA.y..AREA.y + AREA.height {
+            for x in AREA.x..AREA.x + AREA.width {
+                if buf[(x, y)].symbol() != "5" {
+                    continue;
+                }
+                // Only the June 5th cell, not the "5" inside "15" or "25":
+                // those have a digit immediately to their left.
+                if x > AREA.x && buf[(x - 1, y)].symbol().trim().is_empty() {
+                    let hit = calendar.date_at(AREA, x, y);
+                    assert_eq!(
+                        hit.map(|d| d.day()),
+                        Some(5),
+                        "clicking the visible digit of a single-digit day at ({x},{y}) must select it"
+                    );
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "the fixture month must contain a single-digit day");
     }
 
     /// `Monthly` always starts its weeks on Sunday, whatever the app's
