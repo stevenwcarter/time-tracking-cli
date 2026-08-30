@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { toast } from 'react-toastify';
 import { useNavigate } from 'react-router';
+import { copyNotesToClipboard } from 'utils/clipboard';
 
 interface Project {
   name: string;
@@ -125,26 +125,9 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
   };
 
   // Helper function to copy notes to clipboard
-  const copyNotesToClipboard = async (projectName: string, date: string) => {
+  const copyDayNotes = async (projectName: string, date: string) => {
     const notes = getNotesForProjectDate(projectName, date);
-    const formattedNotes = formatNotesTooltip(notes);
-
-    try {
-      await navigator.clipboard.writeText(formattedNotes);
-      toast.success('Notes copied to clipboard!', {
-        position: 'top-right',
-        autoClose: 2000,
-        hideProgressBar: false,
-        closeOnClick: true,
-        pauseOnHover: true,
-        draggable: true,
-      });
-    } catch (err) {
-      toast.error('Failed to copy to clipboard', {
-        position: 'top-right',
-        autoClose: 2000,
-      });
-    }
+    await copyNotesToClipboard(notes, 'Notes copied to clipboard!');
   };
 
   if (!weekData) {
@@ -215,9 +198,7 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
                       key={date}
                       className={`border border-gray-600 p-3 text-center relative group ${hasHours ? 'cursor-pointer hover:bg-gray-700' : ''}`}
                       title={tooltipText}
-                      onClick={
-                        hasHours ? () => copyNotesToClipboard(project.name, date) : undefined
-                      }
+                      onClick={hasHours ? () => copyDayNotes(project.name, date) : undefined}
                     >
                       {hasHours ? project.dates[date].toFixed(2) : '-'}
                       {/* Tooltip */}

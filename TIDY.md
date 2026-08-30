@@ -71,12 +71,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Extract `async fn spawn_webserver_if_configured(config: &Config, set: &mut JoinSet<()>, rx: ...) -> bool` for the `#[cfg(feature = "webapp")]` block (lines 43-62), `async fn show_report(config: &Config, week_start_weekday: Weekday) -> Result<()>` to replace both verbatim copies of the weekly/single-day dispatch (lines 82-88 and the `#[cfg(not(feature = "tui"))]` copy at 94-100), and `async fn wait_for_background_tasks(set: JoinSet<()>, webserver_running: bool) -> Result<()>` for lines 103-113; the doc-fixer queue independently deletes redundant comments at lines 83, 86, 95 and 98 and relocates the misplaced "Load configuration…" comment at lines 15-16, so those exact lines may already have shifted when this runs, and T40 fixes a typo at line 19 inside the same function.
 - [x] execute   [ ] skip
 
-### T20. Extract a shared clipboard-copy-with-toast helper: `copyProjectNotesToClipboard` / `copyNotesToClipboard` (site/src/components/DateSummary.tsx:22, +1 site)
-- Lenses: duplication
-- Risk: medium
-- Proposed fix: site/src/components/DateSummary.tsx:22-43 (`copyProjectNotesToClipboard`) and site/src/components/WeeklySummary.tsx:119-145 (`formatNotesTooltip` at 119 plus `copyNotesToClipboard` at 125) both join notes as `- ${note}` lines, `await navigator.clipboard.writeText(...)`, then fire `toast.success(msg, { position: 'top-right', autoClose: 2000, ... })` on success or `toast.error('Failed to copy to clipboard', { ... })` on failure; extract `copyNotesToClipboard(notes: string[], successMessage: string): Promise<void>` into site/src/utils/clipboard.ts with each caller supplying its own notes array and success message, leaving DateSummary's empty-notes early return and WeeklySummary's 'No notes for this day' tooltip fallback as caller-side concerns. Run this before T3, which restructures the WeeklySummary.tsx site into a `useNotesLookup` hook.
-- [x] execute   [ ] skip
-
 ### T21. Stop panicking in Config::default() when the home directory can't be resolved: `Config::default` (src/config.rs:188)
 - Lenses: idioms, opportunistic
 - Risk: medium
