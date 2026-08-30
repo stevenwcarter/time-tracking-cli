@@ -59,12 +59,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 
 ## Medium severity
 
-### T9. Drop the unused serde_json dependency: `serde_json` (Cargo.toml:71)
-- Lenses: dead-code
-- Risk: high
-- Proposed fix: Remove the `serde_json` dependency (Cargo.toml:71) and its entry in the `webapp` feature list (Cargo.toml:21); confirmed via `cargo machete` (flags it) and `git grep -n serde_json -- src cli/src build.rs` (zero hits) — web.rs and graphql.rs serialize through axum's `Json<T>` with `serde::{Deserialize, Serialize}`, never `serde_json` directly. Verify with `just gate`, since the `webapp`-only feature combination is the one at risk.
-- [x] execute   [ ] skip
-
 ### T10. Drop the unused juniper_graphql_ws dependency: `juniper_graphql_ws` (Cargo.toml:72)
 - Lenses: dead-code
 - Risk: high

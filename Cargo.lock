@@ -2745,7 +2745,6 @@ dependencies = [
  "ratatui",
  "rust-embed",
  "serde",
- "serde_json",
  "tempfile",
  "time",
  "time-tracking-parser",
