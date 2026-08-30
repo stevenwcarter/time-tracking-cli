@@ -415,7 +415,7 @@ mod tests {
     use crate::tui::app::{App, LOADING_MESSAGE};
     use crate::tui::context::TuiContext;
     use crate::tui::mode::Mode;
-    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
+    use crate::tui::testing::{fixture_date, fixture_day, render_to_string, row_containing};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -883,15 +883,44 @@ mod tests {
         assert!(row.contains("18:00"), "got: {row:?}");
     }
 
+    /// The load-bearing test for this pane's hit-test, the same shape as
+    /// the day list's: wherever `index_at` claims a project is, that is
+    /// where the pane actually drew it.
+    ///
+    /// Rows are read back off a rendered buffer rather than off a
+    /// hand-built `Rect`, which is the difference that matters — a
+    /// hand-built rect agreed with a hit-test that sat three rows above
+    /// the first project row, because `render` spends two rows on the
+    /// totals block and one more on the list's own title bar.
     #[test]
-    fn index_at_maps_rows_one_for_one() {
-        let state = WeekListState::default();
-        let area = Rect::new(0, 4, 60, 10);
-        assert_eq!(state.index_at(area, 4, 3), Some(0));
-        assert_eq!(state.index_at(area, 5, 3), Some(1));
-        assert_eq!(state.index_at(area, 6, 3), Some(2));
-        assert_eq!(state.index_at(area, 7, 3), None, "past the last project");
-        assert_eq!(state.index_at(area, 3, 3), None, "above the list");
+    fn index_at_agrees_with_the_rows_the_pane_drew() {
+        let summary = fixture_week_summary();
+        let theme = Theme::none();
+        let area = Rect::new(0, 3, 60, 14);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 20));
+        let mut state = WeekListState::default();
+        StatefulWidget::render(
+            WeekListWidget::new(&summary, &theme),
+            area,
+            &mut buf,
+            &mut state,
+        );
+
+        let count = summary.projects.len();
+        for (index, project) in summary.projects.iter().enumerate() {
+            let y = row_containing(&buf, &project.name);
+            assert_eq!(
+                state.index_at(area, y, count),
+                Some(index),
+                "`{}` is drawn on row {y}",
+                project.name
+            );
+        }
+        assert_eq!(
+            state.index_at(area, area.y, count),
+            None,
+            "the totals block above the list is not a project row"
+        );
     }
 
     #[test]

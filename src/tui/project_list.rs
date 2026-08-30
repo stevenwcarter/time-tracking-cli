@@ -696,7 +696,9 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
     use crate::tui::context::TuiContext;
-    use crate::tui::testing::{fixture_day, fixture_day_with_notes, render_to_string};
+    use crate::tui::testing::{
+        fixture_day, fixture_day_with_notes, render_to_string, row_containing,
+    };
     use crate::tui::ui::MIN_ROWS;
     use time_tracking_parser::ProjectSummary;
 
@@ -996,13 +998,11 @@ mod tests {
         );
     }
 
-    /// Rows are variable-height — `render_list` builds each item from
-    /// `clamp_item_rows(body(width), viewport_rows)` — so a click maps to an
-    /// index by walking heights, not by dividing. A day whose projects have
-    /// different note counts is what tells the two apart.
-    #[test]
-    fn index_at_walks_variable_row_heights() {
-        let data = TimeTrackingData {
+    /// A day whose projects have different note counts: rows are
+    /// variable-height, since `render_list` builds each item from
+    /// `clamp_item_rows(body(width), viewport_rows)`.
+    fn uneven_day() -> TimeTrackingData {
+        TimeTrackingData {
             total_minutes: 180,
             dead_time_minutes: 0,
             projects: vec![
@@ -1013,29 +1013,55 @@ mod tests {
             warnings: Vec::new(),
             start_time: None,
             end_time: None,
-        };
-        let theme = Theme::none();
-        let widget = ProjectListWidget::new(&data, &theme);
-        let area = Rect::new(0, 0, 60, 30);
-
-        let mut hits: Vec<usize> = Vec::new();
-        for y in area.y..area.y + area.height {
-            if let Some(i) = widget.index_at(area, y)
-                && !hits.contains(&i)
-            {
-                hits.push(i);
-            }
         }
-        assert_eq!(hits, vec![0, 1, 2], "each project reachable, in order");
     }
 
+    /// The load-bearing test for this pane's hit-test: wherever `index_at`
+    /// claims a project is, that is where the pane actually drew it.
+    ///
+    /// The row is read back off a rendered buffer rather than derived from
+    /// `area` — a hit-test checked against a hand-built `Rect` is checked
+    /// against its own arithmetic and agrees with a wrong answer as
+    /// readily as with a right one. What it missed: `render` splits the
+    /// pane into a header band and a list, and `index_at` was resolving
+    /// rows against the *pane*, so every click landed some projects short.
+    ///
+    /// Variable row heights are part of the same assertion: an index that
+    /// was divided out of `y` rather than walked would disagree here too.
     #[test]
-    fn index_at_ignores_clicks_above_the_first_row() {
+    fn index_at_agrees_with_the_rows_the_list_drew() {
+        let data = uneven_day();
         let theme = Theme::none();
-        let widget = ProjectListWidget::new(&fixture_day(), &theme);
-        let area = Rect::new(0, 5, 60, 30);
-        // The list's title row.
-        assert_eq!(widget.index_at(area, 5), None);
+        let mut widget = ProjectListWidget::new(&data, &theme);
+        let area = Rect::new(0, 2, 60, 28);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 32));
+        (&mut widget).render(area, &mut buf);
+
+        for (index, project) in data.projects.iter().enumerate() {
+            let y = row_containing(&buf, &project.name);
+            assert_eq!(
+                widget.index_at(area, y),
+                Some(index),
+                "`{}` is drawn on row {y}",
+                project.name
+            );
+        }
+    }
+
+    /// The pane rect starts at the header band, not at the first project
+    /// row, so a click on "Start Time:" resolves to nothing.
+    #[test]
+    fn index_at_ignores_clicks_in_the_header_band() {
+        let data = uneven_day();
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&data, &theme);
+        let area = Rect::new(0, 5, 60, 28);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 34));
+        (&mut widget).render(area, &mut buf);
+
+        let header = row_containing(&buf, "Start Time:");
+        assert_eq!(widget.index_at(area, header), None);
+        assert_eq!(widget.index_at(area, area.y), None, "the pane's first row");
     }
 
     #[test]

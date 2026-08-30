@@ -2060,7 +2060,8 @@ fn shift_months(date: Date, offset: i32) -> Result<Date> {
 mod tests {
     use super::*;
     use crate::data_svc::WeeklyProject;
-    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
+    use crate::tui::testing::{fixture_date, fixture_day, render_to_string, row_of};
+    use crate::tui::week_list::fixture_week_summary as fixture_week_rollup;
     use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
     use std::{
         sync::{Arc, Mutex},
@@ -4007,19 +4008,80 @@ mod tests {
         assert_eq!(app.active_date, expected);
     }
 
-    #[test]
-    fn clicking_a_project_row_selects_it() {
-        let mut app = day_app();
-        let _ = render_to_string(&mut app, 120, 40);
-        let list = app.layout.project_list.expect("list drawn");
+    /// The week pane on screen with a landed three-project rollup —
+    /// client-bd, internal, admin, in that order.
+    fn week_app() -> App {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_weekly_summary(fixture_week_rollup());
+        app.mode = Mode::Week;
+        app
+    }
 
-        // The second row of the list body.
-        app.handle_mouse_event(click(list.x + 1, list.y + 1))
+    /// `ProjectListWidget::new` pre-selects row 0, so "something is
+    /// selected" is already true before any click and would hold with the
+    /// whole click path deleted. This pins the resulting index against the
+    /// project name actually drawn under the cursor.
+    #[test]
+    fn clicking_a_project_row_selects_that_project() {
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+        // The fixture's *third* project, so no header-sized offset can land
+        // on it by coincidence.
+        let y = row_of(&screen, "internal");
+
+        app.handle_mouse_event(click(list.x + 1, y)).expect("mouse");
+
+        assert_eq!(
+            selection(&app),
+            Some(2),
+            "the row drawing `internal` is project 2:\n{screen}"
+        );
+        assert_ne!(before, selection(&app), "the click moved the selection");
+    }
+
+    /// The same assertion for the week pane, which had no click test at
+    /// all: its rows sat three below where its hit-test looked for them.
+    #[test]
+    fn clicking_a_week_project_row_selects_that_project() {
+        let mut app = week_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        let before = app.week_list.selected();
+        let y = row_of(&screen, "admin");
+
+        app.handle_mouse_event(click(pane.x + 1, y)).expect("mouse");
+
+        assert_eq!(
+            app.week_list.selected(),
+            Some(2),
+            "the row drawing `admin` is the rollup's third project:\n{screen}"
+        );
+        assert_ne!(
+            before,
+            app.week_list.selected(),
+            "the click moved the selection"
+        );
+    }
+
+    /// The pane rect starts at its totals block, not at its first project
+    /// row, so a click on "Working Time:" resolves to nothing.
+    #[test]
+    fn clicking_the_week_totals_header_selects_nothing() {
+        let mut app = week_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        app.week_list.select_index(2);
+
+        app.handle_mouse_event(click(pane.x + 1, pane.y))
             .expect("mouse");
 
-        assert!(
-            selection(&app).is_some(),
-            "a click in the list must select something"
+        assert_eq!(
+            app.week_list.selected(),
+            Some(2),
+            "the totals header is not a project row:\n{screen}"
         );
     }
 
@@ -4067,15 +4129,18 @@ mod tests {
     #[test]
     fn double_clicking_a_project_row_queues_an_edit() {
         let mut app = day_app();
-        let _ = render_to_string(&mut app, 120, 40);
+        let screen = render_to_string(&mut app, 120, 40);
         let list = app.layout.project_list.expect("list drawn");
+        let y = row_of(&screen, "client-bd");
 
-        app.handle_mouse_event(click(list.x + 1, list.y + 1))
-            .expect("first");
-        app.handle_mouse_event(click(list.x + 1, list.y + 1))
-            .expect("second");
+        app.handle_mouse_event(click(list.x + 1, y)).expect("first");
+        app.handle_mouse_event(click(list.x + 1, y)).expect("second");
 
-        assert!(selection(&app).is_some());
+        assert_eq!(
+            selection(&app),
+            Some(1),
+            "the double click selects the row it landed on as well:\n{screen}"
+        );
         let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
         assert!(
             queued
@@ -4167,6 +4232,67 @@ mod tests {
             .expect("mouse");
 
         assert_ne!(before, selection(&app), "the wheel moved the selection");
+    }
+
+    #[test]
+    fn the_wheel_moves_the_week_selection() {
+        let mut app = week_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        let before = app.week_list.selected();
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, pane.x + 1, pane.y + 1))
+            .expect("mouse");
+
+        assert_ne!(
+            before,
+            app.week_list.selected(),
+            "the wheel moved the week selection"
+        );
+    }
+
+    /// The one region where the wheel is not list movement: the raw pane
+    /// scrolls a viewport, so the events have to reach `raw_scroll`.
+    #[test]
+    fn the_wheel_scrolls_the_raw_file_pane() {
+        let mut app = day_app();
+        app.raw_content = Some(
+            (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.mode = Mode::RawFile;
+        let _ = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.raw_file.expect("raw pane drawn");
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, pane.x + 1, pane.y + 1))
+            .expect("down");
+        assert_eq!(app.raw_scroll, 1, "the wheel scrolled the raw pane down");
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollUp, pane.x + 1, pane.y + 1))
+            .expect("up");
+        assert_eq!(app.raw_scroll, 0, "and back up again");
+    }
+
+    /// An overlay is modal for the wheel exactly as it is for clicks and
+    /// keys: a scroll over a list behind an open popup must not move it.
+    #[test]
+    fn the_wheel_is_ignored_while_an_overlay_is_open() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, list.x + 1, list.y + 1))
+            .expect("mouse");
+
+        assert_eq!(
+            before,
+            selection(&app),
+            "the popup swallowed the wheel event"
+        );
     }
 
     /// Nothing was drawn, so nothing is hittable — the guard that keeps a
