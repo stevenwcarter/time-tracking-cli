@@ -365,16 +365,20 @@ impl DataService {
         self.ensure_data_dir().await?;
         let file_path = self.get_file_path(*date).await?;
 
+        // `create_template_content` can do real I/O (reading a configured
+        // template file) and can fail. It is built *before* the file is
+        // opened so a broken template path (missing or unreadable
+        // `template_file`) never leaves a zero-byte day file behind: every
+        // later call would see that empty file, take the AlreadyExists arm
+        // below, and never apply the template even after the path is fixed.
+        let template_content =
+            create_template_content(date, self.parse_opts.template_file()).await?;
+
         // create_new is atomic: it either creates the file or fails with
         // AlreadyExists. An exists()-then-write pair leaves a window in
         // which another writer (a second ttcli, the TUI, the web server)
         // creates and fills the file, and our template write then truncates
         // their content back to empty.
-        //
-        // `create_template_content` can do real I/O (reading a configured
-        // template file) and can fail, so it stays inside the success arm:
-        // an existing file must never pay for it, and a broken template
-        // path must never turn an already-created day into an error.
         match fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -383,9 +387,15 @@ impl DataService {
         {
             Ok(mut file) => {
                 use tokio::io::AsyncWriteExt as _;
-                let template_content =
-                    create_template_content(date, self.parse_opts.template_file()).await?;
                 file.write_all(template_content.as_bytes()).await?;
+                // `tokio::fs::File` buffers writes onto a blocking-pool task
+                // and has no `Drop` impl that waits for them: an unflushed
+                // write can still be in flight (or have failed) when this
+                // function returns and the caller opens `$EDITOR` on the
+                // path. `flush` is what actually runs the write and surfaces
+                // its `io::Result` — `write_all` alone can return `Ok` before
+                // either happens.
+                file.flush().await?;
 
                 // Invalidate cache since we just created the file
                 self.invalidate_date(date).await;
@@ -1318,6 +1328,96 @@ mod tests {
         assert_eq!(
             after, "real user content\n",
             "template write clobbered real content"
+        );
+    }
+
+    /// The template's bytes must actually be on disk when the call returns,
+    /// not merely handed to `write_all`. `tokio::fs::File` has no `Drop` impl
+    /// that waits for outstanding writes — without an explicit `flush`, the
+    /// real write (and its `io::Result`) can still be in flight, or can have
+    /// failed silently, after this function has already returned `Ok`. Both
+    /// call sites (`display::mod` and the TUI) open `$EDITOR` on the path
+    /// immediately afterwards, so the content has to be there by the time
+    /// this returns, not merely soon.
+    #[tokio::test]
+    async fn a_configured_template_lands_in_the_created_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let template_path = dir.path().join("template.md");
+        tokio::fs::write(&template_path, "## {date}\n\n- \n")
+            .await
+            .unwrap();
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().join("days"),
+            ParseSettings {
+                prefix: None,
+                suffix: None,
+                template_file: Some(template_path.to_str().unwrap().to_string()),
+            },
+        );
+        let test_date = date!(2026 - 08 - 29);
+
+        let file_path = service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(
+            content, "## 2026-08-29\n\n- \n",
+            "the template's bytes must be on disk, byte-for-byte, not just requested"
+        );
+    }
+
+    /// A template read that fails must not leave a permanent empty day file.
+    ///
+    /// The file used to be created *before* `create_template_content` ran, so
+    /// a broken `template_file` (missing, or otherwise unreadable) left a
+    /// zero-byte day file on disk even though the call returned `Err`. Every
+    /// later call then took the `AlreadyExists` arm and skipped the template
+    /// entirely — the failure became permanent and silent, and fixing the
+    /// template path afterwards changed nothing.
+    #[tokio::test]
+    async fn a_broken_template_path_leaves_no_day_file_behind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing_template = dir.path().join("no-such-template.md");
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().join("days"),
+            ParseSettings {
+                prefix: None,
+                suffix: None,
+                template_file: Some(missing_template.to_str().unwrap().to_string()),
+            },
+        );
+        let test_date = date!(2026 - 08 - 29);
+
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .expect_err("a missing template file must fail the call");
+
+        let file_path = service.get_file_path(test_date).await.unwrap();
+        assert!(
+            !file_path.exists(),
+            "a failed template read must not leave a day file behind"
+        );
+
+        // Fix the template and retry. Because the first call never created a
+        // file, this must take the create arm and apply the template, not
+        // the AlreadyExists arm that would silently skip it.
+        tokio::fs::write(&missing_template, "fixed template for {date}\n")
+            .await
+            .unwrap();
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(
+            content, "fixed template for 2026-08-29\n",
+            "a later call with a fixed template must still apply it"
         );
     }
 
