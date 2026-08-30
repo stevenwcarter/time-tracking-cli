@@ -21,12 +21,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Extract a `useWeeklyTableData(weekData)` hook for the `tableData` useMemo (lines 41-93), a `useNotesLookup(weekData)` hook for `daysByDate` / `notesByDate` / `getNotesForProjectDate` / `formatNotesTooltip` / `copyNotesToClipboard` (lines 96-145), and subcomponents `ProjectRow` (lines 202-234) and `DailyTotalsRow` (lines 236-249) taking the derived data as props, leaving WeeklySummary to compose the hooks plus the `<table>` shell; coordinate with T20, which lifts the clipboard/toast body out of lines 119-145 into a shared `site/src/utils/clipboard.ts` — run T20 first and have `useNotesLookup` call that helper — and note the doc-fixer queue also rewrites the comment at line 85, so those lines may already have moved.
 - [x] execute   [ ] skip
 
-### T5. Default the weekly route's week from a local date, not UTC: `WeeklySummaryPage` fallback date (site/src/page/WeeklySummaryPage.tsx:8)
-- Lenses: opportunistic
-- Risk: high — needs characterization tests first
-- Proposed fix: Blocked by T42 — compute the default day with the shared local-date helper T42 introduces and pass a local `YYYY-MM-DD` string into `useWeekData`, instead of handing it a raw `new Date()` that `useWeekData` / `useDateData` then format with `toISOString().split('T')[0]`, which shows next week's data to evening users behind UTC.
-- [x] execute   [ ] skip
-
 ### T6. Split Config::load into arg synthesis, file load-or-create, overrides and date resolution: `Config::load` (src/config.rs:248-358, 111 lines)
 - Lenses: long-methods
 - Risk: high — needs characterization tests first
