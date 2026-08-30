@@ -118,6 +118,15 @@ fn combine_results<T>(body: Result<T>, restore: Result<()>) -> Result<T> {
 /// body's error is what the caller sees, but the terminal is put back
 /// either way. Returning early on a body error would leave a cooked
 /// terminal under a running TUI.
+///
+/// A failure of [`TerminalModes::leave`] *does* skip the re-enter, and
+/// deliberately: `leave` is the pair of `enter`, so re-entering modes that
+/// were never fully left is a worse guess than leaving them as they are,
+/// and the error is reported rather than swallowed. The cost is real but
+/// bounded — a partial leave (say `DisableMouseCapture` writing but
+/// `disable_raw_mode` failing) leaves mouse capture off for the rest of the
+/// session with nothing to turn it back on. Nothing is stranded: the
+/// process still exits through `ratatui::restore`.
 pub async fn with_suspended_terminal<B, T, F, Fut>(
     events: &mut EventHandler,
     terminal: &mut Terminal<B>,

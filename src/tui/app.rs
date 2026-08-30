@@ -20,7 +20,7 @@ use super::{
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
-    week_list::WeekListState,
+    week_list::{WeekListState, WeekListWidget},
     widgets::{Calendar, date_prompt},
 };
 use anyhow::{Context, Result};
@@ -1473,13 +1473,26 @@ impl App {
 
         if hits(self.layout.week_list, x, y) {
             let area = self.layout.week_list.expect("hits confirmed Some");
-            // `weekly_summary` is the rollup `week_projects` reads; `weekly_data`
-            // is the bar chart's per-day minutes and has no project list.
-            // Going through `week_projects` also means a click cannot select
-            // into last week's list once `week_is_stale` says this week's
-            // rollup is not the one on screen.
-            let count = week_projects(self.weekly_summary.as_ref(), self.week_is_stale()).len();
-            if let Some(index) = self.week_list.index_at(area, y, count) {
+            // `weekly_summary` is the rollup the pane draws; `weekly_data` is
+            // the bar chart's per-day minutes and has no project list. The
+            // staleness filter is the same guard `week_projects` applies to
+            // every other reader, so a click cannot select into last week's
+            // list once `week_is_stale` says this week's rollup is not the
+            // one on screen.
+            //
+            // Hit-tested through a `WeekListWidget`, which owns the pane's
+            // totals/list/warnings split, rather than re-deriving that split
+            // here. Resolved into a local first so the rollup's borrow ends
+            // before `select_index` takes `&mut self.week_list`.
+            let stale = self.week_is_stale();
+            let index = self
+                .weekly_summary
+                .as_ref()
+                .filter(|_| !stale)
+                .and_then(|summary| {
+                    WeekListWidget::new(summary, &self.ctx.theme).index_at(area, y, &self.week_list)
+                });
+            if let Some(index) = index {
                 self.week_list.select_index(index);
                 self.dirty = true;
             }
@@ -4134,7 +4147,8 @@ mod tests {
         let y = row_of(&screen, "client-bd");
 
         app.handle_mouse_event(click(list.x + 1, y)).expect("first");
-        app.handle_mouse_event(click(list.x + 1, y)).expect("second");
+        app.handle_mouse_event(click(list.x + 1, y))
+            .expect("second");
 
         assert_eq!(
             selection(&app),
