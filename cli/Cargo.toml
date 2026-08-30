@@ -16,6 +16,10 @@ tui = ["time-tracking-cli/tui"]
 [dependencies]
 time-tracking-cli = { path = "..", default-features = false }
 anyhow = "1.0.100"
+# Only used to name `time::Weekday` in `show_report`'s signature; already
+# pulled in transitively via time-tracking-cli, so this adds no crate to
+# the dependency graph.
+time = "0.3.44"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1.41"
 

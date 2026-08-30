@@ -485,6 +485,7 @@ dependencies = [
  "anyhow",
  "libc",
  "tempfile",
+ "time",
  "time-tracking-cli",
  "tokio",
  "tracing",

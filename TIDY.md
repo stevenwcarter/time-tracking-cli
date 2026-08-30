@@ -35,12 +35,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 
 ## Medium severity
 
-### T11. Split main_impl and de-duplicate its report dispatch: `main_impl` (cli/src/main.rs:14-116, 103 lines)
-- Lenses: long-methods
-- Risk: medium
-- Proposed fix: Extract `async fn spawn_webserver_if_configured(config: &Config, set: &mut JoinSet<()>, rx: ...) -> bool` for the `#[cfg(feature = "webapp")]` block (lines 43-62), `async fn show_report(config: &Config, week_start_weekday: Weekday) -> Result<()>` to replace both verbatim copies of the weekly/single-day dispatch (lines 82-88 and the `#[cfg(not(feature = "tui"))]` copy at 94-100), and `async fn wait_for_background_tasks(set: JoinSet<()>, webserver_running: bool) -> Result<()>` for lines 103-113; the doc-fixer queue independently deletes redundant comments at lines 83, 86, 95 and 98 and relocates the misplaced "Load configuration…" comment at lines 15-16, so those exact lines may already have shifted when this runs, and T40 fixes a typo at line 19 inside the same function.
-- [x] execute   [ ] skip
-
 ### T23. Make DataService::clear_cache test-only or remove it: `DataService::clear_cache` (src/data_svc.rs:232)
 - Lenses: dead-code
 - Risk: medium
