@@ -96,6 +96,12 @@ pub(super) const MIN_ROWS_FOR_TWO_PROJECTS: u16 =
 /// up under the bullets it replaces.
 const OVERFLOW_MARKER_INDENT: &str = "   ";
 
+/// The day view's main pane: the day's header stats above a scrollable list
+/// of its projects and their notes.
+///
+/// Built once per loaded day by [`ProjectListWidget::new`] and held by the
+/// app from there on, which is what lets each row's per-width wrapping stay
+/// memoized across scrolling and re-renders at an unchanged terminal size.
 #[derive(Debug)]
 pub struct ProjectListWidget {
     start_time: String,

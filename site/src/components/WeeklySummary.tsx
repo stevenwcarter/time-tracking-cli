@@ -82,7 +82,10 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
     return {
       projects,
       dates: sortedDates.map((day) => {
-        // Fix the day name calculation - create date correctly
+        // The T00:00:00 suffix forces local-time parsing: a bare
+        // 'YYYY-MM-DD' is parsed as UTC midnight, which in a time zone
+        // behind UTC falls on the previous local day and so reports the
+        // wrong weekday.
         const date = new Date(day.date + 'T00:00:00');
         return {
           date: day.date,

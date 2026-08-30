@@ -12,11 +12,11 @@ async fn main() -> Result<()> {
 }
 
 async fn main_impl() -> Result<()> {
-    // Load configuration and apply CLI argument overrides.
     // The guard must be held for the process lifetime to ensure logs flush on shutdown.
     let _tracing_guard = init_tracing()
         .await
         .context("Coult not initialize tracing")?;
+    // Load configuration and apply CLI argument overrides.
     let config = Config::get();
 
     if config.stdin {
@@ -80,10 +80,8 @@ async fn main_impl() -> Result<()> {
     } else {
         let formatter = config.get_formatter();
         if config.week {
-            // Show weekly summary
             show_weekly_summary(&config.date, week_start_weekday, formatter.as_ref()).await?;
         } else {
-            // Show single day (existing functionality)
             show_single_day(&config.date, formatter.as_ref(), config.noedit).await?;
         }
     }
@@ -92,10 +90,8 @@ async fn main_impl() -> Result<()> {
     {
         let formatter = config.get_formatter();
         if config.week {
-            // Show weekly summary
             show_weekly_summary(&config.date, week_start_weekday, formatter.as_ref()).await?;
         } else {
-            // Show single day (existing functionality)
             show_single_day(&config.date, formatter.as_ref(), config.noedit).await?;
         }
     }

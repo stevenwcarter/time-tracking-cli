@@ -23,6 +23,12 @@ use tracing::error;
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static CONFIG_LOAD_ERR: OnceLock<String> = OnceLock::new();
 
+/// Which [`DisplayFormatter`] renders output.
+///
+/// Chosen by the `--formatter` flag, the `formatter` key in the config file,
+/// or ad hoc by the TUI's yank commands. Defined twice — once deriving
+/// clap's `ValueEnum`, once without — so the type survives a build with the
+/// `cli` feature turned off.
 #[cfg(feature = "cli")]
 #[derive(ValueEnum, Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +37,12 @@ pub enum Formatter {
     Markdown,
     Plain,
 }
+/// Which [`DisplayFormatter`] renders output.
+///
+/// Chosen by the `formatter` key in the config file, or ad hoc by the TUI's
+/// yank commands. The `cli`-less twin of the definition above: same
+/// variants, no clap `ValueEnum` derive, because there are no arguments to
+/// parse it out of.
 #[cfg(not(feature = "cli"))]
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -129,6 +141,14 @@ fn today_date() -> Date {
         .date()
 }
 
+/// The process-wide configuration: the CLI arguments layered over the values
+/// read from the TOML config file, with the accessors below filling in a
+/// default for anything neither supplies.
+///
+/// Resolved exactly once into a `OnceLock` — [`Config::get`] parses real
+/// argv on the way, [`Config::get_no_args`] does not — and re-exported from
+/// the crate root as the `Config` every other module reads its settings
+/// from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Formatter to use ("plain", "markdown", "default")
@@ -246,6 +266,14 @@ impl Config {
         Self::try_init(false)
     }
 
+    /// The process-wide configuration, parsing real argv on the first call.
+    ///
+    /// This is the accessor other modules' comments name by hand (e.g.
+    /// `DataDir::FromConfig` in [`data_svc`](crate::data_svc)).
+    /// [`Config::get_no_args`] and [`Config::try_get_no_args`] resolve the
+    /// same singleton without touching argv, which is what the library
+    /// paths and the tests use — whichever runs first wins, so a process
+    /// that wants its arguments honoured must reach here before them.
     pub fn get() -> &'static Config {
         Self::init(true)
     }

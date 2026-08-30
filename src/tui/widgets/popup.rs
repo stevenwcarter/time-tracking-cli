@@ -7,6 +7,13 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
 
+/// A bordered, titled box that clears whatever it covers before drawing its
+/// own wrapped content.
+///
+/// The shared base [`HelpPopup`](super::HelpPopup) and
+/// [`DatePrompt`](super::DatePrompt) both build on: each assembles only its
+/// own [`Text`] and hands it over through the `derive_setters` builders,
+/// rather than repeating the clear-border-wrap dance.
 #[derive(Debug, Default, Setters)]
 pub struct Popup<'a> {
     #[setters(into)]

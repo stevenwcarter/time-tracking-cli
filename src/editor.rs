@@ -18,6 +18,10 @@ pub fn get_editor() -> String {
         })
 }
 
+/// Open `file_path` in `$EDITOR` — or `$VISUAL`, or a platform default —
+/// inheriting stdio so a terminal editor can take over the screen.
+///
+/// Blocks until the editor exits, and errors if it exits non-zero.
 pub fn open_in_editor(file_path: &PathBuf) -> Result<()> {
     let editor = get_editor();
 

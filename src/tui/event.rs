@@ -20,11 +20,12 @@ const TICK_FPS: f64 = 4.0;
 /// Representation of all possible events.
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// An event that is emitted on a regular schedule.
+    /// An event emitted on a regular schedule, `TICK_FPS` times a second.
     ///
-    /// Use this event to run any code which has to run outside of being a direct response to a user
-    /// event. e.g. polling exernal systems, updating animations, or rendering the UI based on a
-    /// fixed frame rate.
+    /// Not a frame rate and not a polling hook: the loop redraws only when
+    /// something has marked it dirty, and nothing here reaches out to the
+    /// disk. `App::tick` uses it for exactly one thing — dropping a
+    /// status-line message once its TTL has run out.
     Tick,
     /// Crossterm events.
     ///
@@ -36,9 +37,12 @@ pub enum Event {
     App(AppEvent),
 }
 
-/// Application events.
+/// Everything a key binding or a background task can ask the app to do.
 ///
-/// You can extend this enum with your own custom events.
+/// Raising one queues it rather than acting on it, so the state changes all
+/// land in one place: `App::apply_sync_event` for the arms that are pure
+/// state, `App::handle_app_event` for the few that need to await or to take
+/// the terminal apart.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
     /// Toggle the help popup
@@ -394,7 +398,11 @@ impl EventTask {
 
     /// Runs the event thread.
     ///
-    /// This function emits tick events at a fixed rate and polls for crossterm events in between.
+    /// Emits tick events at a fixed rate and polls for crossterm events in
+    /// between — but only while running. Each turn first drains
+    /// `pause_receiver`, and while paused the loop sleeps in short bursts
+    /// and reads no input at all, which is what hands the terminal to the
+    /// editor an [`EventHandler::pause`] caller is about to launch.
     async fn run(mut self) -> Result<()> {
         let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
         let mut reader = crossterm::event::EventStream::new();

@@ -30,7 +30,6 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
             ));
         }
 
-        // Display warnings
         if !data.warnings.is_empty() {
             msg.push_str(&format!("{}**Warnings:**\n", indent));
             for warning in &data.warnings {
@@ -38,7 +37,6 @@ impl DisplayFormatter for MarkdownDisplayFormatter {
             }
         }
 
-        // Display projects
         if !data.projects.is_empty() {
             msg.push_str(&format!("{}**Projects:**\n", indent));
             for project in &data.projects {

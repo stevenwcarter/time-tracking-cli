@@ -179,6 +179,13 @@ impl DataService {
     /// Cache lifetime of the process-wide service.
     pub const DEFAULT_CACHE_TIMEOUT_SECONDS: u64 = 30;
 
+    /// The process-wide data service, built on first use with
+    /// [`Self::DEFAULT_CACHE_TIMEOUT_SECONDS`] and taking both its directory
+    /// and its parse settings from the global configuration.
+    ///
+    /// The CLI and web paths share this one instance, and so share its
+    /// cache. The TUI and the tests build their own with
+    /// [`Self::new_with_dir`] instead, which never reads the global config.
     pub fn get() -> &'static Self {
         DATA_SVC.get_or_init(|| Self::new(Self::DEFAULT_CACHE_TIMEOUT_SECONDS))
     }

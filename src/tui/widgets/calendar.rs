@@ -5,6 +5,11 @@ use time::{Date, Duration};
 
 use crate::tui::theme::Theme;
 
+/// The month calendar drawn beside the weekly chart in the day view's
+/// header band.
+///
+/// Highlights the active date and shades every populated date around it, so
+/// a month's worth of coverage reads at a glance.
 pub struct Calendar<'a> {
     active_date: Date,
     populated_dates: &'a [Date],

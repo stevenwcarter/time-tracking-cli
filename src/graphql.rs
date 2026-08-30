@@ -137,6 +137,9 @@ impl Mutation {
 
 pub type Schema = RootNode<Query, Mutation, EmptySubscription<GraphQLContext>>;
 
+/// Build the Juniper root schema — [`Query`] and [`Mutation`], no
+/// subscriptions — that [`run_server`](crate::web::run_server) mounts under
+/// `/graphql`.
 pub fn create_schema() -> Schema {
     Schema::new(Query, Mutation, EmptySubscription::new())
 }

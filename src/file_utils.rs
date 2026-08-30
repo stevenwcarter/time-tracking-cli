@@ -6,6 +6,8 @@ use tokio::fs;
 
 use crate::{Config, DATE_FORMAT};
 
+/// The directory the day files live in, taken from the global [`Config`]'s
+/// `data_directory` and defaulting to `~/.time-tracking`.
 pub fn get_time_tracking_dir() -> Result<PathBuf> {
     get_time_tracking_dir_with_override(Config::get().get_data_directory())
 }
@@ -21,6 +23,11 @@ pub(crate) fn get_time_tracking_dir_with_override(override_dir: Option<&str>) ->
     Ok(home.join(".time-tracking"))
 }
 
+/// The starting content for a new day file: the configured template with
+/// every `{date}` placeholder replaced by `date` in `YYYY-MM-DD` form.
+///
+/// With no `template_file` configured there is nothing to read and the new
+/// day starts empty.
 pub async fn create_template_content(date: &Date, template_file: Option<&str>) -> Result<String> {
     match template_file {
         Some(file_path) => {
