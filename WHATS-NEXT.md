@@ -20,25 +20,7 @@ _(none)_
 
 ## High
 
-### W29. Add Ctrl-Z suspend/resume via a shared terminal-suspension helper (TUI/lifecycle — src/tui/app.rs:140)
-- Lens: terminal-robustness
-- Score: 1.50 (value 3 / effort M)
-- What: `run_editor` hand-rolls the suspend dance — pause events, `LeaveAlternateScreen`, `disable_raw_mode`, run the editor, `EnterAlternateScreen`, `enable_raw_mode`, `terminal.clear()`. Extract it into a `with_suspended_terminal(|| ...)` helper and reuse it for a new Ctrl-Z binding that raises `SIGTSTP` after restoring the cooked terminal and re-enters the TUI on `SIGCONT`. The key-handling match at app.rs:229 already special-cases Ctrl-C, so Ctrl-Z is a natural sibling.
-- Why: Raw mode means the terminal never generates SIGTSTP, so Ctrl-Z inside the TUI is swallowed and there is currently no way to drop back to the shell and `fg` again — the user has to quit and relaunch, losing the selected date. Job control is reflexive for a developer running this from a shell all day. Factoring the suspension into one helper also gives a single place that later has to know about mouse capture, bracketed paste and any other terminal mode the TUI adopts, instead of duplicating the sequence per feature.
-- Blocked by: —
-- Notes: W30 needs exactly this helper so an editor session does not inherit mouse capture; do this one first.
-- [x] execute   [ ] skip
-> in-flight (handed to /ship-it on 2026-08-29)
-
-### W30. Add mouse support: click a calendar day, a bar, or a project row (TUI/input — src/tui/event.rs:81)
-- Lens: terminal-robustness
-- Score: 1.50 (value 3 / effort M)
-- What: The crossterm `EventStream` is never put into mouse-capture mode and `App::run` matches only `Event::Key` (app.rs:87 discards everything else), so clicks and wheel scrolls do nothing. Enable mouse capture alongside the alternate-screen setup, disable it in the same suspension helper used for `$EDITOR`, add an `Event::Mouse` arm, and store the calendar, chart and list `Rect`s on `App` during render so a click can be hit-tested: click a calendar day or a weekly bar to jump to that date, click a project row to select it, wheel-scroll the list.
-- Why: The user is often not in a keyboard-driven flow when they open this — they glance at the month and want a specific day. Every modern terminal emulator forwards mouse events, and clicking the calendar day you are already looking at is the most obvious interaction the calendar suggests but does not offer. Wheel-scrolling the project list is likewise reflexive on a day with many entries.
-- Blocked by: —
-- Notes: Mouse capture must be torn down and re-established in the same place the alternate screen is, or the editor session inherits capture — so do this after or together with W29's suspension helper.
-- [x] execute   [ ] skip
-> in-flight (handed to /ship-it on 2026-08-29)
+_(none)_
 
 ## Medium
 
