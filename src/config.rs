@@ -283,110 +283,14 @@ impl Config {
         let args = if use_args {
             Args::parse()
         } else {
-            Args {
-                date: None,
-                stdin: false,
-                positional_date: None,
-                week: false,
-                week_start_day: None,
-                data_directory: None,
-                template_file: None,
-                formatter: None,
-                noedit: false,
-                #[cfg(feature = "webapp")]
-                serve: false,
-                #[cfg(feature = "tui")]
-                tui: false,
-                #[cfg(feature = "webapp")]
-                port: None,
-            }
+            synthetic_args()
         };
 
         let config_path = get_config_path()?;
+        let mut config = load_or_create_config_file(&config_path)?;
 
-        let mut config = if config_path.exists() {
-            let content = fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&content)?;
-            config
-        } else {
-            // Create default config file
-            let default_config = Config::default();
-            fs::create_dir_all(
-                config_path
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
-            )?;
-            let toml_content = toml::to_string_pretty(&default_config)?;
-            fs::write(&config_path, toml_content)?;
-            let mut file = OpenOptions::new().append(true).open(&config_path)?;
-            write_config_comments(&mut file)?;
-            default_config
-        };
-
-        if let Some(week_start_day) = args.week_start_day {
-            config.week_start_day = Some(week_start_day);
-        }
-        if let Some(data_directory) = args.data_directory {
-            config.data_directory = Some(data_directory);
-        }
-        if let Some(template_file) = args.template_file {
-            config.template_file = Some(template_file);
-        }
-        if let Some(formatter) = args.formatter {
-            config.formatter = Some(formatter);
-        }
-        if args.stdin {
-            config.stdin = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if args.serve {
-            config.serve = Some(true);
-        }
-        if args.week {
-            config.week = true;
-        }
-
-        {
-            let date_str = args.date.or(args.positional_date);
-
-            let date = match date_str {
-                Some(date_str) => {
-                    // Parse the provided date
-
-                    use interim::{Dialect, parse_date_string};
-                    let now =
-                        OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-                    let date_time = parse_date_string(&date_str, now, Dialect::Us);
-                    match date_time {
-                        Ok(date_time) => date_time.date(),
-                        Err(e) => {
-                            eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
-                            today_date()
-                        }
-                    }
-                }
-                None => {
-                    // Use today's date
-                    today_date()
-                }
-            };
-            config.date = date;
-        }
-
-        #[cfg(feature = "tui")]
-        if args.tui {
-            config.tui = Some(true);
-        }
-
-        if args.noedit {
-            config.noedit = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if let Some(port) = args.port {
-            config.port = Some(port);
-        }
+        apply_arg_overrides(&mut config, &args);
+        config.date = resolve_requested_date(args.date.or(args.positional_date));
 
         Ok(config)
     }
@@ -447,6 +351,126 @@ impl Config {
         self.get_configured_formatter()
             .unwrap_or(&Formatter::Default)
             .build()
+    }
+}
+
+/// The `Args` [`Config::load`] uses in place of `Args::parse()` when it is
+/// not meant to consult real argv (`use_args = false`): every field at its
+/// no-op value, so [`apply_arg_overrides`] and [`resolve_requested_date`]
+/// leave the loaded config untouched.
+#[cfg(feature = "cli")]
+fn synthetic_args() -> Args {
+    Args {
+        date: None,
+        stdin: false,
+        positional_date: None,
+        week: false,
+        week_start_day: None,
+        data_directory: None,
+        template_file: None,
+        formatter: None,
+        noedit: false,
+        #[cfg(feature = "webapp")]
+        serve: false,
+        #[cfg(feature = "tui")]
+        tui: false,
+        #[cfg(feature = "webapp")]
+        port: None,
+    }
+}
+
+/// Reads `config_path` if it exists, otherwise writes a freshly defaulted
+/// config there (plus its explanatory comments) and returns that default.
+#[cfg(feature = "cli")]
+fn load_or_create_config_file(config_path: &std::path::Path) -> Result<Config> {
+    if config_path.exists() {
+        let content = fs::read_to_string(config_path)?;
+        let config: Config = toml::from_str(&content)?;
+        Ok(config)
+    } else {
+        // Create default config file
+        let default_config = Config::default();
+        fs::create_dir_all(
+            config_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
+        )?;
+        let toml_content = toml::to_string_pretty(&default_config)?;
+        fs::write(config_path, toml_content)?;
+        let mut file = OpenOptions::new().append(true).open(config_path)?;
+        write_config_comments(&mut file)?;
+        Ok(default_config)
+    }
+}
+
+/// Layers every `Some`/`true` field of `args` onto `config`, other than the
+/// date fields -- those are [`resolve_requested_date`]'s job, since parsing
+/// them can fail and needs its own fallback.
+#[cfg(feature = "cli")]
+fn apply_arg_overrides(config: &mut Config, args: &Args) {
+    if let Some(week_start_day) = args.week_start_day.clone() {
+        config.week_start_day = Some(week_start_day);
+    }
+    if let Some(data_directory) = args.data_directory.clone() {
+        config.data_directory = Some(data_directory);
+    }
+    if let Some(template_file) = args.template_file.clone() {
+        config.template_file = Some(template_file);
+    }
+    if let Some(formatter) = args.formatter.clone() {
+        config.formatter = Some(formatter);
+    }
+    if args.stdin {
+        config.stdin = true;
+    }
+
+    #[cfg(feature = "webapp")]
+    if args.serve {
+        config.serve = Some(true);
+    }
+    if args.week {
+        config.week = true;
+    }
+
+    #[cfg(feature = "tui")]
+    if args.tui {
+        config.tui = Some(true);
+    }
+
+    if args.noedit {
+        config.noedit = true;
+    }
+
+    #[cfg(feature = "webapp")]
+    if let Some(port) = args.port {
+        config.port = Some(port);
+    }
+}
+
+/// The effective date for a run: `date_str` (from `--date` or the
+/// positional argument) parsed via `interim`, or today's date when there is
+/// none or parsing fails.
+#[cfg(feature = "cli")]
+fn resolve_requested_date(date_str: Option<String>) -> Date {
+    match date_str {
+        Some(date_str) => {
+            // Parse the provided date
+
+            use interim::{Dialect, parse_date_string};
+            let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+            let date_time = parse_date_string(&date_str, now, Dialect::Us);
+            match date_time {
+                Ok(date_time) => date_time.date(),
+                Err(e) => {
+                    eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
+                    today_date()
+                }
+            }
+        }
+        None => {
+            // Use today's date
+            today_date()
+        }
     }
 }
 
@@ -892,115 +916,22 @@ mod tests {
         assert_eq!(config.date, today_date());
     }
 
-    /// Mirrors the date-resolution block that lives inline in `Config::load`
-    /// as of this commit (before the T6 split), so these tests pin that
-    /// exact logic rather than `interim`'s behavior in general -- there is
-    /// no seam to reach it through `Config::load` itself, since the
-    /// `use_args = false` path this suite otherwise exercises always passes
-    /// `None`. Once `Config::load` grows `resolve_requested_date`, the tidy
-    /// commit deletes this helper and calls the real function instead.
-    fn characterize_resolve_requested_date(date_str: Option<String>) -> Date {
-        match date_str {
-            Some(date_str) => {
-                use interim::{Dialect, parse_date_string};
-                let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-                let date_time = parse_date_string(&date_str, now, Dialect::Us);
-                match date_time {
-                    Ok(date_time) => date_time.date(),
-                    Err(e) => {
-                        eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
-                        today_date()
-                    }
-                }
-            }
-            None => today_date(),
-        }
-    }
-
     #[test]
     fn config_load_date_literal_today_resolves_to_todays_date() {
-        let resolved = characterize_resolve_requested_date(Some("today".to_string()));
+        let resolved = resolve_requested_date(Some("today".to_string()));
         assert_eq!(resolved, today_date());
     }
 
     #[test]
     fn config_load_date_explicit_yyyy_mm_dd_resolves_to_that_date() {
-        let resolved = characterize_resolve_requested_date(Some("2024-03-15".to_string()));
+        let resolved = resolve_requested_date(Some("2024-03-15".to_string()));
         assert_eq!(resolved, time::macros::date!(2024 - 03 - 15));
     }
 
     #[test]
     fn config_load_date_relative_phrase_resolves_relative_to_today() {
-        let resolved = characterize_resolve_requested_date(Some("yesterday".to_string()));
+        let resolved = resolve_requested_date(Some("yesterday".to_string()));
         assert_eq!(resolved, today_date().previous_day().unwrap());
-    }
-
-    /// Mirrors the override-application block that lives inline in
-    /// `Config::load` as of this commit (before the T6 split): same
-    /// rationale as `characterize_resolve_requested_date` above. Once
-    /// `Config::load` grows `apply_arg_overrides`, the tidy commit deletes
-    /// this helper and calls the real function instead.
-    fn characterize_apply_arg_overrides(config: &mut Config, args: Args) {
-        if let Some(week_start_day) = args.week_start_day {
-            config.week_start_day = Some(week_start_day);
-        }
-        if let Some(data_directory) = args.data_directory {
-            config.data_directory = Some(data_directory);
-        }
-        if let Some(template_file) = args.template_file {
-            config.template_file = Some(template_file);
-        }
-        if let Some(formatter) = args.formatter {
-            config.formatter = Some(formatter);
-        }
-        if args.stdin {
-            config.stdin = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if args.serve {
-            config.serve = Some(true);
-        }
-        if args.week {
-            config.week = true;
-        }
-
-        #[cfg(feature = "tui")]
-        if args.tui {
-            config.tui = Some(true);
-        }
-
-        if args.noedit {
-            config.noedit = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if let Some(port) = args.port {
-            config.port = Some(port);
-        }
-    }
-
-    /// The same synthetic `Args` `Config::load(false)` builds internally
-    /// today, for tests that need a baseline to override individual fields
-    /// on.
-    fn args_with_no_overrides() -> Args {
-        Args {
-            date: None,
-            stdin: false,
-            positional_date: None,
-            week: false,
-            week_start_day: None,
-            data_directory: None,
-            template_file: None,
-            formatter: None,
-            noedit: false,
-            #[cfg(feature = "webapp")]
-            serve: false,
-            #[cfg(feature = "tui")]
-            tui: false,
-            #[cfg(feature = "webapp")]
-            port: None,
-        }
     }
 
     #[test]
@@ -1027,10 +958,10 @@ mod tests {
             tui: true,
             #[cfg(feature = "webapp")]
             port: Some(9999),
-            ..args_with_no_overrides()
+            ..synthetic_args()
         };
 
-        characterize_apply_arg_overrides(&mut config, args);
+        apply_arg_overrides(&mut config, &args);
 
         assert_eq!(config.week_start_day, Some("Monday".to_string()));
         assert_eq!(config.data_directory, Some("/from/args".to_string()));

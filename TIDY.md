@@ -21,12 +21,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Extract a `useWeeklyTableData(weekData)` hook for the `tableData` useMemo (lines 41-93), a `useNotesLookup(weekData)` hook for `daysByDate` / `notesByDate` / `getNotesForProjectDate` / `formatNotesTooltip` / `copyNotesToClipboard` (lines 96-145), and subcomponents `ProjectRow` (lines 202-234) and `DailyTotalsRow` (lines 236-249) taking the derived data as props, leaving WeeklySummary to compose the hooks plus the `<table>` shell; coordinate with T20, which lifts the clipboard/toast body out of lines 119-145 into a shared `site/src/utils/clipboard.ts` — run T20 first and have `useNotesLookup` call that helper — and note the doc-fixer queue also rewrites the comment at line 85, so those lines may already have moved.
 - [x] execute   [ ] skip
 
-### T6. Split Config::load into arg synthesis, file load-or-create, overrides and date resolution: `Config::load` (src/config.rs:248-358, 111 lines)
-- Lenses: long-methods
-- Risk: high — needs characterization tests first
-- Proposed fix: Extract `fn synthetic_args() -> Args` for the else-branch default Args (lines 251-269), `fn load_or_create_config_file(config_path: &Path) -> Result<Config>` for the read-or-write-default block (lines 271-290), `fn apply_arg_overrides(config: &mut Config, args: &Args)` for the run of `if let Some(...) = args.X` assignments (lines 292-355 minus the date block), and `fn resolve_requested_date(date_str: Option<String>) -> Date` for the interim-based date parsing (lines 316-341), so `Config::load` reads as four calls; interacts with T43, whose TOCTOU fix lands squarely inside lines 271-290 — run this split first and apply T43 to the extracted `load_or_create_config_file` — and with T22, which deletes `get_no_args` / `try_get_no_args` immediately above at lines 235-241.
-- [x] execute   [ ] skip
-
 ### T7. Share the 90-minute dead-time error threshold instead of hardcoding it twice: dead-time error threshold (src/display/mod.rs:139)
 - Lenses: idioms
 - Risk: low
