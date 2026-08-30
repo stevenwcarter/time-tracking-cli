@@ -66,3 +66,58 @@ fn webapp_only_server_shutdown_channel_stays_alive() {
         "server did not accept connections; the graceful shutdown channel was closed too early"
     );
 }
+
+/// The startup banner used to print to stdout unconditionally whenever the
+/// webserver task was spawned — including under `--serve --tui`, where it
+/// raced `ratatui::init()`'s alternate-screen entry and could leave text
+/// stranded in a frame ratatui's diff renderer does not know changed.
+#[cfg(feature = "webapp")]
+#[test]
+fn serving_prints_no_banner_to_stdout() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+
+    let data_dir = tempfile::tempdir().expect("failed to create temp dir");
+
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind to ephemeral port");
+    let port = listener
+        .local_addr()
+        .expect("failed to get local addr")
+        .port();
+    drop(listener);
+
+    let mut child = common::ttcli()
+        .args([
+            "--serve",
+            "--port",
+            &port.to_string(),
+            "--noedit",
+            "--data-directory",
+        ])
+        .arg(data_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to spawn ttcli");
+
+    thread::sleep(Duration::from_millis(500));
+    child.kill().expect("failed to kill ttcli");
+    child.wait().expect("failed to reap ttcli");
+
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_string(&mut stdout)
+        .expect("failed to read ttcli stdout");
+
+    assert!(
+        !stdout.contains("Other jobs are running"),
+        "the background-task banner must not reach stdout — it races the \
+         TUI's alternate screen under `--serve --tui`. Got:\n{stdout}"
+    );
+}

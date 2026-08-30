@@ -103,8 +103,13 @@ fn spawn_webserver_if_configured(
         let config = config.clone();
         set.spawn(async move {
             if let Err(e) = time_tracking_cli::web::run_server(port, config, rx).await {
+                // Logged only. `--serve` and `--tui` are independent flags
+                // with no `conflicts_with`, so this task can be running while
+                // the TUI owns the alternate screen and raw mode — and
+                // ratatui's diff renderer does not know a region something
+                // else wrote to has changed. The `tracing::error!` above
+                // already carries the whole message to the log file.
                 error!("Error running web server: {}", e);
-                eprintln!("Error running web server: {}", e);
             }
         });
     }
@@ -119,7 +124,12 @@ async fn wait_for_background_tasks(mut set: JoinSet<()>, webserver_running: bool
     }
 
     if webserver_running {
-        println!("Other jobs are running (webserver or tui), press ctrl-c to quit (webserver)");
+        // `info!`, not `println!`: this fires on every combined
+        // `--serve --tui` launch, where writing to stdout races the TUI's
+        // own `ratatui::init()` alternate-screen entry. Feedback that must
+        // reach a user while the TUI is up belongs on its status line, the
+        // way `LoadFailed` and the clipboard failures already do.
+        tracing::info!("Background tasks are running; press ctrl-c to quit");
     }
     while let Some(res) = set.join_next().await {
         if let Err(e) = res {
