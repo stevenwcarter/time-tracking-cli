@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Button from './Button';
 import { Link } from 'react-router';
-import { toDateString } from 'utils/date';
+import { parseDateString, toDateString } from 'utils/date';
 
 interface DateSelectorProps {
   date?: Date;
@@ -49,7 +49,7 @@ export const DateSelector = (props: DateSelectorProps) => {
         type="date"
         className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-4 rounded-xl"
         value={toDateString(date)}
-        onChange={(e) => setDate(new Date(e.target.value + 'T00:00:00'))}
+        onChange={(e) => setDate(parseDateString(e.target.value))}
       />
 
       {/* Go to Date button */}
