@@ -201,16 +201,34 @@ async fn get_day_data_by_date(
     Ok(Json(data))
 }
 
+/// Build one day's [`DayData`] for the REST and GraphQL endpoints.
+///
+/// Delegates to [`get_day_data_impl_with`] against the process-wide
+/// [`DataService`], which is what makes concurrent requests share its
+/// 30-second cache. The service is a parameter there and not here so tests
+/// can hand in a hermetic one instead of the global singleton.
 pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
+    get_day_data_impl_with(DataService::get(), date, state).await
+}
+
+pub(crate) async fn get_day_data_impl_with(
+    svc: &DataService,
+    date: Date,
+    state: &AppState,
+) -> Result<DayData, StatusCode> {
     let date_str = date
         .format(&DATE_FORMAT)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Use DataService so concurrent requests share the 30-second in-memory cache
-    let content = DataService::get()
-        .read_day(&date)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let content = svc.read_day(&date).await.map_err(|e| {
+        // `read_day` attaches the path and the failing syscall via
+        // `.with_context`. Collapsing straight to a StatusCode threw all of
+        // it away, and every entry point funnels through here — a permission
+        // error, a broken symlink or a full disk reached the operator as a
+        // content-free 500. Log once, here, where the detail still exists.
+        tracing::error!(%date_str, error = %e, "failed to read day data");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let Some(content) = content else {
         return Ok(DayData {
@@ -300,7 +318,11 @@ pub async fn aggregate_week_days(
     while let Some(outcome) = set.join_next().await {
         match outcome {
             Ok((idx, Ok(day_data))) => results.push((idx, day_data)),
-            Ok((_, Err(e))) => tracing::warn!("Failed to load day data: {}", e),
+            // Dropped rather than logged: `e` here is only the StatusCode.
+            // `get_day_data_impl_with` already logged the underlying error
+            // with its date and its I/O detail, so re-logging the status adds
+            // a line and no information.
+            Ok((_, Err(_))) => {}
             Err(e) => tracing::warn!("Task panicked loading day data: {}", e),
         }
     }
@@ -364,4 +386,105 @@ async fn set_static_cache_control(request: Request, next: Next) -> Response {
         HeaderValue::from_static("public, max-age=31536000"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_svc::ParseSettings;
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+    use tempfile::TempDir;
+    use time::macros::date;
+
+    /// A `tracing` writer that keeps everything written to it in memory.
+    #[derive(Clone, Default)]
+    struct LogCapture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `body` with a capturing subscriber installed, returning its value
+    /// and everything it logged.
+    ///
+    /// A plain `#[test]` with its own current-thread runtime rather than
+    /// `#[tokio::test]`: `tracing::subscriber::with_default` sets a
+    /// thread-local, and only a current-thread runtime keeps the async work
+    /// on the thread that has it.
+    fn capture_logs<T>(body: impl FnOnce() -> T) -> (T, String) {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, body);
+        let logged = String::from_utf8(capture.0.lock().expect("log buffer").clone())
+            .expect("log output is utf-8");
+        (value, logged)
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime")
+    }
+
+    /// A service whose data directory sits *below a regular file*, so every
+    /// stat under it fails with ENOTDIR — an I/O error that is emphatically
+    /// not `NotFound`, which is the only kind `read_day` swallows.
+    fn unreadable_service() -> (DataService, TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let blocker = dir.path().join("not-a-directory");
+        std::fs::File::create(&blocker)
+            .expect("blocker file")
+            .write_all(b"x")
+            .expect("blocker contents");
+        let svc = DataService::new_with_dir(60, blocker.join("days"), ParseSettings::default());
+        (svc, dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_day_file_logs_its_cause_before_becoming_a_500() {
+        let (svc, _dir) = unreadable_service();
+        let state = AppState::default();
+        let rt = runtime();
+
+        let (result, logged) = capture_logs(|| {
+            rt.block_on(get_day_data_impl_with(&svc, date!(2026 - 08 - 24), &state))
+        });
+
+        assert_eq!(
+            result.unwrap_err(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "an unreadable day file must still surface as a 500"
+        );
+        assert!(
+            logged.contains("failed to read day data"),
+            "the failure must be logged, not silently collapsed: {logged}"
+        );
+        assert!(
+            logged.contains("2026-08-24"),
+            "the log must name the date that failed: {logged}"
+        );
+        assert!(
+            logged.contains("could not stat"),
+            "the log must carry read_day's own context, not just a status: {logged}"
+        );
+    }
 }

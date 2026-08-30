@@ -357,7 +357,7 @@ impl DataService {
     /// proves memoization by making the counter, not just the returned
     /// value, the thing under test.
     #[cfg(test)]
-    fn parse_count(&self) -> usize {
+    pub(crate) fn parse_count(&self) -> usize {
         self.parse_count.load(Ordering::Relaxed)
     }
 
