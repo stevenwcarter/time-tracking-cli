@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub fn get_editor() -> String {
@@ -18,14 +18,46 @@ pub fn get_editor() -> String {
         })
 }
 
+/// Split a configured editor value into the program to spawn and the
+/// arguments that precede the file path.
+///
+/// `Command::new` performs no word splitting, so a perfectly ordinary
+/// `EDITOR="code --wait"` made the OS look for a binary literally named
+/// `code --wait`.
+///
+/// Whitespace splitting, deliberately, rather than a shell-words crate: it
+/// covers every documented multi-word editor configuration (`code --wait`,
+/// `emacsclient -c`, `subl -n -w`) with no new dependency. It does *not*
+/// handle a quoted path containing spaces (`EDITOR='"/opt/my editor" -w'`);
+/// that case wants `shlex::split` here and nothing else changed.
+fn split_editor_command(editor: &str) -> Option<(String, Vec<String>)> {
+    let mut parts = editor.split_whitespace();
+    let program = parts.next()?.to_owned();
+    Some((program, parts.map(str::to_owned).collect()))
+}
+
 /// Open `file_path` in `$EDITOR` — or `$VISUAL`, or a platform default —
 /// inheriting stdio so a terminal editor can take over the screen.
 ///
 /// Blocks until the editor exits, and errors if it exits non-zero.
+// `&PathBuf` (rather than clippy's suggested `&Path`) is pinned here: this
+// function is re-exported from the crate root and consumed by an external
+// Neovim plugin, so the parameter type is part of a stable public API this
+// task must not change. The body immediately reborrows it as `&Path`.
+#[allow(clippy::ptr_arg)]
 pub fn open_in_editor(file_path: &PathBuf) -> Result<()> {
-    let editor = get_editor();
+    open_in_editor_with(&get_editor(), file_path)
+}
 
-    let mut command = Command::new(&editor);
+/// [`open_in_editor`] with the editor supplied rather than read from the
+/// environment, so tests can exercise it without mutating process-wide state.
+fn open_in_editor_with(editor: &str, file_path: &Path) -> Result<()> {
+    let Some((program, args)) = split_editor_command(editor) else {
+        bail!("No editor configured: EDITOR/VISUAL is empty");
+    };
+
+    let mut command = Command::new(&program);
+    command.args(&args);
     command.arg(file_path);
 
     // For some editors like vim/nano, we need to inherit stdio
@@ -152,7 +184,78 @@ mod tests {
         assert!(format!("{:?}", command).contains("echo"));
     }
 
-    // NOTE: We deliberately avoid testing the actual execution of open_in_editor
-    // to prevent opening interactive editors during test runs.
-    // The function's correctness is tested through integration tests or manual testing.
+    // NOTE: `open_in_editor` itself is not executed directly in tests, since
+    // that would depend on process-wide $EDITOR/$VISUAL state. Its testable
+    // core, `open_in_editor_with`, takes the editor as a plain argument and
+    // is exercised directly below.
+
+    #[test]
+    fn a_single_word_editor_splits_to_itself_with_no_args() {
+        assert_eq!(
+            split_editor_command("nano"),
+            Some(("nano".to_owned(), vec![]))
+        );
+    }
+
+    #[test]
+    fn a_multi_word_editor_splits_into_program_and_args() {
+        assert_eq!(
+            split_editor_command("code --wait"),
+            Some(("code".to_owned(), vec!["--wait".to_owned()]))
+        );
+        assert_eq!(
+            split_editor_command("  subl   -n  -w  "),
+            Some(("subl".to_owned(), vec!["-n".to_owned(), "-w".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn an_empty_editor_value_splits_to_nothing() {
+        assert_eq!(split_editor_command("   "), None);
+    }
+
+    /// `EDITOR="code --wait"`, `"emacsclient -c"` and `"subl -n -w"` are all
+    /// ordinary configurations. `Command::new` does no word splitting, so the
+    /// OS looked for a binary literally named `code --wait` and `spawn`
+    /// failed with `NotFound` — aborting the whole run on the CLI path, and
+    /// silently disabling the `e` key for the session in the TUI.
+    #[cfg(unix)]
+    #[test]
+    fn a_multi_word_editor_actually_runs() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        // `env true <file>` runs `true` with the file as an argument and
+        // exits 0 — a real two-word command that exists everywhere.
+        open_in_editor_with("env true", &test_file).expect("a multi-word editor must spawn");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_multi_word_editor_exiting_non_zero_still_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        let err = open_in_editor_with("env false", &test_file)
+            .expect_err("a non-zero editor exit must still be an error");
+        assert!(
+            err.to_string().contains("non-zero status"),
+            "the error must name the failure mode: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_editor_that_does_not_exist_errors_rather_than_panicking() {
+        let temp_dir = TempDir::new().unwrap();
+        let test_file = temp_dir.path().join("test.txt");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        assert!(
+            open_in_editor_with("definitely-not-a-real-editor-binary", &test_file).is_err(),
+            "a missing editor binary must be an error, not a panic"
+        );
+    }
 }
