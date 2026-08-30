@@ -15,12 +15,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 
 ## High severity
 
-### T1. Point eslint at the real build output so `yarn lint` finishes in seconds: `ignores: ["dist"]` (site/eslint.config.js:10)
-- Lenses: idioms
-- Risk: low
-- Proposed fix: Change `{ ignores: ["dist"] }` at site/eslint.config.js:10 to `{ ignores: ["dist", "build", "coverage"] }` — Vite's `outDir` is `build` (site/vite.config.ts:14), so today `eslint .` lints the entire 1.4MB production bundle; verified in this worktree that a bare `eslint .` pegged one core for 12+ minutes and had to be killed while `eslint . --ignore-pattern 'build/**'` completed in 1.07s with zero errors, and site/vite.config.ts already excludes `'**/build/**'` (line 24) and `['coverage', 'build']` (line 36) elsewhere, so the eslint config is the one place that still says `dist`; `site/build/` exists on any machine that has run `yarn build`, which `just gate` requires, so this hits every developer.
-- [x] execute   [ ] skip
-
 ### T2. Format the date picker's value from local components instead of UTC: `formatDate` (site/src/components/DateSelector.tsx:23)
 - Lenses: opportunistic
 - Risk: high — needs characterization tests first
