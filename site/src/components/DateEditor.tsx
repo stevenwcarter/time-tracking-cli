@@ -21,7 +21,11 @@ export const DateEditor = (props: DateEditorProps) => {
     if (content !== null && content !== undefined && !hasInitialized) {
       setLocalData(content);
       setHasInitialized(true);
-      // Don't set lastSentData here - let it remain null so first user change will be detected
+      // Seed the baseline with what we just loaded. Leaving it null made the
+      // debounce effect fire 500ms after every mount and re-write the file
+      // with the bytes it had just read — a save the user never asked for,
+      // and one that clobbered any external edit landing in that window.
+      lastSentData.current = content;
     }
   }, [content, hasInitialized]);
 
@@ -55,18 +59,29 @@ export const DateEditor = (props: DateEditorProps) => {
   useEffect(() => {
     // Only send if:
     // - Component is still mounted and initialized
+    // - The debounce has actually caught up to the latest local edit (see
+    //   below) — otherwise this effect, which also re-runs the instant
+    //   `hasInitialized` flips true, fires while `debouncedData` still holds
+    //   its pre-load value and sends that stale/empty content instead
     // - Debounced data is different from what we last sent
     // - We're still on the same date that we started debouncing for
     if (
       isMountedRef.current &&
       hasInitialized &&
+      // `hasInitialized` becoming true and `localData` being set to the
+      // freshly-loaded content happen in the same render, but `debouncedData`
+      // is separate state that only catches up 500ms later. Without this
+      // check, that same-render effect run compares the loaded content
+      // against a `debouncedData` still sitting at its pre-load value and
+      // fires an immediate save of that stale value.
+      localData === debouncedData &&
       debouncedData !== lastSentData.current &&
       currentDateRef.current.getTime() === date.getTime()
     ) {
       lastSentData.current = debouncedData;
       updater(debouncedData);
     }
-  }, [debouncedData, updater, date, hasInitialized]);
+  }, [debouncedData, localData, updater, date, hasInitialized]);
 
   return (
     <div className="w-full p-4 rounded shadow flex">
