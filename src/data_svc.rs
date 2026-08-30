@@ -608,7 +608,18 @@ impl DataService {
     /// it was cached. Both `get_cached_content` and `get_cached_parsed` are
     /// built on this so the raw content and the parsed value share exactly
     /// one validity check and always expire together.
-    async fn get_valid_entry(&self, date: &Date, file_path: &Path) -> Result<Option<CacheEntry>> {
+    ///
+    /// `select` runs under the lock and decides what gets cloned out. The
+    /// callers each want one field and immediately dropped the other; on a
+    /// path that runs ~97 times per navigation keystroke, cloning the whole
+    /// entry meant copying a day's raw text or its parsed form for nothing
+    /// on every cache hit.
+    async fn get_valid_entry<T>(
+        &self,
+        date: &Date,
+        file_path: &Path,
+        select: impl Fn(&CacheEntry) -> Option<T>,
+    ) -> Result<Option<T>> {
         // Copy only the Copy metadata under the lock. The entry itself holds
         // the day's raw text and its parsed form; cloning that per call was
         // a full copy of the day's content on a path that runs ~97 times per
@@ -640,13 +651,13 @@ impl DataService {
             && file_mod_time == cached_mod_time
         {
             // File hasn't been modified, the entry is still good. Re-acquire
-            // the lock to clone it for return rather than reusing anything
+            // the lock to project it for return rather than reusing anything
             // read above: another task can have invalidated the entry
             // between the metadata copy and here, so this re-fetches and
             // yields `None` if it is gone instead of assuming it is still
             // there.
             let cache = self.cache.lock().await;
-            return Ok(cache.get(date).cloned());
+            return Ok(cache.get(date).and_then(select));
         }
 
         Ok(None)
@@ -654,10 +665,8 @@ impl DataService {
 
     /// Get cached content if valid, None otherwise
     async fn get_cached_content(&self, date: &Date, file_path: &Path) -> Result<Option<String>> {
-        Ok(self
-            .get_valid_entry(date, file_path)
-            .await?
-            .and_then(|entry| entry.data))
+        self.get_valid_entry(date, file_path, |entry| entry.data.clone())
+            .await
     }
 
     /// Get the cached parse for `date` if it is still valid, None otherwise
@@ -666,10 +675,8 @@ impl DataService {
         date: &Date,
         file_path: &Path,
     ) -> Result<Option<TimeTrackingData>> {
-        Ok(self
-            .get_valid_entry(date, file_path)
-            .await?
-            .and_then(|entry| entry.parsed))
+        self.get_valid_entry(date, file_path, |entry| entry.parsed.clone())
+            .await
     }
 
     /// Cache content for a date. Freshly read content has no known parse
@@ -1477,6 +1484,58 @@ mod tests {
             service.parse_count(),
             1,
             "second call must be served from cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cache_hit_serves_content_and_parse_from_the_same_entry() {
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 24);
+        let path = service.get_file_path(test_date).await.unwrap();
+        tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+
+        let first = service.parse_day(&test_date).await.unwrap().unwrap();
+        let content = service.read_day(&test_date).await.unwrap().unwrap();
+        let second = service.parse_day(&test_date).await.unwrap().unwrap();
+
+        assert_eq!(content, "8-10 admin\n");
+        assert_eq!(first.total_minutes, second.total_minutes);
+        assert_eq!(
+            service.parse_count(),
+            1,
+            "content and parse must come from one shared validity check, \
+             not two that can disagree"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_content_but_no_parse_yet_yields_no_parse() {
+        // `cache_content` inserts with `parsed: None`. A projection that
+        // conflated "no cached parse" with "no valid entry" would still be
+        // correct here, but one that returned a stale or defaulted parse
+        // would not.
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 24);
+        let path = service.get_file_path(test_date).await.unwrap();
+        tokio::fs::write(&path, "8-10 admin\n").await.unwrap();
+
+        service.read_day(&test_date).await.unwrap();
+        let file_path = service.get_file_path(test_date).await.unwrap();
+        assert!(
+            service
+                .get_cached_parsed(&test_date, &file_path)
+                .await
+                .unwrap()
+                .is_none(),
+            "content cached without a parse must report no cached parse"
+        );
+        assert!(
+            service
+                .get_cached_content(&test_date, &file_path)
+                .await
+                .unwrap()
+                .is_some(),
+            "the same entry must still serve its content"
         );
     }
 
