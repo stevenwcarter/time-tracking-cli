@@ -104,11 +104,7 @@ impl<'a> WeekListWidget<'a> {
     ///
     /// [`DataService::get_weekly_summary`]: crate::DataService::get_weekly_summary
     fn render_list(&self, area: Rect, buf: &mut Buffer, state: &mut WeekListState) {
-        let block = Block::new()
-            .title(Line::raw("Weekly Projects").centered())
-            .borders(Borders::TOP)
-            .border_set(symbols::border::EMPTY)
-            .border_style(self.theme.list_header);
+        let block = self.list_block();
 
         let row_width = area.width.saturating_sub(HIGHLIGHT_COLS);
         let items: Vec<ListItem<'static>> = self
@@ -148,6 +144,78 @@ impl<'a> WeekListWidget<'a> {
     fn warning_lines(&self) -> Vec<Line<'static>> {
         band::warning_lines(&self.summary.warnings, self.theme.error, WARNING_INDENT)
     }
+
+    /// The block [`Self::render_list`] wraps the list in: its title bar,
+    /// drawn as a top border.
+    ///
+    /// Shared with [`Self::rows_area`] so the row it costs is ratatui's
+    /// answer for the block actually drawn, rather than a constant the
+    /// renderer and the hit-test keep in step by hand.
+    fn list_block(&self) -> Block<'static> {
+        Block::new()
+            .title(Line::raw("Weekly Projects").centered())
+            .borders(Borders::TOP)
+            .border_set(symbols::border::EMPTY)
+            .border_style(self.theme.list_header)
+    }
+
+    /// The pane's three bands — totals, list, warnings — given the warning
+    /// lines already measured for it.
+    ///
+    /// The one place the split is computed: this widget's `render` and
+    /// [`Self::rows_area`] both come through here rather than each adding
+    /// up [`HEADER_ROWS`] and the list block's title row for itself. Two
+    /// copies agree only until either side moves, and the symptom is a
+    /// click selecting a project three rows from the one under the cursor
+    /// rather than anything that reads as a layout bug.
+    fn split(&self, area: Rect, warnings: &[Line<'static>]) -> [Rect; 3] {
+        // The same rule the day pane applies to its header band, on the
+        // week's other axis: two `Length`s in one layout have equal claim,
+        // so a one-row warnings block was winning the last row off a
+        // two-row totals header and the pane's whole reason to exist —
+        // the hours — went with it. The block yields instead.
+        let warning_rows = band::fit_band(
+            u16::try_from(warnings.len()).unwrap_or(u16::MAX),
+            area.height,
+            HEADER_ROWS + MIN_LIST_ROWS,
+        );
+        Layout::vertical([
+            Constraint::Length(HEADER_ROWS),
+            Constraint::Fill(1),
+            Constraint::Length(warning_rows),
+        ])
+        .areas(area)
+    }
+
+    /// The rows the projects themselves are drawn into when this pane is
+    /// rendered in `area`: `area` minus the totals block above, the
+    /// warnings block below, and the list's own title bar.
+    fn rows_area(&self, area: Rect) -> Rect {
+        let [_, list_area, _] = self.split(area, &self.warning_lines());
+        self.list_block().inner(list_area)
+    }
+
+    /// The project index drawn at row `y` when this pane is rendered in
+    /// `area`, given the scroll offset `state` is carrying, or `None`
+    /// outside the project rows.
+    ///
+    /// `area` is the whole pane — the rect `App` records when it draws this
+    /// widget — because that is what a click arrives with; the split back
+    /// out of it is [`Self::rows_area`]'s, never re-derived here.
+    ///
+    /// A method on the widget rather than on [`WeekListState`] because the
+    /// split depends on the warnings, which only the rollup knows about.
+    ///
+    /// Rows here are single-height, unlike the day view's project list, so
+    /// an index is read straight off `y` rather than walked.
+    pub fn index_at(&self, area: Rect, y: u16, state: &WeekListState) -> Option<usize> {
+        let rows = self.rows_area(area);
+        if y < rows.y || y >= rows.y.checked_add(rows.height)? {
+            return None;
+        }
+        let index = state.list.offset() + usize::from(y - rows.y);
+        (index < self.summary.projects.len()).then_some(index)
+    }
 }
 
 impl StatefulWidget for WeekListWidget<'_> {
@@ -163,26 +231,11 @@ impl StatefulWidget for WeekListWidget<'_> {
         // way `ProjectListWidget` threads its working-time rows, so the two
         // can never disagree about how many rows the block took.
         let warnings = self.warning_lines();
-        // The same rule the day pane applies to its header band, on the
-        // week's other axis: two `Length`s in one layout have equal claim,
-        // so a one-row warnings block was winning the last row off a
-        // two-row totals header and the pane's whole reason to exist —
-        // the hours — went with it. The block yields instead.
-        let warning_rows = band::fit_band(
-            u16::try_from(warnings.len()).unwrap_or(u16::MAX),
-            area.height,
-            HEADER_ROWS + MIN_LIST_ROWS,
-        );
-        let [header_area, list_area, warning_area] = Layout::vertical([
-            Constraint::Length(HEADER_ROWS),
-            Constraint::Fill(1),
-            Constraint::Length(warning_rows),
-        ])
-        .areas(area);
+        let [header_area, list_area, warning_area] = self.split(area, &warnings);
 
         self.render_header(header_area, buf);
         self.render_list(list_area, buf, state);
-        if warning_rows > 0 {
+        if warning_area.height > 0 {
             Paragraph::new(warnings).render(warning_area, buf);
         }
     }
@@ -232,6 +285,16 @@ impl WeekListState {
     /// The selected row, or `None` when the week has no projects to select.
     pub fn selected(&self) -> Option<usize> {
         self.list.selected()
+    }
+
+    /// Select `index`.
+    ///
+    /// Unlike [`ProjectListWidget::select_index`](super::project_list::ProjectListWidget::select_index),
+    /// this takes no bound of its own: [`WeekListWidget::index_at`] is its
+    /// only caller and has already checked `index` against the rollup's
+    /// project count.
+    pub fn select_index(&mut self, index: usize) {
+        self.list.select(Some(index));
     }
 
     /// Bring the selection back into range for a list of `len` rows.
@@ -392,7 +455,7 @@ mod tests {
     use crate::tui::app::{App, LOADING_MESSAGE};
     use crate::tui::context::TuiContext;
     use crate::tui::mode::Mode;
-    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
+    use crate::tui::testing::{fixture_date, fixture_day, render_to_string, row_containing};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -858,5 +921,52 @@ mod tests {
         let row = project_row(&project, 4);
         assert!(row.contains("a-very-long-project-code"), "got: {row:?}");
         assert!(row.contains("18:00"), "got: {row:?}");
+    }
+
+    /// The load-bearing test for this pane's hit-test, the same shape as
+    /// the day list's: wherever `index_at` claims a project is, that is
+    /// where the pane actually drew it.
+    ///
+    /// Rows are read back off a rendered buffer rather than off a
+    /// hand-built `Rect`, which is the difference that matters — a
+    /// hand-built rect agreed with a hit-test that sat three rows above
+    /// the first project row, because `render` spends two rows on the
+    /// totals block and one more on the list's own title bar.
+    #[test]
+    fn index_at_agrees_with_the_rows_the_pane_drew() {
+        let summary = fixture_week_summary();
+        let theme = Theme::none();
+        let area = Rect::new(0, 3, 60, 14);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 60, 20));
+        let mut state = WeekListState::default();
+        StatefulWidget::render(
+            WeekListWidget::new(&summary, &theme),
+            area,
+            &mut buf,
+            &mut state,
+        );
+
+        let widget = WeekListWidget::new(&summary, &theme);
+        for (index, project) in summary.projects.iter().enumerate() {
+            let y = row_containing(&buf, &project.name);
+            assert_eq!(
+                widget.index_at(area, y, &state),
+                Some(index),
+                "`{}` is drawn on row {y}",
+                project.name
+            );
+        }
+        assert_eq!(
+            widget.index_at(area, area.y, &state),
+            None,
+            "the totals block above the list is not a project row"
+        );
+    }
+
+    #[test]
+    fn select_index_moves_the_selection() {
+        let mut state = WeekListState::default();
+        state.select_index(1);
+        assert_eq!(state.selected(), Some(1));
     }
 }

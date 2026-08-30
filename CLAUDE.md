@@ -57,7 +57,7 @@ All three are enabled by default. `cli/src/main.rs` uses `#[cfg(feature = ...)]`
 ### Core Library (`src/`)
 | Module | Purpose |
 |--------|---------|
-| `config.rs` | CLI args (Clap) + TOML config deserialization + path resolution. Includes `theme` (TUI colour preset, default `"dark"`) and `daily_target_hours` (default `8.0`) — both are TUI-only and read once into `TuiContext` (see below), never accessed elsewhere |
+| `config.rs` | CLI args (Clap) + TOML config deserialization + path resolution. Includes `theme` (TUI colour preset, default `"dark"`), `daily_target_hours` (default `8.0`), and `mouse` (default `true`) — all three are TUI-only and read once into `TuiContext` (see below), never accessed elsewhere |
 | `data_svc.rs` | `DataService` — the whole data layer. A 30-second in-memory cache holding both the raw content *and* the memoized parse per date; `existing_dates` (one `read_dir` rather than a `stat` per queried day) and `find_populated_dates` for the calendar; and weekly aggregation (`get_weekly_summary`, which owns the project rollup and the minutes-desc-then-name-asc ordering). One unreadable day file is logged and skipped, never fatal to a scan |
 | `file_utils.rs` | Directory setup, template handling, file discovery |
 | `editor.rs` | Launch `$EDITOR`/`$VISUAL` for a given date file |
@@ -71,6 +71,8 @@ All three are enabled by default. `cli/src/main.rs` uses `#[cfg(feature = ...)]`
 | File | Purpose |
 |------|---------|
 | `app.rs` | `App` — state machine + the terminal event loop |
+| `terminal.rs` | `TerminalModes` — the one owner of which terminal modes are on (alternate screen, raw mode, mouse capture) — plus `with_suspended_terminal`, which the `$EDITOR` handover and Ctrl-Z both run their bodies inside |
+| `layout_rects.rs` | `LayoutRects` — where each clickable region was drawn on the last frame, filled during render and read by mouse hit-testing |
 | `ui.rs` | Rendering: breakpoints, layout, the day/week views |
 | `context.rs` | `TuiContext` — TUI config resolved once at startup and threaded through everything else. TUI code reads config through it and must never call `Config::get()` directly (only `tui()` in `mod.rs` does) |
 | `event.rs` | The terminal input + file-watch event stream |

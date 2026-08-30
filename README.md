@@ -59,6 +59,11 @@ theme = "dark"
 
 # Hours of tracked time that count as a full day, for the TUI weekly bar chart's y-axis ceiling and goal line.
 daily_target_hours = 8.0
+
+# Let the TUI capture the mouse: click a day, a bar, or a row, and scroll
+# with the wheel. Turn this off to keep the terminal's own click-drag text
+# selection. Defaults to true.
+mouse = true
 ````
 
 ## Installation
@@ -224,12 +229,31 @@ Then only the areas between the prefix/suffix are considered when parsing the fi
 | ↑ / k        | Raw file      | scroll the raw file up                                         |
 | r            | All           | reload the current date from disk                              |
 | e            | All           | edit the current date's notes in $EDITOR                       |
+| Ctrl-Z       | All           | suspend to the shell, resume with fg (Unix only)               |
 | y            | All           | copy the day's summary (with hours) to the clipboard           |
 | Y            | All           | copy the week's summary (with hours) to the clipboard          |
 | ?            | All           | show the help popup                                            |
 | Esc / q      | All           | quit (from the main view)                                      |
 | ? / Esc / q  | All           | close the help popup                                           |
 | Ctrl-C       | All           | quit, except it cancels the date prompt while that's open      |
+
+### Mouse
+
+The TUI captures the mouse by default:
+
+| Gesture | Effect |
+|---------|--------|
+| Click a calendar day | Jump to that date |
+| Click a bar in the weekly chart | Jump to that day |
+| Click a project or rollup row | Select it |
+| Double-click a day or a project | Open it in `$EDITOR` |
+| Click the footer hint | Open the help popup |
+| Wheel | Move the selection in whichever list is under the pointer |
+| Click outside an open popup | Dismiss it |
+
+Capture takes over the terminal's own click-drag text selection. Most
+emulators still select on **Shift-drag**. To turn capture off entirely, set
+`mouse = false` in the config file.
 
 ### Example Output
 

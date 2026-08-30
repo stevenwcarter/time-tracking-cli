@@ -51,6 +51,12 @@ impl<'a> DatePrompt<'a> {
     pub fn new(theme: &'a Theme, input: &'a str) -> Self {
         Self { theme, input }
     }
+
+    /// Where [`DatePrompt::render`] would draw its box in `area`. Fixed
+    /// size, so unlike the help popup this needs nothing from `self`.
+    pub fn popup_rect(area: Rect) -> Rect {
+        popup_area(area)
+    }
 }
 
 impl Widget for DatePrompt<'_> {

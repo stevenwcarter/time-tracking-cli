@@ -36,7 +36,21 @@ const WORKING_DEAD_SEPARATOR: &str = "    ";
 
 /// The row the list's own `Borders::TOP` title bar costs, outside the
 /// viewport its items are laid out in.
+///
+/// A *budget*, read by the sizing helpers below. The drawn geometry comes
+/// from `ProjectListWidget::list_block`'s own `inner`, so the hit-test and
+/// the render cannot disagree about it even if the block's decoration
+/// changes.
 const LIST_TITLE_ROWS: u16 = 1;
+
+/// Columns every row gives up to the highlight marker and the padding
+/// around it, subtracted from the list width before a body is wrapped.
+///
+/// One constant rather than a literal per site because
+/// [`ProjectItem::body_rows`] memoises per width: a hit-test measuring at
+/// a width the render never used silently rebuilds the layout and then
+/// walks the row heights of *that* one.
+const BODY_WIDTH_MARGIN: u16 = 4;
 
 /// A typical list item's height: a project's header line and two notes.
 const TYPICAL_ITEM_ROWS: u16 = 3;
@@ -321,6 +335,84 @@ impl ProjectListWidget {
     pub fn has_items(&self) -> bool {
         !self.project_list.items.is_empty()
     }
+
+    /// The block [`Self::render_list`] wraps the list in: its title bar,
+    /// drawn as a top border.
+    ///
+    /// Shared with [`Self::item_rows`] so the row it costs is ratatui's
+    /// answer for the block actually drawn, rather than a constant the
+    /// renderer and the hit-test keep in step by hand.
+    fn list_block(&self) -> Block<'static> {
+        Block::new()
+            .title(Line::raw("Project Summaries").centered())
+            .borders(Borders::TOP)
+            .border_set(symbols::border::EMPTY)
+            .border_style(self.theme.list_header)
+    }
+
+    /// The rows the projects themselves are drawn into when this pane is
+    /// rendered in `area`: `area` minus its header band and minus the
+    /// list's title bar.
+    ///
+    /// `area` is the whole pane — the rect `App` records when it draws this
+    /// widget — because that is what a click arrives with.
+    fn item_rows(&self, area: Rect) -> Rect {
+        let working_time_lines = self.working_time_lines(area.width);
+        let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
+        let [_, main_area] = split_pane(area, &working_time_lines, &warning_lines);
+        self.list_block().inner(main_area)
+    }
+
+    /// The project index drawn at row `y` when this list is rendered in
+    /// `area`, or `None` for the header band, the title row, and rows past
+    /// the last item.
+    ///
+    /// Both the header split and the title row come from [`Self::item_rows`]
+    /// — the same call `render` makes — rather than being added up again
+    /// here. That is the whole point: while this worked the offset out for
+    /// itself it resolved rows against the *pane*, and every click on a day
+    /// with a header selected a project several rows above the cursor.
+    ///
+    /// Rows are **variable-height**: [`Self::render_list`] clamps each
+    /// item's [`ProjectItem::body_rows`] to the viewport via
+    /// [`clamp_item_rows`], so an index cannot be divided out of `y` —
+    /// this walks the same per-item heights instead, starting at
+    /// [`ListState::offset`]. Rather than replaying `clamp_item_rows`'s
+    /// kept-lines-plus-marker arithmetic, it uses the one fact that
+    /// matters here: the clamp always leaves an item exactly
+    /// `body_rows(width).min(viewport_rows.max(1))` rows tall.
+    ///
+    /// Current only because hit-testing runs after a draw, so the offset
+    /// a click lands on is the one already on screen.
+    pub fn index_at(&self, area: Rect, y: u16) -> Option<usize> {
+        let rows = self.item_rows(area);
+        if y < rows.y || y >= rows.y.checked_add(rows.height)? {
+            return None;
+        }
+
+        let body_width = rows.width.saturating_sub(BODY_WIDTH_MARGIN);
+        let viewport_rows = usize::from(rows.height.max(1));
+        let target = usize::from(y - rows.y);
+
+        let mut row = 0_usize;
+        for index in self.project_list.state.offset()..self.project_list.items.len() {
+            let item = self.project_list.items.get(index)?;
+            let height = item.body_rows(body_width).min(viewport_rows);
+            let next = row + height;
+            if target < next {
+                return Some(index);
+            }
+            row = next;
+        }
+        None
+    }
+
+    /// Select `index`, ignoring one past the end.
+    pub fn select_index(&mut self, index: usize) {
+        if index < self.project_list.items.len() {
+            self.project_list.state.select(Some(index));
+        }
+    }
 }
 
 impl Widget for &mut ProjectListWidget {
@@ -335,20 +427,36 @@ impl Widget for &mut ProjectListWidget {
         // it took.
         let working_time_lines = self.working_time_lines(area.width);
         let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
-        // The header is a `Length` against the list's `Fill(1)`, so it wins
-        // every tie and used to win the list's last row outright — see
-        // `band` for the whole failure. It yields to the list's floor here.
-        let header_rows = band::fit_band(
-            header_height(&working_time_lines, &warning_lines),
-            area.height,
-            LIST_FLOOR_ROWS,
-        );
-        let [header_area, main_area] =
-            Layout::vertical([Constraint::Length(header_rows), Constraint::Fill(1)]).areas(area);
+        let [header_area, main_area] = split_pane(area, &working_time_lines, &warning_lines);
 
         self.render_header(header_area, working_time_lines, warning_lines, buf);
         self.render_list(main_area, buf);
     }
+}
+
+/// The pane's header band and the list below it, given the header content
+/// already measured at this width.
+///
+/// The one place the split is computed. [`ProjectListWidget::render`] and
+/// [`ProjectListWidget::item_rows`] — and so [`ProjectListWidget::index_at`]
+/// — both come through here, because the one thing a hit-test must not do
+/// is derive the offset separately: two copies agree only until either side
+/// moves, and the symptom is a click selecting a project several rows from
+/// the one under the cursor rather than anything that reads as a layout bug.
+fn split_pane(
+    area: Rect,
+    working_time_lines: &[Line<'static>],
+    warning_lines: &[Line<'static>],
+) -> [Rect; 2] {
+    // The header is a `Length` against the list's `Fill(1)`, so it wins
+    // every tie and used to win the list's last row outright — see
+    // `band` for the whole failure. It yields to the list's floor here.
+    let header_rows = band::fit_band(
+        header_height(working_time_lines, warning_lines),
+        area.height,
+        LIST_FLOOR_ROWS,
+    );
+    Layout::vertical([Constraint::Length(header_rows), Constraint::Fill(1)]).areas(area)
 }
 
 /// Rows the header needs given its already-measured `working_time_lines`
@@ -413,7 +521,7 @@ impl ProjectListWidget {
     pub(super) fn rows_to_show(&self, width: u16, projects: usize) -> u16 {
         let working_time_lines = self.working_time_lines(width);
         let warning_lines = band::warning_lines(&self.warnings, self.theme.error, "");
-        let body_width = width.saturating_sub(4);
+        let body_width = width.saturating_sub(BODY_WIDTH_MARGIN);
         let items = self
             .project_list
             .items
@@ -487,14 +595,14 @@ impl ProjectListWidget {
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
-        let block = Block::new()
-            .title(Line::raw("Project Summaries").centered())
-            .borders(Borders::TOP)
-            .border_set(symbols::border::EMPTY)
-            .border_style(self.theme.list_header);
+        let block = self.list_block();
+        // The rows the items get: the block's title bar is a top border, so
+        // it sits inside `area` and outside this. `Self::index_at` resolves
+        // a click against the very same rect.
+        let rows = block.inner(area);
 
-        let body_width = area.width.saturating_sub(4);
-        let viewport_rows = area.height.saturating_sub(LIST_TITLE_ROWS);
+        let body_width = rows.width.saturating_sub(BODY_WIDTH_MARGIN);
+        let viewport_rows = rows.height;
         let items: Vec<ListItem> = self
             .project_list
             .items
@@ -652,8 +760,25 @@ mod tests {
     use super::*;
     use crate::tui::app::App;
     use crate::tui::context::TuiContext;
-    use crate::tui::testing::{fixture_day, fixture_day_with_notes, render_to_string};
+    use crate::tui::testing::{
+        fixture_day, fixture_day_with_notes, render_to_string, row_containing,
+    };
     use crate::tui::ui::MIN_ROWS;
+    use time_tracking_parser::ProjectSummary;
+
+    /// A project with `notes`, for tests that need a variable note count —
+    /// `crate::tui::testing::project` fixes it at two.
+    fn project(
+        name: &str,
+        total_minutes: u32,
+        notes: impl IntoIterator<Item = &'static str>,
+    ) -> ProjectSummary {
+        ProjectSummary {
+            name: name.to_owned(),
+            total_minutes,
+            notes: notes.into_iter().map(str::to_owned).collect(),
+        }
+    }
 
     #[test]
     fn pads_by_display_width_not_char_count() {
@@ -935,5 +1060,113 @@ mod tests {
             screen.contains("Dead Time: 10:00 (10.00 hours)"),
             "got:\n{screen}"
         );
+    }
+
+    /// A day whose projects have different note counts: rows are
+    /// variable-height, since `render_list` builds each item from
+    /// `clamp_item_rows(body(width), viewport_rows)`.
+    fn uneven_day() -> TimeTrackingData {
+        TimeTrackingData {
+            total_minutes: 180,
+            dead_time_minutes: 0,
+            projects: vec![
+                project("one-note", 60, ["a"]),
+                project("three-notes", 60, ["a", "b", "c"]),
+                project("two-notes", 60, ["a", "b"]),
+            ],
+            warnings: Vec::new(),
+            start_time: None,
+            end_time: None,
+        }
+    }
+
+    /// Render `data`'s pane into `area` and assert that every project
+    /// hit-tests back from the row it was actually drawn on.
+    ///
+    /// Rows are read off the rendered buffer rather than derived from
+    /// `area` — a hit-test checked against a hand-built `Rect` is checked
+    /// against its own arithmetic and agrees with a wrong answer as
+    /// readily as with a right one. What that missed: `render` splits the
+    /// pane into a header band and a list, and `index_at` was resolving
+    /// rows against the *pane*, so every click landed some projects short.
+    fn assert_every_project_hit_tests_back(data: &TimeTrackingData, area: Rect) {
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(data, &theme);
+        let mut buf = Buffer::empty(Rect::new(0, 0, area.width, area.y + area.height));
+        (&mut widget).render(area, &mut buf);
+
+        for (index, project) in data.projects.iter().enumerate() {
+            let y = row_containing(&buf, &project.name);
+            assert_eq!(
+                widget.index_at(area, y),
+                Some(index),
+                "`{}` is drawn on row {y}",
+                project.name
+            );
+        }
+    }
+
+    /// The load-bearing test for this pane's hit-test: wherever `index_at`
+    /// claims a project is, that is where the pane actually drew it.
+    ///
+    /// Variable row heights are part of the same assertion: an index that
+    /// was divided out of `y` rather than walked would disagree here too.
+    #[test]
+    fn index_at_agrees_with_the_rows_the_list_drew() {
+        assert_every_project_hit_tests_back(&uneven_day(), Rect::new(0, 2, 60, 28));
+    }
+
+    /// The header band is not a fixed height — it grows with dead time and
+    /// with warnings — so a hit-test that happened to track it on a clean
+    /// day would still be wrong on an ordinary one. Same assertion, a
+    /// header several rows taller.
+    #[test]
+    fn index_at_follows_a_header_grown_by_dead_time_and_warnings() {
+        let data = TimeTrackingData {
+            dead_time_minutes: 45,
+            warnings: vec!["Error parsing time range '9-'".to_owned()],
+            ..uneven_day()
+        };
+        assert_every_project_hit_tests_back(&data, Rect::new(0, 2, 60, 28));
+    }
+
+    /// The pane rect starts at the header band, not at the first project
+    /// row, so every row above the first project resolves to nothing —
+    /// the last row of the header included, which is the one the old
+    /// arithmetic handed to a project further down the list.
+    #[test]
+    fn index_at_ignores_clicks_above_the_first_project_row() {
+        let data = uneven_day();
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&data, &theme);
+        let area = Rect::new(0, 5, 60, 28);
+        let mut buf = Buffer::empty(Rect::new(0, 0, area.width, area.y + area.height));
+        (&mut widget).render(area, &mut buf);
+
+        let first_row = row_containing(&buf, &data.projects[0].name);
+        for y in area.y..first_row {
+            assert_eq!(
+                widget.index_at(area, y),
+                None,
+                "row {y} is above the first project row ({first_row})"
+            );
+        }
+    }
+
+    #[test]
+    fn select_index_moves_the_selection() {
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&fixture_day(), &theme);
+        widget.select_index(2);
+        assert_eq!(widget.selected_item(), Some(2));
+    }
+
+    #[test]
+    fn select_index_past_the_end_is_ignored() {
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&fixture_day(), &theme);
+        let before = widget.selected_item();
+        widget.select_index(999);
+        assert_eq!(widget.selected_item(), before);
     }
 }

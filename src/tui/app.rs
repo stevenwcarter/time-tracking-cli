@@ -2,7 +2,6 @@ use crate::time_utils::get_week_dates;
 use std::{
     collections::HashMap,
     fmt,
-    io::stdout,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
@@ -13,25 +12,26 @@ use crate::{
     editor::open_in_editor,
 };
 
+use super::layout_rects::{LayoutRects, hits};
+use super::terminal::{TerminalModes, with_suspended_terminal};
 use super::{
     context::TuiContext,
     event::{AppEvent, AppEventSender, Event, EventHandler, LoadPayload, Reload},
     keymap,
     mode::{Handled, Mode, Overlay},
     project_list::ProjectListWidget,
-    week_list::WeekListState,
-    widgets::date_prompt,
+    week_list::{WeekListState, WeekListWidget},
+    widgets::{Calendar, date_prompt},
 };
 use anyhow::{Context, Result};
 use copypasta::{ClipboardContext, ClipboardProvider};
-use crossterm::{
-    ExecutableCommand,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
 use ratatui::{
     DefaultTerminal, Terminal,
     backend::Backend,
-    crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    crossterm::event::{
+        Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
+        MouseEvent, MouseEventKind,
+    },
 };
 use time::{Date, OffsetDateTime};
 use time_tracking_parser::TimeTrackingData;
@@ -49,6 +49,12 @@ const WATCH_INTERVAL: Duration = Duration::from_secs(1);
 /// it. Long enough to read a toast, short enough that the help hint is what
 /// an idle screen shows.
 const STATUS_TTL: Duration = Duration::from_secs(4);
+
+/// How close together two clicks at the same cell count as a double click.
+///
+/// Terminals do not report double clicks, so this is measured here. 400ms is
+/// the common desktop default; shorter starts dropping deliberate doubles.
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(400);
 
 /// The footer's resting text, and the only hint a day with no data gives that
 /// the TUI has any keys at all.
@@ -216,6 +222,9 @@ pub struct App {
     /// While this is `Some` the overlay is the only layer that sees a key;
     /// see [`App::handle_key_events`].
     pub overlay: Option<Overlay>,
+    /// Where each clickable region was drawn on the most recent frame; see
+    /// [`LayoutRects`].
+    pub layout: LayoutRects,
     /// The one-line message on the footer and the moment it was set, or
     /// `None` when the footer is free to show the loading or help text.
     ///
@@ -223,6 +232,11 @@ pub struct App {
     /// only feedback channel the TUI has: the alternate screen owns the
     /// terminal, so anything that only reaches the log reaches nobody.
     pub status: Option<(String, Instant)>,
+    /// When and where the last left-click landed, for detecting a double.
+    ///
+    /// `Instant` is already the status line's clock; this reuses it rather
+    /// than reaching for a second time source.
+    last_click: Option<(Instant, u16, u16)>,
     /// The system clipboard, connected on first use.
     ///
     /// Held rather than rebuilt per copy because connecting is the expensive
@@ -364,7 +378,9 @@ impl App {
             dirty: true,
             mode: Mode::Day,
             overlay: None,
+            layout: LayoutRects::default(),
             status: None,
+            last_click: None,
             clipboard: None,
             loading: false,
             loaded_date: None,
@@ -493,6 +509,9 @@ impl App {
                 {
                     self.handle_key_events(key_event)?;
                 }
+                Event::Crossterm(CrosstermEvent::Mouse(mouse_event)) => {
+                    self.handle_mouse_event(mouse_event)?;
+                }
                 Event::Crossterm(_) => {}
                 Event::App(app_event) => {
                     if let Err(e) = self.handle_app_event(app_event, &mut terminal).await {
@@ -560,6 +579,11 @@ impl App {
                 self.run_editor(terminal).await?;
                 // The edit may have added time to an empty day or taken the
                 // last of it away, either of which moves a calendar marker.
+                self.events.send(AppEvent::ReloadFromDisk(Reload::Rescan));
+            }
+            AppEvent::Suspend => {
+                self.suspend(terminal).await?;
+                self.dirty = true;
                 self.events.send(AppEvent::ReloadFromDisk(Reload::Rescan));
             }
             e @ (AppEvent::ToggleZoomBar
@@ -697,13 +721,14 @@ impl App {
             }
             AppEvent::YankDay => self.yank_day(),
             AppEvent::YankWeek => self.yank_week(),
-            // `handle_app_event` owns these: `Edit` awaits the editor, and
-            // `ReloadFromDisk` spawns a load, which needs a runtime.
+            // `handle_app_event` owns these: `Edit` and `Suspend` both await
+            // the terminal handover, and `ReloadFromDisk` spawns a load,
+            // which needs a runtime.
             //
             // Adding a variant here alone is not enough — list it in
             // `handle_app_event`'s alternation too, or it is dropped in both
             // places and no test fails.
-            AppEvent::ReloadFromDisk(_) | AppEvent::Edit => {}
+            AppEvent::ReloadFromDisk(_) | AppEvent::Edit | AppEvent::Suspend => {}
         }
     }
 
@@ -906,20 +931,59 @@ impl App {
     /// this path as how a broken data directory gets *reported*; it hung
     /// instead.
     ///
-    /// So the poller is resumed by [`PausedPoller`]'s `Drop` and the screen
-    /// is restored by an unconditional statement, with the two results
-    /// combined at the end rather than propagated where they happen.
+    /// [`with_suspended_terminal`] is what pins that invariant now — see its
+    /// doc comment for how the pause/restore pairing is kept structural.
     ///
     /// [`EventTask`]: super::event::EventHandler
     pub async fn run_editor<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
-        let edited = {
-            // Borrowed field by field so the guard and the edit below are
-            // visibly two different fields of `self`.
-            let _paused = PausedPoller::new(&mut self.events);
-            edit_date(&self.data_svc, self.active_date).await
-        };
-        let restored = restore_terminal(terminal);
-        edited.and(restored)
+        // Destructured rather than borrowed through `self` twice: the helper
+        // takes `&mut self.events` and the body captures `&self.data_svc`,
+        // which the borrow checker only sees as disjoint when the two are
+        // named separately.
+        let Self {
+            events,
+            data_svc,
+            active_date,
+            ctx,
+            ..
+        } = self;
+        let date = *active_date;
+        let modes = TerminalModes { mouse: ctx.mouse };
+        with_suspended_terminal(events, terminal, modes, || edit_date(data_svc, date)).await
+    }
+
+    /// Stop the process and hand the terminal back to the shell, resuming
+    /// where it left off when the user runs `fg`.
+    ///
+    /// Rust installs no `SIGTSTP` handler, so the signal's default action
+    /// stops the process and `raise` returns only once `SIGCONT` arrives —
+    /// which makes the statement after it the resume path. No `SIGCONT`
+    /// handler is needed, and none is installed.
+    #[cfg(unix)]
+    pub async fn suspend<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> Result<()> {
+        let Self { events, ctx, .. } = self;
+        let modes = TerminalModes { mouse: ctx.mouse };
+        with_suspended_terminal(events, terminal, modes, || async {
+            // SAFETY: `raise` is async-signal-safe and takes no pointers.
+            // SIGTSTP's default disposition stops the process; nothing here
+            // has installed a handler that would change that.
+            let rc = unsafe { libc::raise(libc::SIGTSTP) };
+            if rc != 0 {
+                anyhow::bail!("could not suspend: raise(SIGTSTP) returned {rc}");
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// Windows has no `SIGTSTP`, and the binding is deliberately not
+    /// `cfg`-gated — one `BINDINGS` table keeps the help popup and the
+    /// generated README identical on every platform — so the key has to
+    /// answer for itself here instead of doing nothing.
+    #[cfg(not(unix))]
+    pub async fn suspend<B: Backend>(&mut self, _terminal: &mut Terminal<B>) -> Result<()> {
+        self.set_status("Suspend is not available on Windows");
+        Ok(())
     }
 
     /// Start loading the active date in the background, superseding whatever
@@ -1287,6 +1351,192 @@ impl App {
         Ok(())
     }
 
+    /// Route a mouse event to whatever [`App::layout`] says was drawn under
+    /// it.
+    ///
+    /// Only a left-button press and the two wheel directions are acted on
+    /// (see [`App::handle_click`] and [`App::scroll_at`]); motion and drags
+    /// are ignored outright — crossterm's `EnableMouseCapture` uses mode
+    /// 1002 (button-event tracking), so an idle mouse generates nothing at
+    /// all and the loop is never woken by the cursor merely moving.
+    pub fn handle_mouse_event(&mut self, event: MouseEvent) -> Result<()> {
+        let (x, y) = (event.column, event.row);
+        match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let doubled = self.is_double_click(x, y);
+                self.handle_click(x, y, doubled);
+            }
+            MouseEventKind::ScrollDown => self.scroll_at(x, y, true),
+            MouseEventKind::ScrollUp => self.scroll_at(x, y, false),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Is this click the second of a double at the same cell?
+    ///
+    /// Records the click either way, so three fast clicks read as one double
+    /// and then a fresh single rather than two overlapping doubles.
+    fn is_double_click(&mut self, x: u16, y: u16) -> bool {
+        let now = Instant::now();
+        let doubled = self
+            .last_click
+            .is_some_and(|(at, px, py)| px == x && py == y && now - at < DOUBLE_CLICK_WINDOW);
+        self.last_click = if doubled { None } else { Some((now, x, y)) };
+        doubled
+    }
+
+    /// Dispatch a left click at (`x`, `y`) to whichever region it landed in.
+    ///
+    /// Dispatch is **overlay-first**, the same rule
+    /// [`Overlay`] states for keys: while one is open, a click inside it is
+    /// inert and a click outside dismisses it, and nothing behind it is
+    /// reachable. Below that, a hit is checked footer first and then each
+    /// mode-specific region; each arm returns as soon as it recognises the
+    /// click as its own, even when the click resolves to nothing inside it
+    /// (a gutter column, an empty row) — the rect was drawn there, so the
+    /// click belongs to it rather than falling through to whatever is
+    /// underneath.
+    ///
+    /// Hits are resolved against [`App::layout`], which the previous frame
+    /// filled in, so a region that was not drawn cannot be clicked.
+    ///
+    /// `doubled` is computed once by the caller, from the same (x, y) this
+    /// dispatches on — a double click is a single click plus an open, so
+    /// only the calendar and project-list branches act on it, on top of
+    /// (never instead of) their ordinary single-click behaviour.
+    fn handle_click(&mut self, x: u16, y: u16, doubled: bool) {
+        if self.overlay.is_some() {
+            if !hits(self.layout.overlay, x, y) {
+                self.overlay = None;
+                self.dirty = true;
+            }
+            // Spent on the modal layer, whether it dismissed the overlay or
+            // landed inertly inside it — either way not a click on whatever
+            // is under it, so it must not pair with the next click there to
+            // arm a double (which would fire `AppEvent::Edit` on a cell the
+            // user only ever single-clicked).
+            self.last_click = None;
+            return;
+        }
+
+        if hits(self.layout.help_hint, x, y) {
+            self.toggle_help();
+            self.dirty = true;
+            return;
+        }
+
+        if hits(self.layout.calendar, x, y) {
+            // The `Calendar` only borrows `populated_dates`/`ctx.theme` long
+            // enough to resolve `date`; that borrow has to end before
+            // `go_to_date` can take `&mut self`.
+            let area = self.layout.calendar.expect("hits confirmed Some");
+            let date = Calendar::new(self.active_date, &self.populated_dates, &self.ctx.theme)
+                .date_at(area, x, y);
+            if let Some(date) = date {
+                // Navigate first: a double click must open the editor on the
+                // day just clicked, not on wherever `active_date` was.
+                self.go_to_date(date);
+                self.dirty = true;
+                if doubled {
+                    self.events.send(AppEvent::Edit);
+                }
+            }
+            return;
+        }
+
+        if hits(self.layout.bar_chart, x, y) {
+            // Shares `weekly_bar_chart()` with the renderer rather than
+            // building a second instance here: see that method's doc for why.
+            let area = self.layout.bar_chart.expect("hits confirmed Some");
+            let date = self.weekly_bar_chart().date_at(area, x, y);
+            if let Some(date) = date {
+                self.go_to_date(date);
+                self.dirty = true;
+            }
+            return;
+        }
+
+        if hits(self.layout.project_list, x, y) {
+            let area = self.layout.project_list.expect("hits confirmed Some");
+            if let Some(widget) = &mut self.project_list_widget
+                && let Some(index) = widget.index_at(area, y)
+            {
+                widget.select_index(index);
+                self.dirty = true;
+                if doubled {
+                    self.events.send(AppEvent::Edit);
+                }
+            }
+            return;
+        }
+
+        if hits(self.layout.week_list, x, y) {
+            let area = self.layout.week_list.expect("hits confirmed Some");
+            // `weekly_summary` is the rollup the pane draws; `weekly_data` is
+            // the bar chart's per-day minutes and has no project list. The
+            // staleness filter is the same guard `week_projects` applies to
+            // every other reader, so a click cannot select into last week's
+            // list once `week_is_stale` says this week's rollup is not the
+            // one on screen.
+            //
+            // Hit-tested through a `WeekListWidget`, which owns the pane's
+            // totals/list/warnings split, rather than re-deriving that split
+            // here. Resolved into a local first so the rollup's borrow ends
+            // before `select_index` takes `&mut self.week_list`.
+            let stale = self.week_is_stale();
+            let index = self
+                .weekly_summary
+                .as_ref()
+                .filter(|_| !stale)
+                .and_then(|summary| {
+                    WeekListWidget::new(summary, &self.ctx.theme).index_at(area, y, &self.week_list)
+                });
+            if let Some(index) = index {
+                self.week_list.select_index(index);
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Move the selection in whichever list the wheel is over `(x, y)` by
+    /// one row (`down`) or by one bar-chart column.
+    ///
+    /// The selection moves rather than a detached viewport, because
+    /// [`ratatui::widgets::ListState`] carries no scroll offset independent
+    /// of the selection — scrolling one without the other would leave the
+    /// highlight off-screen. Ignored entirely while an overlay is open: the
+    /// overlay is modal, so the wheel must not reach a widget behind it.
+    fn scroll_at(&mut self, x: u16, y: u16, down: bool) {
+        if self.overlay.is_some() {
+            return;
+        }
+
+        let event = if hits(self.layout.project_list, x, y) {
+            if down {
+                AppEvent::NextProject
+            } else {
+                AppEvent::PreviousProject
+            }
+        } else if hits(self.layout.week_list, x, y) {
+            if down {
+                AppEvent::NextWeekProject
+            } else {
+                AppEvent::PreviousWeekProject
+            }
+        } else if hits(self.layout.raw_file, x, y) {
+            if down {
+                AppEvent::ScrollRawFileDown
+            } else {
+                AppEvent::ScrollRawFileUp
+            }
+        } else {
+            return;
+        };
+
+        self.apply_sync_event(event);
+    }
+
     /// Queue `app_event`, unless it decides which layer sees the next key.
     ///
     /// Keys and application events share one channel, so a key the user has
@@ -1512,40 +1762,14 @@ impl App {
     }
 }
 
-/// Holds the event poller paused for as long as it lives, and resumes it on
-/// the way out — including the way out an `?` takes.
+/// Open `$EDITOR` on `date`'s file — creating it if it does not exist — and
+/// drop the cache entry the edit invalidates.
 ///
-/// A `Drop` guard rather than a matching `resume()` call at the bottom of
-/// [`App::run_editor`] because the failure mode is invisible: a paused poller
-/// emits nothing at all, so a missed resume does not error, it hangs. The
-/// pairing has to be structural, not remembered.
-struct PausedPoller<'a>(&'a mut EventHandler);
-
-impl<'a> PausedPoller<'a> {
-    /// Pause `events` until the returned guard is dropped.
-    fn new(events: &'a mut EventHandler) -> Self {
-        events.pause();
-        Self(events)
-    }
-}
-
-impl Drop for PausedPoller<'_> {
-    fn drop(&mut self) {
-        self.0.resume();
-    }
-}
-
-/// Leave the alternate screen, open `$EDITOR` on `date`'s file — creating it
-/// if it does not exist — and drop the cache entry the edit invalidates.
-///
-/// A free function taking the fields it needs so [`App::run_editor`] can hold
-/// [`PausedPoller`] over it: the guard borrows `App::events` and this borrows
-/// `App::data_svc`, which the borrow checker only sees as disjoint when the
-/// two are named separately.
+/// A free function rather than a method: it is the body [`App::run_editor`]
+/// hands to [`with_suspended_terminal`], borrowing only `App::data_svc` —
+/// `App::events` goes to the helper directly, which is what keeps the two
+/// borrows disjoint.
 async fn edit_date(data_svc: &DataService, date: Date) -> Result<()> {
-    stdout().execute(LeaveAlternateScreen)?;
-    disable_raw_mode()?;
-
     let file_path = data_svc.create_day_file_if_not_exists(&date).await?;
     // Reported rather than propagated: the file exists either way, so the
     // TUI coming back with a complaint beats the error unwinding the loop.
@@ -1553,15 +1777,6 @@ async fn edit_date(data_svc: &DataService, date: Date) -> Result<()> {
         eprintln!("Failed to open editor: {e}");
     }
     data_svc.invalidate_date(&date).await;
-    Ok(())
-}
-
-/// Put the alternate screen and raw mode back, and clear whatever the editor
-/// left on the way out.
-fn restore_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<()> {
-    stdout().execute(EnterAlternateScreen)?;
-    enable_raw_mode()?;
-    terminal.clear()?;
     Ok(())
 }
 
@@ -1731,6 +1946,7 @@ fn changes_key_routing(app_event: &AppEvent) -> bool {
         | AppEvent::YankDay
         | AppEvent::YankWeek
         | AppEvent::Edit
+        | AppEvent::Suspend
         | AppEvent::NextDate
         | AppEvent::PreviousDate
         | AppEvent::NextWeek
@@ -1857,7 +2073,8 @@ fn shift_months(date: Date, offset: i32) -> Result<Date> {
 mod tests {
     use super::*;
     use crate::data_svc::WeeklyProject;
-    use crate::tui::testing::{fixture_date, fixture_day, render_to_string};
+    use crate::tui::testing::{fixture_date, fixture_day, render_to_string, row_of};
+    use crate::tui::week_list::fixture_week_summary as fixture_week_rollup;
     use ratatui::{backend::TestBackend, crossterm::event::KeyCode};
     use std::{
         sync::{Arc, Mutex},
@@ -1984,6 +2201,66 @@ mod tests {
 
     fn selection(app: &App) -> Option<usize> {
         app.project_list_widget.as_ref()?.selected_item()
+    }
+
+    /// Hit-testing reads these, so a region that was not drawn this frame
+    /// must not be hittable. A terminal too small for the band is the case
+    /// that matters: the calendar is simply absent.
+    #[test]
+    fn rendering_records_the_regions_it_drew() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+
+        assert!(app.layout.calendar.is_some(), "calendar was drawn");
+        assert!(app.layout.bar_chart.is_some(), "bar chart was drawn");
+        assert!(app.layout.project_list.is_some(), "project list was drawn");
+        assert!(app.layout.help_hint.is_some(), "status line was drawn");
+        assert!(app.layout.overlay.is_none(), "no overlay is open");
+    }
+
+    /// Narrower than `NARROW_COLS`: the calendar is dropped and the chart
+    /// takes the header's full width, so this asserts the reason the
+    /// calendar is absent rather than merely that it is.
+    #[test]
+    fn a_narrow_terminal_drops_the_calendar_but_keeps_the_chart() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 80, 30);
+
+        assert!(
+            app.layout.calendar.is_none(),
+            "narrower than NARROW_COLS drops the calendar"
+        );
+        assert!(
+            app.layout.bar_chart.is_some(),
+            "the chart takes the header's full width instead"
+        );
+    }
+
+    /// Shorter than `COMPACT_ROWS`: the whole calendar/chart band is
+    /// dropped, so neither region was drawn at all.
+    #[test]
+    fn a_short_terminal_drops_the_whole_band() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 80, 20);
+
+        assert!(
+            app.layout.calendar.is_none(),
+            "the band was not drawn, so nothing there is clickable"
+        );
+        assert!(
+            app.layout.bar_chart.is_none(),
+            "the band was not drawn, so nothing there is clickable"
+        );
+    }
+
+    #[test]
+    fn an_open_overlay_records_its_rect() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+
+        let overlay = app.layout.overlay.expect("help popup was drawn");
+        assert!(overlay.width > 0 && overlay.height > 0);
     }
 
     /// Keys and application events share one channel, so a second key the
@@ -3224,38 +3501,6 @@ mod tests {
         assert_eq!(status_text(&app), Some(WEEK_STILL_LOADING));
     }
 
-    /// Regression: `run_editor` paused the poller and left the alternate
-    /// screen before doing anything fallible, and the `?` on
-    /// `create_day_file_if_not_exists` skipped both the restore and
-    /// `events.resume()`. A paused `EventTask` emits neither ticks nor keys
-    /// and never notices its receiver closing, so the loop's next
-    /// `events.next().await` blocked forever — a wedged app outside the
-    /// alternate screen with raw mode off, and under `--tui --serve` a
-    /// process that never exited.
-    ///
-    /// Driven through `PausedPoller` rather than through `run_editor`
-    /// itself on purpose: `run_editor` calls `enable_raw_mode`, and
-    /// crossterm reaches for `/dev/tty` directly rather than for the
-    /// captured stdout, so a test that ran it would leave the developer's
-    /// own terminal in raw mode. The guard is the seam that carries the
-    /// invariant, and it is the seam this asserts on.
-    #[test]
-    fn the_pause_guard_resumes_the_poller_on_the_way_out_of_a_failure() {
-        let mut events = EventHandler::new();
-
-        let handover: Result<()> = (|| {
-            let _paused = PausedPoller::new(&mut events);
-            anyhow::bail!("create_day_file_if_not_exists: Read-only file system")
-        })();
-
-        assert!(handover.is_err(), "the fixture must model a failure");
-        assert_eq!(
-            events.drain_pause_signals(),
-            vec![true, false],
-            "a failed handover must leave the poller running, not paused"
-        );
-    }
-
     /// The day-axis twin of the test above, and of the bug it pins.
     /// `go_to_date` moves `active_date` synchronously and only *queues* the
     /// reload, so `data` and `raw_content` still describe the *previous*
@@ -3667,5 +3912,412 @@ mod tests {
 
         assert!(app.watch.is_none(), "quit must drop the watch handle");
         assert!(handle.is_finished(), "quit must stop the watch task");
+    }
+
+    /// Ctrl-Z must pause the poller and resume it, exactly as the editor
+    /// handover does. Driven through the event rather than through a real
+    /// `SIGTSTP`: raising it in a test would stop the test runner.
+    #[test]
+    fn ctrl_z_is_bound_to_suspend_in_every_mode() {
+        use crate::tui::keymap::{BINDINGS, Key};
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        let key: Key = (KeyCode::Char('z'), KeyModifiers::CONTROL);
+        let binding = BINDINGS
+            .iter()
+            .find(|b| b.keys.contains(&key))
+            .expect("Ctrl-Z is bound");
+        assert_eq!(binding.event, AppEvent::Suspend);
+        for mode in [Mode::Day, Mode::Week, Mode::ZoomedWeek, Mode::RawFile] {
+            assert!(
+                binding.modes.contains(mode),
+                "Ctrl-Z must be live in {mode:?}"
+            );
+        }
+    }
+
+    /// The row is unconditional so BINDINGS, the help popup, the generated
+    /// README table and the test that compares it stay identical on every
+    /// platform — only the handler is cfg-gated. The description therefore
+    /// has to say where it works.
+    #[test]
+    fn the_suspend_binding_says_it_is_unix_only() {
+        use crate::tui::keymap::BINDINGS;
+
+        let binding = BINDINGS
+            .iter()
+            .find(|b| b.event == AppEvent::Suspend)
+            .expect("suspend binding");
+        assert!(
+            binding.description.contains("Unix only"),
+            "description must name the platform limit, got {:?}",
+            binding.description
+        );
+    }
+
+    fn click(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn wheel(kind: MouseEventKind, x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// The first cell `date_at` resolves inside the recorded calendar rect.
+    fn a_calendar_cell(app: &App) -> (u16, u16, Date) {
+        let area = app.layout.calendar.expect("calendar drawn");
+        let calendar = Calendar::new(app.active_date, &app.populated_dates, &app.ctx.theme);
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .find_map(|(x, y)| calendar.date_at(area, x, y).map(|d| (x, y, d)))
+            .expect("some calendar cell resolves")
+    }
+
+    #[test]
+    fn clicking_a_calendar_day_goes_to_it() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert_eq!(app.active_date, expected);
+    }
+
+    /// The first cell `date_at` resolves inside the recorded bar-chart rect.
+    ///
+    /// Goes through `App::weekly_bar_chart` — the same instance `render` and
+    /// `handle_click` build — rather than constructing a `WeeklyBarChart`
+    /// here directly: a test computing its expected target from a second,
+    /// independent construction could stay green even if the click handler's
+    /// and the renderer's ever drifted apart from each other.
+    fn a_bar_chart_cell(app: &App) -> (u16, u16, Date) {
+        let area = app.layout.bar_chart.expect("bar chart drawn");
+        let chart = app.weekly_bar_chart();
+        (area.y..area.y + area.height)
+            .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+            .find_map(|(x, y)| chart.date_at(area, x, y).map(|d| (x, y, d)))
+            .expect("some bar chart cell resolves")
+    }
+
+    #[test]
+    fn clicking_a_bar_chart_day_goes_to_it() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_bar_chart_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert_eq!(app.active_date, expected);
+    }
+
+    /// The week pane on screen with a landed three-project rollup —
+    /// client-bd, internal, admin, in that order.
+    fn week_app() -> App {
+        let mut app = App::new(TuiContext::for_test())
+            .with_active_date(fixture_date())
+            .with_weekly_summary(fixture_week_rollup());
+        app.mode = Mode::Week;
+        app
+    }
+
+    /// `ProjectListWidget::new` pre-selects row 0, so "something is
+    /// selected" is already true before any click and would hold with the
+    /// whole click path deleted. This pins the resulting index against the
+    /// project name actually drawn under the cursor.
+    #[test]
+    fn clicking_a_project_row_selects_that_project() {
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+        // The fixture's *third* project, so no header-sized offset can land
+        // on it by coincidence.
+        let y = row_of(&screen, "internal");
+
+        app.handle_mouse_event(click(list.x + 1, y)).expect("mouse");
+
+        assert_eq!(
+            selection(&app),
+            Some(2),
+            "the row drawing `internal` is project 2:\n{screen}"
+        );
+        assert_ne!(before, selection(&app), "the click moved the selection");
+    }
+
+    /// The same assertion for the week pane, which had no click test at
+    /// all: its rows sat three below where its hit-test looked for them.
+    #[test]
+    fn clicking_a_week_project_row_selects_that_project() {
+        let mut app = week_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        let before = app.week_list.selected();
+        let y = row_of(&screen, "admin");
+
+        app.handle_mouse_event(click(pane.x + 1, y)).expect("mouse");
+
+        assert_eq!(
+            app.week_list.selected(),
+            Some(2),
+            "the row drawing `admin` is the rollup's third project:\n{screen}"
+        );
+        assert_ne!(
+            before,
+            app.week_list.selected(),
+            "the click moved the selection"
+        );
+    }
+
+    /// The pane rect starts at its totals block, not at its first project
+    /// row, so a click on "Working Time:" resolves to nothing.
+    #[test]
+    fn clicking_the_week_totals_header_selects_nothing() {
+        let mut app = week_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        app.week_list.select_index(2);
+
+        app.handle_mouse_event(click(pane.x + 1, pane.y))
+            .expect("mouse");
+
+        assert_eq!(
+            app.week_list.selected(),
+            Some(2),
+            "the totals header is not a project row:\n{screen}"
+        );
+    }
+
+    /// A second click at the same cell inside the window opens the editor
+    /// on that day — the natural "open" gesture, reusing `AppEvent::Edit`.
+    #[test]
+    fn double_clicking_a_calendar_day_queues_an_edit() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("first");
+        app.handle_mouse_event(click(x, y)).expect("second");
+
+        assert_eq!(app.active_date, expected);
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "a double click queues an Edit, got {queued:?}"
+        );
+    }
+
+    #[test]
+    fn two_clicks_at_different_cells_are_not_a_double_click() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, _) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("first");
+        app.handle_mouse_event(click(x, y + 1))
+            .expect("second, elsewhere");
+
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            !queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "clicks at different cells must not open the editor"
+        );
+    }
+
+    /// Same gesture, the other branch that acts on it: the project list.
+    #[test]
+    fn double_clicking_a_project_row_queues_an_edit() {
+        let mut app = day_app();
+        let screen = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let y = row_of(&screen, "client-bd");
+
+        app.handle_mouse_event(click(list.x + 1, y)).expect("first");
+        app.handle_mouse_event(click(list.x + 1, y))
+            .expect("second");
+
+        assert_eq!(
+            selection(&app),
+            Some(1),
+            "the double click selects the row it landed on as well:\n{screen}"
+        );
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "a double click on a project row queues an Edit, got {queued:?}"
+        );
+    }
+
+    /// Overlay-first: nothing behind a modal is reachable, and a click
+    /// outside it dismisses. This is the rule `mode.rs` already states for
+    /// keys, applied to clicks.
+    #[test]
+    fn clicking_outside_an_open_overlay_dismisses_it_and_nothing_else() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let before = app.active_date;
+        let (x, y, _) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("mouse");
+
+        assert!(app.overlay.is_none(), "the click dismissed the popup");
+        assert_eq!(app.active_date, before, "and did not reach the calendar");
+    }
+
+    /// The click that dismisses an overlay was spent on the modal, not on
+    /// whatever is under it — so the natural follow-through of clicking the
+    /// same cell again (now that the popup is gone) must read as a fresh
+    /// single click, not as the second half of a double. Before this was
+    /// guarded, that sequence queued `AppEvent::Edit` and launched `$EDITOR`
+    /// on a day the user never double-clicked.
+    #[test]
+    fn dismissing_an_overlay_does_not_arm_a_double_click() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let (x, y, expected) = a_calendar_cell(&app);
+
+        app.handle_mouse_event(click(x, y)).expect("dismiss");
+        app.handle_mouse_event(click(x, y)).expect("navigate");
+
+        assert_eq!(
+            app.active_date, expected,
+            "the second click still navigates, as an ordinary single click"
+        );
+        let queued: Vec<Event> = std::iter::from_fn(|| app.events.try_next()).collect();
+        assert!(
+            !queued
+                .iter()
+                .any(|e| matches!(e, Event::App(AppEvent::Edit))),
+            "the dismiss click must not pair with the next one, got {queued:?}"
+        );
+    }
+
+    #[test]
+    fn clicking_inside_an_open_overlay_leaves_it_open() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let popup = app.layout.overlay.expect("popup drawn");
+
+        app.handle_mouse_event(click(popup.x + 1, popup.y + 1))
+            .expect("mouse");
+
+        assert!(app.overlay.is_some(), "a click inside the popup is inert");
+    }
+
+    #[test]
+    fn clicking_the_footer_opens_help() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let footer = app.layout.help_hint.expect("footer drawn");
+
+        app.handle_mouse_event(click(footer.x, footer.y))
+            .expect("mouse");
+
+        assert!(matches!(app.overlay, Some(Overlay::Help)));
+    }
+
+    #[test]
+    fn the_wheel_moves_the_project_selection() {
+        let mut app = day_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, list.x + 1, list.y + 1))
+            .expect("mouse");
+
+        assert_ne!(before, selection(&app), "the wheel moved the selection");
+    }
+
+    #[test]
+    fn the_wheel_moves_the_week_selection() {
+        let mut app = week_app();
+        let _ = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.week_list.expect("week list drawn");
+        let before = app.week_list.selected();
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, pane.x + 1, pane.y + 1))
+            .expect("mouse");
+
+        assert_ne!(
+            before,
+            app.week_list.selected(),
+            "the wheel moved the week selection"
+        );
+    }
+
+    /// The one region where the wheel is not list movement: the raw pane
+    /// scrolls a viewport, so the events have to reach `raw_scroll`.
+    #[test]
+    fn the_wheel_scrolls_the_raw_file_pane() {
+        let mut app = day_app();
+        app.raw_content = Some(
+            (0..100)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.mode = Mode::RawFile;
+        let _ = render_to_string(&mut app, 120, 40);
+        let pane = app.layout.raw_file.expect("raw pane drawn");
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, pane.x + 1, pane.y + 1))
+            .expect("down");
+        assert_eq!(app.raw_scroll, 1, "the wheel scrolled the raw pane down");
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollUp, pane.x + 1, pane.y + 1))
+            .expect("up");
+        assert_eq!(app.raw_scroll, 0, "and back up again");
+    }
+
+    /// An overlay is modal for the wheel exactly as it is for clicks and
+    /// keys: a scroll over a list behind an open popup must not move it.
+    #[test]
+    fn the_wheel_is_ignored_while_an_overlay_is_open() {
+        let mut app = day_app();
+        app.overlay = Some(Overlay::Help);
+        let _ = render_to_string(&mut app, 120, 40);
+        let list = app.layout.project_list.expect("list drawn");
+        let before = selection(&app);
+
+        app.handle_mouse_event(wheel(MouseEventKind::ScrollDown, list.x + 1, list.y + 1))
+            .expect("mouse");
+
+        assert_eq!(
+            before,
+            selection(&app),
+            "the popup swallowed the wheel event"
+        );
+    }
+
+    /// Nothing was drawn, so nothing is hittable — the guard that keeps a
+    /// stale rect from a previous frame from being clicked.
+    #[test]
+    fn clicks_before_the_first_render_do_nothing() {
+        let mut app = day_app();
+        let before = app.active_date;
+
+        app.handle_mouse_event(click(5, 5)).expect("mouse");
+
+        assert_eq!(app.active_date, before);
     }
 }

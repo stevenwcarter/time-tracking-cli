@@ -344,6 +344,17 @@ pub const BINDINGS: &[Binding] = &[
         description: "edit the current date's notes in $EDITOR",
     },
     Binding {
+        // Lowercase: crossterm's Unix parser delivers Ctrl-Z as `Char('z')`
+        // regardless of Shift (see `normalize`'s doc comment), and
+        // `every_control_binding_is_stored_lowercase` holds every row here
+        // to that same spelling so this class of bug cannot recur.
+        keys: &[(KeyCode::Char('z'), KeyModifiers::CONTROL)],
+        event: AppEvent::Suspend,
+        modes: ModeMask::ALL,
+        group: Group::General,
+        description: "suspend to the shell, resume with fg (Unix only)",
+    },
+    Binding {
         keys: &[(KeyCode::Char('y'), NONE)],
         event: AppEvent::YankDay,
         modes: ModeMask::ALL,
@@ -505,23 +516,46 @@ fn column_width<'a>(cells: impl Iterator<Item = &'a str>, heading: &str) -> usiz
 /// clears the bit this way once the shifted character is known (see its
 /// Kitty "report alternate keys" branch).
 ///
+/// A [`KeyCode::Char`] held with `CONTROL` is also lowercased, because
+/// crossterm's Unix parser maps the control byte to a lowercase base
+/// regardless of whether Shift was also held —
+/// `crossterm-0.28.1/src/event/sys/unix/parse.rs:107` turns `\x01..=\x1A`
+/// into `'a'..='z'` — so Ctrl-Z arrives as `Char('z')`, never `Char('Z')`.
+/// Doing the rewrite here, the single place every [`Binding::matches`] goes
+/// through, means a `BINDINGS` row can be spelled either way and still be
+/// reachable; `every_control_binding_is_stored_lowercase` still requires the
+/// table itself to store the lowercase form, so this is a safety net for a
+/// case that should never be written, not permission to write it.
+///
 /// Modifiers on non-character codes are left alone: `SHIFT` really is the
 /// only thing distinguishing Shift+Up from Up.
 fn normalize(key: KeyEvent) -> Key {
     let mut modifiers = key.modifiers;
-    if matches!(key.code, KeyCode::Char(_)) {
+    let mut code = key.code;
+    if let KeyCode::Char(c) = code {
         modifiers.remove(KeyModifiers::SHIFT);
+        if modifiers.contains(KeyModifiers::CONTROL) {
+            code = KeyCode::Char(c.to_ascii_lowercase());
+        }
     }
-    (key.code, modifiers)
+    (code, modifiers)
 }
 
 /// One key, spelled the way the help popup and the README show it.
+///
+/// Display is deliberately decoupled from the spelling [`normalize`]
+/// matches on: `BINDINGS` stores a `CONTROL`-held `Char` lowercase (see
+/// [`normalize`]'s doc comment for why), but "Ctrl-z" reads as a typo next
+/// to "Ctrl-C", so the character is uppercased here, for this purpose only.
 fn render_key(code: KeyCode, modifiers: KeyModifiers) -> String {
-    let name = key_name(code);
     if modifiers.contains(KeyModifiers::CONTROL) {
+        let name = match code {
+            KeyCode::Char(c) => Cow::Owned(c.to_ascii_uppercase().to_string()),
+            other => key_name(other),
+        };
         format!("Ctrl-{name}")
     } else {
-        name.into_owned()
+        key_name(code).into_owned()
     }
 }
 
@@ -846,6 +880,56 @@ mod tests {
             KeyCode::Char('j'),
             KeyModifiers::NONE
         )));
+    }
+
+    /// The real keypress crossterm sends for Ctrl-Z on Unix: its parser
+    /// maps the control byte to a lowercase base regardless of Shift
+    /// (`crossterm-0.28.1/src/event/sys/unix/parse.rs:107`), so this — not
+    /// the uppercase spelling a human reads on the label — is what `lookup`
+    /// has to resolve. A hand-built `KeyEvent` with the uppercase code is
+    /// what let the original bug through: it never touched this path.
+    #[test]
+    fn ctrl_z_resolves_to_suspend_from_the_key_crossterm_actually_sends() {
+        let key = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL);
+        for mode in ALL_MODES {
+            let binding = lookup(key, mode).expect("Ctrl-z must resolve in every mode");
+            assert_eq!(binding.event, AppEvent::Suspend);
+        }
+    }
+
+    /// The uppercase spelling has to resolve too, proving it is
+    /// [`normalize`] — not the literal case stored in `BINDINGS` — that
+    /// makes both spellings match.
+    #[test]
+    fn ctrl_shift_z_also_resolves_to_suspend() {
+        let key = KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::CONTROL);
+        for mode in ALL_MODES {
+            let binding = lookup(key, mode).expect("Ctrl-Z must resolve in every mode too");
+            assert_eq!(binding.event, AppEvent::Suspend);
+        }
+    }
+
+    /// Guards the class of bug the two tests above pin: crossterm's Unix
+    /// parser maps a control byte to a lowercase base regardless of Shift
+    /// (`crossterm-0.28.1/src/event/sys/unix/parse.rs:107`), so a `BINDINGS`
+    /// row spelled with an uppercase `Char` under `CONTROL` can never be
+    /// reached by a real keypress — only by a test that hand-constructs the
+    /// event, which is exactly how the Ctrl-Z row shipped unreachable.
+    /// `normalize` accepts either spelling, but the table itself must only
+    /// ever store the one crossterm delivers.
+    #[test]
+    fn every_control_binding_is_stored_lowercase() {
+        for b in BINDINGS {
+            for &(code, modifiers) in b.keys {
+                let KeyCode::Char(c) = code else { continue };
+                if modifiers.contains(KeyModifiers::CONTROL) {
+                    assert!(
+                        c.is_ascii_lowercase(),
+                        "{b:?} stores {code:?} under CONTROL, which crossterm never delivers"
+                    );
+                }
+            }
+        }
     }
 
     /// Regenerates the README section; see the module docs.

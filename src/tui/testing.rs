@@ -1,6 +1,6 @@
 //! Test-only helpers shared by the TUI unit tests.
 
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use time::{Date, macros::date};
 use time_tracking_parser::{ProjectSummary, Time, TimeTrackingData};
 
@@ -24,17 +24,41 @@ pub fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
     terminal
         .draw(|frame| frame.render_widget(app, frame.area()))
         .expect("draw");
-    let buf = terminal.backend().buffer();
-    (0..buf.area.height)
+    buffer_lines(terminal.backend().buffer()).join("\n")
+}
+
+/// `buf` as one string per row, trailing spaces trimmed.
+pub fn buffer_lines(buf: &Buffer) -> Vec<String> {
+    (buf.area.y..buf.area.y + buf.area.height)
         .map(|y| {
-            (0..buf.area.width)
+            (buf.area.x..buf.area.x + buf.area.width)
                 .map(|x| buf[(x, y)].symbol())
                 .collect::<String>()
                 .trim_end()
                 .to_string()
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect()
+}
+
+/// The row `needle` was drawn on in a frame flattened by
+/// [`render_to_string`].
+///
+/// Hit-tests are checked against where text actually landed rather than
+/// against the arithmetic they use themselves: a test that recomputes the
+/// expected row the way the code under test does agrees with a wrong
+/// answer just as readily as with a right one.
+pub fn row_of(screen: &str, needle: &str) -> u16 {
+    let row = screen
+        .lines()
+        .position(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("`{needle}` is nowhere on screen:\n{screen}"));
+    u16::try_from(row).expect("a screen row fits in u16")
+}
+
+/// [`row_of`] against a widget rendered straight into a [`Buffer`],
+/// answering in the buffer's own coordinates.
+pub fn row_containing(buf: &Buffer, needle: &str) -> u16 {
+    buf.area.y + row_of(&buffer_lines(buf).join("\n"), needle)
 }
 
 /// An eight-hour day with three projects, two notes each, no warnings and no

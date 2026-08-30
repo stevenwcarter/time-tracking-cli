@@ -96,6 +96,9 @@ pub enum AppEvent {
     YankWeek,
     /// Edit the current date in $EDITOR
     Edit,
+    /// Drop to the shell, leaving the process stopped until it is resumed
+    /// with `fg`. Unix only; on Windows the handler reports that instead.
+    Suspend,
     /// Go to the next date
     NextDate,
     /// Go to the previous date
