@@ -36,6 +36,8 @@ pub struct TuiContext {
     pub template_file: Option<String>,
     /// The styles every widget draws with.
     pub theme: Theme,
+    /// Does the TUI capture the mouse? See [`Config::mouse`].
+    pub mouse: bool,
 }
 
 impl TuiContext {
@@ -56,6 +58,7 @@ impl TuiContext {
             suffix: config.get_suffix().map(str::to_owned),
             template_file: config.get_template_file().map(str::to_owned),
             theme: Theme::resolve(config.theme.as_deref(), &ThemeEnv::from_env()),
+            mouse: config.mouse.unwrap_or(true),
         })
     }
 
@@ -98,6 +101,7 @@ impl TuiContext {
             suffix: None,
             template_file: None,
             theme: Theme::none(),
+            mouse: true,
         }
     }
 }
@@ -178,6 +182,28 @@ mod tests {
         let ctx = TuiContext::from_config(&config).expect("context from config");
 
         assert_eq!(ctx.daily_target_hours, DEFAULT_DAILY_TARGET_HOURS);
+    }
+
+    /// An unset key means capture is on: the feature has to be discoverable
+    /// without reading the config file.
+    #[test]
+    fn mouse_defaults_on_when_the_key_is_absent() {
+        let config = Config {
+            mouse: None,
+            ..Config::default()
+        };
+        let ctx = TuiContext::from_config(&config).expect("context");
+        assert!(ctx.mouse);
+    }
+
+    #[test]
+    fn mouse_can_be_turned_off_in_config() {
+        let config = Config {
+            mouse: Some(false),
+            ..Config::default()
+        };
+        let ctx = TuiContext::from_config(&config).expect("context");
+        assert!(!ctx.mouse);
     }
 
     #[test]

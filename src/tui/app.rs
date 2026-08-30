@@ -915,11 +915,11 @@ impl App {
             events,
             data_svc,
             active_date,
+            ctx,
             ..
         } = self;
         let date = *active_date;
-        // Task 2 replaces this with ctx.mouse.
-        let modes = TerminalModes { mouse: false };
+        let modes = TerminalModes { mouse: ctx.mouse };
         with_suspended_terminal(events, terminal, modes, || edit_date(data_svc, date)).await
     }
 

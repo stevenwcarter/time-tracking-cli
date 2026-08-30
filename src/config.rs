@@ -149,6 +149,11 @@ pub struct Config {
     /// Hours of tracked time that count as a full day. Drives the TUI
     /// weekly bar chart's y-axis ceiling and goal line. Defaults to 8.0.
     pub daily_target_hours: Option<f64>,
+    /// Whether the TUI captures the mouse, enabling clicks and wheel
+    /// scrolling. Defaults to true. Turning it off restores the terminal's
+    /// own click-drag text selection, which capture otherwise takes over
+    /// (most emulators leave it on Shift-drag).
+    pub mouse: Option<bool>,
     /// Whether we should read from stdin or not
     #[serde(skip)]
     pub stdin: bool,
@@ -194,6 +199,7 @@ impl Default for Config {
             suffix: None,
             theme: Some("dark".to_string()),
             daily_target_hours: Some(8.0),
+            mouse: Some(true),
             stdin: false,
             serve: Some(false),
             date: today_date(),
@@ -432,6 +438,10 @@ fn write_config_comments(file: &mut impl Write) -> Result<()> {
     file.write_all(b"#theme = \"dark\"\n")?;
     file.write_all(b"\n# Hours of tracked time that count as a full day, for the TUI weekly bar chart's y-axis ceiling and goal line.\n")?;
     file.write_all(b"#daily_target_hours = 8.0\n")?;
+    file.write_all(b"\n# Let the TUI capture the mouse: click a day, a bar or a\n")?;
+    file.write_all(b"# row, and scroll with the wheel. Turn this off to keep the\n")?;
+    file.write_all(b"# terminal's own click-drag text selection.\n")?;
+    file.write_all(b"#mouse = true\n")?;
     Ok(())
 }
 
@@ -485,6 +495,30 @@ mod tests {
         assert!(config.data_directory.unwrap().ends_with("/.time-tracking"));
         assert_eq!(config.template_file, None);
         assert_eq!(config.daily_target_hours, Some(8.0));
+    }
+
+    #[test]
+    fn test_mouse_defaults_to_true() {
+        let config = Config::default();
+        assert_eq!(config.mouse, Some(true));
+    }
+
+    #[test]
+    fn test_mouse_roundtrip() {
+        let config = Config {
+            mouse: Some(false),
+            ..Config::default()
+        };
+        let toml_str = toml::to_string(&config).expect("serialize");
+        assert!(toml_str.contains("mouse = false"));
+        let deserialized: Config = toml::from_str(&toml_str).expect("deserialize");
+        assert_eq!(deserialized.mouse, Some(false));
+    }
+
+    #[test]
+    fn test_mouse_missing_key_deserializes_to_none() {
+        let config: Config = toml::from_str("").expect("deserialize");
+        assert_eq!(config.mouse, None);
     }
 
     #[test]
