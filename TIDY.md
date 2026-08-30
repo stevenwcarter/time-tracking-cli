@@ -53,12 +53,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Delete `get_weekly_data` (data_svc.rs:597-599) and update its one test caller (data_svc.rs:1284, inside `mod tests`) to call `get_weekly_summary(&week).await?.per_day` directly, or move the function under `#[cfg(test)]`; confirmed via `git grep -n 'get_weekly_data('` — only the definition and that test call exist, with all other hits being doc comments or prose in tui/event.rs, tui/app.rs and docs/. Those prose mentions need updating with the deletion. Public-API removal — needs an explicit decision before execution.
 - [ ] execute   [ ] skip
 
-### T27. Stop cloning the whole CacheEntry to check its Copy metadata: `get_valid_entry` (src/data_svc.rs:610)
-- Lenses: opportunistic
-- Risk: medium
-- Proposed fix: `get_valid_entry` clones the entire `CacheEntry` — raw file text plus parsed data — merely to inspect `cached_at` and `file_mod_time`, on the documented ~97-calls-per-navigation hot path; copy only `cached_at` and `file_mod_time` (both `Copy`) while holding the lock to decide validity, then re-lock briefly to take just the field the caller needs (`data` or `parsed`), so an invalid or metadata-only check never clones the payload.
-- [x] execute   [ ] skip
-
 ### T28. Split format_day_summary_impl into its five already-commented sections: `format_day_summary_impl` (src/display/mod.rs:96-199, 104 lines)
 - Lenses: long-methods
 - Risk: medium

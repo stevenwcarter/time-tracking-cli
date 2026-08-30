@@ -596,31 +596,44 @@ impl DataService {
     /// built on this so the raw content and the parsed value share exactly
     /// one validity check and always expire together.
     async fn get_valid_entry(&self, date: &Date, file_path: &Path) -> Result<Option<CacheEntry>> {
-        // Clone the entry so we can release the lock before doing I/O
-        let cached_entry = {
+        // Copy only the Copy metadata under the lock. The entry itself holds
+        // the day's raw text and its parsed form; cloning that per call was
+        // a full copy of the day's content on a path that runs ~97 times per
+        // navigation, whether or not the entry turned out to be valid.
+        let meta = {
             let cache = self.cache.lock().await;
-            cache.get(date).cloned()
+            cache
+                .get(date)
+                .map(|entry| (entry.cached_at, entry.file_mod_time))
         };
 
-        if let Some(entry) = cached_entry {
-            let now = SystemTime::now();
+        let Some((cached_at, cached_file_mod_time)) = meta else {
+            return Ok(None);
+        };
 
-            // Check if cache entry is still valid (within timeout)
-            if let Ok(duration) = now.duration_since(entry.cached_at)
-                && duration.as_secs() < self.cache_timeout
-                && let Ok(metadata) = tokio::fs::metadata(file_path).await
-                && let Ok(file_mod_time) = metadata.modified()
-                && let Some(cached_mod_time) = entry.file_mod_time
-                // Inequality, not `<=`. The question is "has the file changed
-                // since we cached it", not "is it newer than what we cached":
-                // a restore from backup, a `git checkout`, a `cp -p` or clock
-                // skew on a network mount all move the mtime *backwards*, and
-                // `<=` called every one of those unmodified.
-                && file_mod_time == cached_mod_time
-            {
-                // File hasn't been modified, the entry is still good
-                return Ok(Some(entry));
-            }
+        let now = SystemTime::now();
+
+        // Check if cache entry is still valid (within timeout)
+        if let Ok(duration) = now.duration_since(cached_at)
+            && duration.as_secs() < self.cache_timeout
+            && let Ok(metadata) = tokio::fs::metadata(file_path).await
+            && let Ok(file_mod_time) = metadata.modified()
+            && let Some(cached_mod_time) = cached_file_mod_time
+            // Inequality, not `<=`. The question is "has the file changed
+            // since we cached it", not "is it newer than what we cached":
+            // a restore from backup, a `git checkout`, a `cp -p` or clock
+            // skew on a network mount all move the mtime *backwards*, and
+            // `<=` called every one of those unmodified.
+            && file_mod_time == cached_mod_time
+        {
+            // File hasn't been modified, the entry is still good. Re-acquire
+            // the lock to clone it for return rather than reusing anything
+            // read above: another task can have invalidated the entry
+            // between the metadata copy and here, so this re-fetches and
+            // yields `None` if it is gone instead of assuming it is still
+            // there.
+            let cache = self.cache.lock().await;
+            return Ok(cache.get(date).cloned());
         }
 
         Ok(None)
