@@ -101,10 +101,19 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "BRANCH_NAME=${{ github.event.inputs.branch }}" >> $GITHUB_OUTPUT
+            RAW="${{ github.event.inputs.branch }}"
+          elif [ -n "${{ github.head_ref }}" ]; then
+            # On a pull_request event GITHUB_REF is refs/pull/<n>/merge, which
+            # is not a branch name: the ${GITHUB_REF#refs/heads/} strip below
+            # would leave it intact and the archive name would become a path.
+            RAW="${{ github.head_ref }}"
           else
-            echo "BRANCH_NAME=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+            RAW="${GITHUB_REF#refs/heads/}"
           fi
+          # Branch names may contain "/" (e.g. tidy/2026-08-29). Left as-is,
+          # tar and 7z read it as a directory that does not exist and fail
+          # with "Cannot open: No such file or directory".
+          echo "BRANCH_NAME=${RAW//\//-}" >> $GITHUB_OUTPUT
 
       - name: Create archive
         shell: bash

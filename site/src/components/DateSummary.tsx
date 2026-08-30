@@ -1,4 +1,4 @@
-import { toast } from 'react-toastify';
+import { copyNotesToClipboard } from 'utils/clipboard';
 
 interface ParsedProject {
   name: string;
@@ -21,25 +21,7 @@ export const DateSummary = (props: { parsedData: ParsedDayData }) => {
 
   const copyProjectNotesToClipboard = async (projectName: string, notes: string[]) => {
     if (notes.length === 0) return;
-
-    const formattedNotes = notes.map((note) => `- ${note}`).join('\n');
-
-    try {
-      await navigator.clipboard.writeText(formattedNotes);
-      toast.success(`${projectName} notes copied to clipboard!`, {
-        position: 'top-right',
-        autoClose: 2000,
-        hideProgressBar: false,
-        closeOnClick: true,
-        pauseOnHover: true,
-        draggable: true,
-      });
-    } catch (err) {
-      toast.error('Failed to copy to clipboard', {
-        position: 'top-right',
-        autoClose: 2000,
-      });
-    }
+    await copyNotesToClipboard(notes, `${projectName} notes copied to clipboard!`);
   };
 
   return (

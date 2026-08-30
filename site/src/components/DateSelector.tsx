@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import Button from './Button';
 import { Link } from 'react-router';
+import { parseDateString, toDateString } from 'utils/date';
 
 interface DateSelectorProps {
   date?: Date;
@@ -19,9 +20,6 @@ export const DateSelector = (props: DateSelectorProps) => {
     }
   }, [props.date]);
 
-  // Helper function to format date for URL and input
-  const formatDate = (d: Date) => d.toISOString().split('T')[0];
-
   // Helper function to add/subtract days
   const addDays = (d: Date, days: number) => {
     const result = new Date(d);
@@ -37,12 +35,12 @@ export const DateSelector = (props: DateSelectorProps) => {
   return (
     <div className="flex items-center gap-2 mb-4">
       {/* Previous button */}
-      <Link to={`${props.linkBase}/${formatDate(prevDate)}`}>
+      <Link to={`${props.linkBase}/${toDateString(prevDate)}`}>
         <Button className="rounded-xl px-3 py-2">&#8249; Prev</Button>
       </Link>
 
       {/* Today button */}
-      <Link to={`${props.linkBase}/${formatDate(today)}`}>
+      <Link to={`${props.linkBase}/${toDateString(today)}`}>
         <Button className="rounded-xl px-3 py-2 bg-blue-600 hover:bg-blue-700">Today</Button>
       </Link>
 
@@ -50,17 +48,17 @@ export const DateSelector = (props: DateSelectorProps) => {
       <input
         type="date"
         className="align-center border border-gray-300 bg-gray-200 text-gray-800 p-4 rounded-xl"
-        value={formatDate(date)}
-        onChange={(e) => setDate(new Date(e.target.value + 'T00:00:00'))}
+        value={toDateString(date)}
+        onChange={(e) => setDate(parseDateString(e.target.value))}
       />
 
       {/* Go to Date button */}
-      <Link to={`${props.linkBase}/${formatDate(date)}`}>
+      <Link to={`${props.linkBase}/${toDateString(date)}`}>
         <Button className="rounded-xl">Go to Date</Button>
       </Link>
 
       {/* Next button */}
-      <Link to={`${props.linkBase}/${formatDate(nextDate)}`}>
+      <Link to={`${props.linkBase}/${toDateString(nextDate)}`}>
         <Button className="rounded-xl px-3 py-2">Next &#8250;</Button>
       </Link>
     </div>

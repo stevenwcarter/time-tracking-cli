@@ -1,0 +1,173 @@
+# TIDY.md — code cleanup findings
+
+Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo build / cargo clippy --all-targets --all-features -- -D warnings / cargo test --workspace.
+
+> **For future sessions reading this file:** when you fix an item listed
+> here, strip it from this file in the same commit that fixes it. The list
+> is intended to reflect open issues only; resolved items shouldn't linger.
+> This keeps the file's signal-to-noise high for the next tidy pass.
+
+## How to use this file
+- Check `[x] execute` on items to run this batch.
+- Check `[x] skip` on items to file them into this file's own Skip archive and never re-flag them.
+- Items left unchecked stay in TIDY.md for the next run.
+- When ready, run `/tidy --execute`.
+
+## High severity
+
+### T7. Share the 90-minute dead-time error threshold instead of hardcoding it twice: dead-time error threshold (src/display/mod.rs:139)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: Add `pub(crate) const DEAD_TIME_ERROR_THRESHOLD_MINUTES: u32 = 90;` to src/display/mod.rs and use it at line 139 (`if data.dead_time_minutes < DEAD_TIME_ERROR_THRESHOLD_MINUTES`), then have src/tui/project_list.rs:30 reference `crate::display::DEAD_TIME_ERROR_THRESHOLD_MINUTES` instead of redefining the same literal — that constant's own doc comment at project_list.rs:26-29 already warns the two must never drift apart; line 139 sits inside the dead-time block T28 extracts as `push_dead_time` (lines 134-156), so if T28 runs first apply this inside the extracted function.
+- [ ] execute   [ ] skip
+
+### T50. Spurious empty save truncates the day file on first load: `DateEditor` debounced-save effect (site/src/components/DateEditor.tsx:54-67)
+- Lenses: opportunistic
+- Risk: high — needs characterization tests first
+- Proposed fix: On mount `localData` is `''`, `hasInitialized` is false and `lastSentData.current` is null. When the query resolves, the init effect sets `hasInitialized` true, which re-runs the save effect while `debouncedData` is still the initial `''` — and the guard `debouncedData !== lastSentData.current` is `'' !== null`, which passes, so `updater('')` fires and writes an empty file before the real content's 500ms debounce lands. The comment at line 23 ("Don't set lastSentData here - let it remain null so first user change will be detected") is what opens the hole. Found while executing T18; pre-existing and NOT caused by it (`hasInitialized` is in both the old and new dependency arrays, so the spurious save fires either way). Fix by seeding `lastSentData.current = content` when the init effect sets `hasInitialized`, or by gating the save effect on `debouncedData === localData` so it never fires against a stale debounce; either needs a characterization test that asserts no `updater` call happens between mount and the first real debounce.
+- [ ] execute   [ ] skip
+
+## Medium severity
+
+### T23. Make DataService::clear_cache test-only or remove it: `DataService::clear_cache` (src/data_svc.rs:232)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: `clear_cache` is `pub` in non-test code but its only caller is a `#[cfg(test)]` test (data_svc.rs:1139, inside `mod tests` at line 723); either delete it and rebuild that test to clear the cache via `invalidate_date` per key, or move it under `#[cfg(test)]` alongside the analogous test-only helpers already in this file (e.g. `parse_count`). Confirmed via `git grep -n 'clear_cache'` — only the definition and that one in-test call exist repo-wide. Public-API removal — needs an explicit decision before execution.
+- [ ] execute   [ ] skip
+
+### T26. Delete or gate the test-only DataService::get_weekly_data wrapper: `DataService::get_weekly_data` (src/data_svc.rs:597-599)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: Delete `get_weekly_data` (data_svc.rs:597-599) and update its one test caller (data_svc.rs:1284, inside `mod tests`) to call `get_weekly_summary(&week).await?.per_day` directly, or move the function under `#[cfg(test)]`; confirmed via `git grep -n 'get_weekly_data('` — only the definition and that test call exist, with all other hits being doc comments or prose in tui/event.rs, tui/app.rs and docs/. Those prose mentions need updating with the deletion. Public-API removal — needs an explicit decision before execution.
+- [ ] execute   [ ] skip
+
+### T28. Split format_day_summary_impl into its five already-commented sections: `format_day_summary_impl` (src/display/mod.rs:96-199, 104 lines)
+- Lenses: long-methods
+- Risk: medium
+- Proposed fix: Extract `fn push_overview(msg: &mut String, indent: &str, style: &DaySummaryStyle, data: &TimeTrackingData)` (lines 106-120), `push_working_time` (122-132), `push_dead_time` (134-156), `push_warnings` (158-167) and `push_projects` (169-196), reducing `format_day_summary_impl` to five calls and making each section independently testable; T7 changes line 139 inside the future `push_dead_time` and T29 rewrites the `push_str(&format!(...))` calls throughout this range, so sequence this split first and apply those two inside the extracted functions.
+- [ ] execute   [ ] skip
+
+### T29. Replace push_str(&format!(...)) with write! across the display formatters: `format_day_summary_impl` and the three formatter impls (src/display/mod.rs:107, +53 sites)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: 54 sites build output with `msg.push_str(&format!(...))`, allocating a temporary String only to copy it into another (clippy::format_push_string); add `use std::fmt::Write as _;` per file and replace each with `let _ = write!(msg, ...);`, clippy's own suggested rewrite. Sites: src/display/mod.rs:107, 108, 113, 123, 124, 135, 137, 144, 160, 162, 171, 173, 182, 186, 187, 191, 192; src/display/plain.rs:47, 49, 50, 62, 69, 88, 103, 112, 125, 137; src/display/markdown.rs:19, 26, 35, 37, 43, 45, 52, 71, 81, 86, 103, 117, 118, 126; src/display/default.rs:47, 49, 50, 60, 62, 69, 89, 104, 113, 126, 128, 137, 138. T8 and T28 both restructure code inside these ranges, so run them first and re-derive the line numbers rather than trusting this list verbatim.
+- [ ] execute   [ ] skip
+
+### T30. Delete the unused display::get_file_path / read_day / parse_day wrappers: `display::get_file_path` (src/display/mod.rs:274-284)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: Delete the three free functions at src/display/mod.rs:274-284 (`get_file_path`, `read_day`, `parse_day`), which duplicate `DataService` methods of the same name; confirmed via `git grep -n 'display::get_file_path|display::read_day'` (no hits) and by checking that every other call site of `read_day` / `get_file_path` / `parse_day` in the repo goes through `DataService::get()...` or a `DataService` instance directly, never these wrappers, and that they are not re-exported from src/lib.rs. These lines sit outside the 96-199 range T28 restructures, so the two don't collide. Public-API removal — needs an explicit decision before execution.
+- [ ] execute   [ ] skip
+
+### T31. Unify the four different ways date.format(&DATE_FORMAT) is handled: `create_day_file` date formatting (src/file_utils.rs:33, +2 sites)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: The same fallible `date.format(&DATE_FORMAT)` call is handled three different ways with no stated reason — `unwrap()`, `unwrap_or_default()` (which silently yields an empty date string), and `context()?`; at src/file_utils.rs:33 the function returns `Result<String>`, so use `let formatted_date = date.format(&DATE_FORMAT).context("could not format date")?;` and drop the redundant `.to_string()`; at src/web.rs:62 `DayData::empty` currently uses `.unwrap_or_default()` and would ship a blank date to the client on failure instead of surfacing it the way `get_day_data_impl` (web.rs:199) does, so use `.expect("DATE_FORMAT is a fixed valid format")` there; and src/time_utils.rs:51 returns `String` and cannot propagate, so keep it but switch the bare `.unwrap()` to the same documented `.expect(...)`. The doc-fixer queue adds a doc comment at time_utils.rs:50, immediately above that last site, so re-locate line 51 if the docs land first.
+- [ ] execute   [ ] skip
+
+### T32. Extract the duplicated wrap-around list navigation shared by the two TUI panes: `next_item` / `previous_item` / `go_to_first` / `go_to_last` (src/tui/project_list.rs:280, +1 file)
+- Lenses: duplication
+- Risk: low
+- Proposed fix: Duplicate sites: src/tui/project_list.rs:280-289 (next_item), 291-301 (previous_item), 303-307 (go_to_first), 309-315 (go_to_last) versus src/tui/week_list.rs:251-260, 262-272, 274-278 and 280-284; both operate on a `ratatui::widgets::ListState` plus a length, with project_list.rs reading the length from `self.project_list.items` and week_list.rs taking it as a `len: usize` parameter. Extract free functions `select_next(state: &mut ListState, len: usize)`, `select_previous(...)`, `select_first(...)` and `select_last(...)` into src/tui/band.rs (already the shared home for cross-pane list-band logic) and have both widgets call them, project_list.rs passing `self.project_list.items.len()`.
+- [ ] execute   [ ] skip
+
+### T33. Delete the never-called ProjectListWidget::has_items: `ProjectListWidget::has_items` (src/tui/project_list.rs:321-323)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: Delete `has_items` (project_list.rs:321-323); confirmed via `git grep -n has_items` across the whole repo, where only its own definition matches — `selected_item` directly above it on the same struct is used from app.rs, mode.rs and week_list.rs, but `has_items` is not. Public-API removal — needs an explicit decision before execution.
+- [ ] execute   [ ] skip
+
+### T34. Share the popup centering math and SCREEN_MARGIN between the two overlay widgets: `popup_area` (src/tui/widgets/date_prompt.rs:79, +1 file)
+- Lenses: duplication
+- Risk: low
+- Proposed fix: src/tui/widgets/help_popup.rs:71 and src/tui/widgets/date_prompt.rs:35 declare an identical `const SCREEN_MARGIN: u16 = 4` with an identical doc comment, and help_popup.rs:81-97 (popup_area) and date_prompt.rs:79-87 (popup_area) end with the same four lines (`Layout::vertical([Constraint::Length(height)]).flex(Flex::Center)`, the horizontal counterpart, and two `let [area] = ...areas(area)` destructurings), with each doc comment already cross-referencing the other; move `SCREEN_MARGIN` and a shared `pub(super) fn centered_box(area: Rect, width: u16, height: u16) -> Rect` carrying the common centering tail into src/tui/widgets/popup.rs, leaving each widget its own width/height sizing. The doc-fixer queue also adds a struct doc at popup.rs:11, so expect that file to have shifted slightly.
+- [ ] execute   [ ] skip
+
+### T35. Extract the total-hours label placement from the bar chart's render: `WeeklyBarChart::render` (src/tui/widgets/weekly_bar_chart.rs:246-324, 79 lines)
+- Lenses: long-methods
+- Risk: low
+- Proposed fix: Most steps of this 79-line `Widget::render` already delegate to helpers, but the total-hours label's position math is inlined; extract `fn render_total_hours_label(&self, area: Rect, inner_area: Rect, total_text: String, buf: &mut Buffer)` covering the RIGHT_MARGIN / total_area / Paragraph block at lines 289-307, after which render reads as block, then label, then chart, then goal line. The doc-fixer queue deletes or rewrites comments at lines 256, 259, 263, 274 and 309 inside this same function, and T48 drops the unused `&self` from `calculate_bar_dimensions` called at line 253, so expect the line numbers to move.
+- [ ] execute   [ ] skip
+
+### T36. Extract shared request-date resolution for the four HTTP handlers: `get_day_data` / `get_week_data` date resolution (src/web.rs:174, +3 sites)
+- Lenses: duplication
+- Risk: high — needs characterization tests first
+- Proposed fix: src/web.rs:174-181 (get_day_data) is byte-identical to src/web.rs:257-264 (get_week_data) — the `match params.date { Some(date_str) => Date::parse(...).map_err(|_| StatusCode::BAD_REQUEST)?, None => OffsetDateTime::now_local()...date() }` block — and src/web.rs:191 (get_day_data_by_date) and src/web.rs:277 (get_week_data_by_date) both repeat `Date::parse(&date_str, DATE_FORMAT).map_err(|_| StatusCode::BAD_REQUEST)?`; extract `fn resolve_date_or_today(date_str: Option<String>) -> Result<Date, StatusCode>` and `fn parse_date_param(date_str: &str) -> Result<Date, StatusCode>` and call them from all four handlers. The GraphQL layer has the same shape under a different error type (T45), so consider whether one core parser can back both.
+- [ ] execute   [ ] skip
+
+### T37. Extract the parsed-to-DTO mapping from get_day_data_impl: `get_day_data_impl` (src/web.rs:197-251, 55 lines)
+- Lenses: long-methods
+- Risk: high — needs characterization tests first
+- Proposed fix: Extract `fn day_data_from_parsed(date_str: String, data: TimeTrackingData) -> DayData` covering the field mapping at lines 222-250, reducing `get_day_data_impl` to fetch, early return, and one call; this function is also the target of T38 (line 220 reparses instead of using the memoized parse) and T49 (line 208 rebuilds the `DayData::empty` literal by hand), both of which land inside the range this split rearranges — run this split first, or apply all three together in one edit of the function.
+- [ ] execute   [ ] skip
+
+### T38. Route the web/GraphQL day read through the memoized parse: `get_day_data_impl` parse call (src/web.rs:220)
+- Lenses: opportunistic
+- Risk: medium
+- Proposed fix: `get_day_data_impl` re-invokes `time_tracking_parser::parse_time_tracking_data` on the raw content instead of calling `DataService::get().parse_day(&date)`, so every /api/day, /api/week and GraphQL request bypasses the 30-second memoized parse the TUI and CLI already share (`state.config` and the global `Config` agree on prefix/suffix, so the memoized parse is equivalent); switch to the DataService call. Sits inside the function T37 splits and two lines from where T49 applies, so coordinate the three.
+- [ ] execute   [ ] skip
+
+### T39. Extract the week fold out of aggregate_week_days: `aggregate_week_days` (src/web.rs:282-325, 44 lines)
+- Lenses: long-methods
+- Risk: high — needs characterization tests first
+- Proposed fix: Extract `fn fold_week_results(week_dates: &[Date], results: Vec<(usize, DayData)>) -> (Vec<DayData>, Vec<ProjectSummary>, f64, f64)` covering lines 298-322 (order restore, day and project accumulation, project sort), leaving `aggregate_week_days` with only the spawn/collect and the call; this duplicates the load/fold shape already in `DataService::get_weekly_summary` that T25 extracts, so if both run, check whether the two folds can converge on one implementation rather than two parallel ones.
+- [ ] execute   [ ] skip
+
+## Low severity
+
+### T40. Fix the "Coult not initialize tracing" typo: tracing init error context (cli/src/main.rs:19)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: Change the error context string at cli/src/main.rs:19 from "Coult not initialize tracing" to "Could not initialize tracing"; this line sits inside `main_impl`, which T11 splits and the doc-fixer queue also edits at lines 15-16, so re-locate it if either lands first.
+- [ ] execute   [ ] skip
+
+### T43. Replace the exists()-then-write config race with an atomic create-if-absent open: default config write (src/config.rs:273)
+- Lenses: opportunistic
+- Risk: medium
+- Proposed fix: Blocked by T6 — the TOCTOU window between `config_path.exists()` and the subsequent write, in which a concurrent process's freshly written config is silently clobbered, sits in lines 271-290, exactly the block T6 extracts as `load_or_create_config_file`, so run T6 first and apply this inside the extracted function (or skip T6 and patch in place). Use an atomic create-if-absent open (`create_new`) for the default-config write and treat `AlreadyExists` as "read what's there" instead of a separate `exists()` check followed by `fs::write`. Same shape as T24 in the day-file path; fix both the same way.
+- [ ] execute   [ ] skip
+
+### T44. Build the empty string the short way: empty-template return (src/file_utils.rs:38)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: Replace `Ok("".to_string())` at src/file_utils.rs:38 with `Ok(String::new())` (clippy::manual_string_new).
+- [ ] execute   [ ] skip
+
+### T45. Extract a shared GraphQL date parser and drop the redundant conversion closure: `data_for_date` date handling (src/graphql.rs:26, +3 sites)
+- Lenses: duplication, idioms
+- Risk: high — needs characterization tests first
+- Proposed fix: `Date::parse(&date, DATE_FORMAT).map_err(|_| INVALID_DATE_MSG)?` is repeated verbatim in all four Query and Mutation resolvers — src/graphql.rs:26 (data_for_date), 38 (file_content_for_date), 61 (week_data_for_date) and 114 (update_file_content) — so extract `fn parse_date_field(date: &str) -> Result<Date, &'static str>` next to `INVALID_DATE_MSG` (src/graphql.rs:12) and call it from all four; while in `data_for_date`, also replace the closure two lines below at line 28, `.map_err(|e| e.into())`, with `.map_err(Into::into)` (clippy::redundant_closure). The HTTP handlers carry the same parse under `StatusCode` (T36), so consider whether one core parser can back both.
+- [ ] execute   [ ] skip
+
+### T46. Mark the three branches of the wrap_note state machine with section comments: `wrap_note` (src/tui/project_list.rs:584-648, 65 lines)
+- Lenses: long-methods
+- Risk: low
+- Proposed fix: `wrap_note` is a 65-line greedy word-wrap state machine with three to four levels of nesting, but extracting it would fragment the shared mutable state (`line`, `has_word`, `lines`); instead add section comments `// word fits on the current line`, `// start a new line`, and `// doesn't fit even alone: hard-break it` (the last already exists) around the three branches of the for-loop body, making the phases explicit without splitting the state.
+- [ ] execute   [ ] skip
+
+### T47. Collapse the doubled Preset fallback into one map_or: theme preset resolution (src/tui/theme.rs:174)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: `configured.map(|name| name.parse().unwrap_or(Preset::Dark)).unwrap_or(Preset::Dark)` states the same fallback twice; use `let preset = configured.map_or(Preset::Dark, |name| name.parse().unwrap_or(Preset::Dark));`.
+- [ ] execute   [ ] skip
+
+### T48. Drop the unused &self from calculate_bar_dimensions: `WeeklyBarChart::calculate_bar_dimensions` (src/tui/widgets/weekly_bar_chart.rs:163)
+- Lenses: idioms
+- Risk: low
+- Proposed fix: The private `calculate_bar_dimensions` takes `&self` but never reads it (clippy::unused_self); drop the parameter and call it as `Self::calculate_bar_dimensions(area)` from its single call site at line 253, or make it a free function. T35 restructures the surrounding `render`, so re-locate the call site if that lands first.
+- [ ] execute   [ ] skip
+
+### T49. Reuse DayData::empty for the no-file early return: `get_day_data_impl` empty literal (src/web.rs:208-218)
+- Lenses: duplication
+- Risk: medium
+- Proposed fix: src/web.rs:60-70 (`DayData::empty(date)`) duplicates the struct literal at src/web.rs:208-218 — the early return inside `get_day_data_impl` when `content` is None — field for field, differing only in how `date` / `date_str` is supplied; replace the inline literal with `DayData { date: date_str, ..DayData::empty(date) }`, or add a `DayData::empty_with_date_str(date_str: String)` constructor, so there is one source of the "no data" shape. Note T31 also changes `DayData::empty`'s date formatting at web.rs:62, and T37 and T38 restructure the same function this literal lives in.
+- [ ] execute   [ ] skip
+
+## Skip (do not re-flag in future runs)
+
+### T22. Delete the never-called Config::get_no_args / try_get_no_args: `Config::get_no_args` (src/config.rs:235)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: Delete `get_no_args` (config.rs:235) and `try_get_no_args` (config.rs:239); confirmed via `git grep -n 'get_no_args'` and `git grep -n 'try_get_no_args'` across the whole repo, where only their own definitions matched. Deleting `try_get_no_args` also strands the private `try_init` (config.rs:211) — delete it too, or fold its body into `try_get_no_args` before removing. Note that two entries in the doc-fixer queue (the `Config` struct doc at config.rs:133 and the `Config::get` doc at config.rs:243) name `get_no_args()` in their intent text, so those docs must not reference it once this lands, and T6 splits `Config::load` starting a few lines below. Public-API removal — needs an explicit decision before execution.
+- User note: this is called by a vim plugin (time-tracking-nvim)
+- [ ] execute   [x] skip

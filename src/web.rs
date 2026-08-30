@@ -93,6 +93,13 @@ pub struct WeekData {
     pub project_summaries: Vec<ProjectSummary>,
 }
 
+/// Serve the web app on `port` of localhost: the `/api` REST endpoints, the
+/// Juniper schema under `/graphql`, and the embedded React build for
+/// everything else.
+///
+/// This is the crate's webapp entry point, re-exported from the crate root.
+/// It runs until ctrl-c or a message on `rx` — which is how the TUI exiting
+/// takes the server down with it — then drains the in-flight requests.
 pub async fn run_server(port: u16, config: Config, rx: Receiver<()>) -> anyhow::Result<()> {
     let state = AppState { config };
     let context = GraphQLContext::new(state.clone());

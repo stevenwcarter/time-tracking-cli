@@ -57,7 +57,7 @@ impl DisplayFormatter for PlainDisplayFormatter {
     fn weekly_totals(&self, total_minutes: u32, dead_minutes: u32) -> String {
         let mut msg = String::new();
         msg.push_str("\nWEEKLY TOTALS\n");
-        msg.push_str(&"-\n".repeat(40));
+        msg.push_str(&format!("{}\n", "-".repeat(40)));
 
         msg.push_str(&format!(
             "Total Working Time: {} ({} hrs)\n",

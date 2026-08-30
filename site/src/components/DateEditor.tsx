@@ -66,15 +66,14 @@ export const DateEditor = (props: DateEditorProps) => {
       lastSentData.current = debouncedData;
       updater(debouncedData);
     }
-  }, [debouncedData, updater, date, content, hasInitialized]);
+  }, [debouncedData, updater, date, hasInitialized]);
 
   return (
     <div className="w-full p-4 rounded shadow flex">
       <textarea
         value={localData}
-        className="w-1/2 p-2 border rounded mr-4 bg-gray-900 text-white"
+        className="w-1/2 h-full p-2 border rounded mr-4 bg-gray-900 text-white"
         onChange={(e) => setLocalData(e.target.value)}
-        style={{ width: '50%', height: '100%' }}
       />
       <div className="w-1/2 p-4 border-l overflow-y-auto">
         <DateSummary

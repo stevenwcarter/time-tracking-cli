@@ -309,17 +309,15 @@ impl Widget for &mut WeeklyBarChart<'_> {
         let (bar_width, bar_gap) = self.calculate_bar_dimensions(area);
         let ceiling = self.ceiling_for(area);
 
-        // Prepare bars with responsive formatting
         let bars = self.prepare_bars(bar_width);
 
-        // Calculate total weekly hours for display
         let total_hours = self.calculate_total_weekly_hours();
         let total_text = format!("{:.1}h total", total_hours);
 
-        // Create the block with title and total hours
+        // Padding, border and title only — the total-hours text is not part
+        // of this block, but a right-aligned paragraph drawn over it below.
         let block = WeeklyBarChart::content_block(title);
 
-        // Render the block first
         let inner_area = block.inner(area);
         block.render(area, buf);
 
@@ -354,7 +352,6 @@ impl Widget for &mut WeeklyBarChart<'_> {
         };
         Paragraph::new(total_line).render(total_area, buf);
 
-        // Render the chart in the inner area
         let chart = BarChart::default()
             .data(BarGroup::default().bars(&bars))
             .bar_width(bar_width)

@@ -3,13 +3,11 @@ import { DateEditor } from 'components/DateEditor';
 import DateSelector from 'components/DateSelector';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router';
+import { parseDateString, todayDateString, toDateString } from 'utils/date';
 
 export const DateEditorPage = () => {
   const { date } = useParams();
-  const dateObject = useMemo(
-    () => new Date(date || new Date().toISOString().split('T')[0]),
-    [date],
-  );
+  const dateObject = useMemo(() => parseDateString(date || todayDateString()), [date]);
   const [newDate, setNewDate] = useState(dateObject);
 
   // Update newDate when the URL parameter changes
@@ -17,7 +15,7 @@ export const DateEditorPage = () => {
     setNewDate(dateObject);
   }, [dateObject]);
 
-  const currentDateString = dateObject.toISOString().split('T')[0];
+  const currentDateString = toDateString(dateObject);
 
   return (
     <div className="flex flex-col items-center min-h-screen bg-gray-800">

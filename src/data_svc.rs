@@ -179,6 +179,13 @@ impl DataService {
     /// Cache lifetime of the process-wide service.
     pub const DEFAULT_CACHE_TIMEOUT_SECONDS: u64 = 30;
 
+    /// The process-wide data service, built on first use with
+    /// [`Self::DEFAULT_CACHE_TIMEOUT_SECONDS`] and taking both its directory
+    /// and its parse settings from the global configuration.
+    ///
+    /// The CLI and web paths share this one instance, and so share its
+    /// cache. The TUI and the tests build their own with
+    /// [`Self::new_with_dir`] instead, which never reads the global config.
     pub fn get() -> &'static Self {
         DATA_SVC.get_or_init(|| Self::new(Self::DEFAULT_CACHE_TIMEOUT_SECONDS))
     }
@@ -358,13 +365,45 @@ impl DataService {
         self.ensure_data_dir().await?;
         let file_path = self.get_file_path(*date).await?;
 
-        if !file_path.exists() {
-            let template_content =
-                create_template_content(date, self.parse_opts.template_file()).await?;
-            fs::write(&file_path, template_content).await?;
+        // `create_template_content` can do real I/O (reading a configured
+        // template file) and can fail. It is built *before* the file is
+        // opened so a broken template path (missing or unreadable
+        // `template_file`) never leaves a zero-byte day file behind: every
+        // later call would see that empty file, take the AlreadyExists arm
+        // below, and never apply the template even after the path is fixed.
+        let template_content =
+            create_template_content(date, self.parse_opts.template_file()).await?;
 
-            // Invalidate cache since we just created the file
-            self.invalidate_date(date).await;
+        // create_new is atomic: it either creates the file or fails with
+        // AlreadyExists. An exists()-then-write pair leaves a window in
+        // which another writer (a second ttcli, the TUI, the web server)
+        // creates and fills the file, and our template write then truncates
+        // their content back to empty.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(mut file) => {
+                use tokio::io::AsyncWriteExt as _;
+                file.write_all(template_content.as_bytes()).await?;
+                // `tokio::fs::File` buffers writes onto a blocking-pool task
+                // and has no `Drop` impl that waits for them: an unflushed
+                // write can still be in flight (or have failed) when this
+                // function returns and the caller opens `$EDITOR` on the
+                // path. `flush` is what actually runs the write and surfaces
+                // its `io::Result` — `write_all` alone can return `Ok` before
+                // either happens.
+                file.flush().await?;
+
+                // Invalidate cache since we just created the file
+                self.invalidate_date(date).await;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Someone else got there first; their content stands.
+            }
+            Err(e) => return Err(e.into()),
         }
 
         Ok(file_path)
@@ -503,8 +542,29 @@ impl DataService {
     /// cache, so a week that is already cached costs no file reads and no
     /// reparses; a cold week pays for its slowest day rather than all seven.
     pub async fn get_weekly_summary(&self, dates: &[Date]) -> Result<WeeklySummary> {
-        // Load phase: one task per date. The dates are distinct, so no two
-        // tasks can race to parse the same day.
+        let loaded = self.load_week(dates).await?;
+
+        let mut summary = WeeklySummary::default();
+        let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+
+        // Fold phase: sequential, in date order.
+        for (_, day_date, content, parsed) in loaded {
+            fold_day_into_summary(&mut summary, &mut week_projects, day_date, content, parsed);
+        }
+
+        summary.projects = finalize_weekly_projects(week_projects);
+
+        Ok(summary)
+    }
+
+    /// Load phase of [`Self::get_weekly_summary`]: one task per date, each
+    /// reading and parsing through the per-date cache. The dates are
+    /// distinct, so no two tasks can race to parse the same day.
+    ///
+    /// Returned in the caller's `dates` order, which is what keeps the
+    /// per-day prefixes on warnings and project notes in day order once
+    /// folded.
+    async fn load_week(&self, dates: &[Date]) -> Result<Vec<DayLoad>> {
         let mut set = tokio::task::JoinSet::new();
         for (idx, &date) in dates.iter().enumerate() {
             let svc = self.clone();
@@ -526,68 +586,10 @@ impl DataService {
         while let Some(result) = set.join_next().await {
             loaded.push(result?);
         }
-        // Restore the caller's order before folding: the fold below is where
-        // the day prefixes on notes and warnings get their sequence.
+        // Restore the caller's order before folding: the fold is where the
+        // day prefixes on notes and warnings get their sequence.
         loaded.sort_unstable_by_key(|(idx, ..)| *idx);
-
-        let mut summary = WeeklySummary::default();
-        let mut week_projects: HashMap<String, (u32, Vec<String>)> = HashMap::new();
-
-        // Fold phase: sequential, in date order.
-        for (_, day_date, content, parsed) in loaded {
-            let (Some(content), Some(data)) = (content, parsed) else {
-                summary.per_day.insert(day_date, 0);
-                summary.days.push((day_date, String::new(), None));
-                continue;
-            };
-
-            summary.total_minutes += data.total_minutes;
-            summary.dead_time_minutes += data.dead_time_minutes;
-            summary.per_day.insert(day_date, data.total_minutes);
-
-            for warning in &data.warnings {
-                if !warning.contains("Error parsing time range '#'") {
-                    // Skip markdown header warnings
-                    summary.warnings.push(format!(
-                        "{}: {}",
-                        format_day_with_date(&day_date),
-                        warning
-                    ));
-                }
-            }
-
-            for project in &data.projects {
-                let entry = week_projects
-                    .entry(project.name.clone())
-                    .or_insert((0, Vec::new()));
-                entry.0 += project.total_minutes;
-                for note in &project.notes {
-                    entry
-                        .1
-                        .push(format!("{}: {}", format_day_with_date(&day_date), note));
-                }
-            }
-
-            summary.days.push((day_date, content, Some(data)));
-        }
-
-        summary.projects = week_projects
-            .into_iter()
-            .map(|(name, (total_minutes, notes))| WeeklyProject {
-                name,
-                total_minutes,
-                notes,
-            })
-            .collect();
-        // Ties on minutes fall back to the name so the ordering is stable from
-        // run to run; iterating the `HashMap` alone is not.
-        summary.projects.sort_by(|a, b| {
-            b.total_minutes
-                .cmp(&a.total_minutes)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        Ok(summary)
+        Ok(loaded)
     }
 
     /// Working minutes per day for `dates`.
@@ -604,31 +606,44 @@ impl DataService {
     /// built on this so the raw content and the parsed value share exactly
     /// one validity check and always expire together.
     async fn get_valid_entry(&self, date: &Date, file_path: &Path) -> Result<Option<CacheEntry>> {
-        // Clone the entry so we can release the lock before doing I/O
-        let cached_entry = {
+        // Copy only the Copy metadata under the lock. The entry itself holds
+        // the day's raw text and its parsed form; cloning that per call was
+        // a full copy of the day's content on a path that runs ~97 times per
+        // navigation, whether or not the entry turned out to be valid.
+        let meta = {
             let cache = self.cache.lock().await;
-            cache.get(date).cloned()
+            cache
+                .get(date)
+                .map(|entry| (entry.cached_at, entry.file_mod_time))
         };
 
-        if let Some(entry) = cached_entry {
-            let now = SystemTime::now();
+        let Some((cached_at, cached_file_mod_time)) = meta else {
+            return Ok(None);
+        };
 
-            // Check if cache entry is still valid (within timeout)
-            if let Ok(duration) = now.duration_since(entry.cached_at)
-                && duration.as_secs() < self.cache_timeout
-                && let Ok(metadata) = tokio::fs::metadata(file_path).await
-                && let Ok(file_mod_time) = metadata.modified()
-                && let Some(cached_mod_time) = entry.file_mod_time
-                // Inequality, not `<=`. The question is "has the file changed
-                // since we cached it", not "is it newer than what we cached":
-                // a restore from backup, a `git checkout`, a `cp -p` or clock
-                // skew on a network mount all move the mtime *backwards*, and
-                // `<=` called every one of those unmodified.
-                && file_mod_time == cached_mod_time
-            {
-                // File hasn't been modified, the entry is still good
-                return Ok(Some(entry));
-            }
+        let now = SystemTime::now();
+
+        // Check if cache entry is still valid (within timeout)
+        if let Ok(duration) = now.duration_since(cached_at)
+            && duration.as_secs() < self.cache_timeout
+            && let Ok(metadata) = tokio::fs::metadata(file_path).await
+            && let Ok(file_mod_time) = metadata.modified()
+            && let Some(cached_mod_time) = cached_file_mod_time
+            // Inequality, not `<=`. The question is "has the file changed
+            // since we cached it", not "is it newer than what we cached":
+            // a restore from backup, a `git checkout`, a `cp -p` or clock
+            // skew on a network mount all move the mtime *backwards*, and
+            // `<=` called every one of those unmodified.
+            && file_mod_time == cached_mod_time
+        {
+            // File hasn't been modified, the entry is still good. Re-acquire
+            // the lock to clone it for return rather than reusing anything
+            // read above: another task can have invalidated the entry
+            // between the metadata copy and here, so this re-fetches and
+            // yields `None` if it is gone instead of assuming it is still
+            // there.
+            let cache = self.cache.lock().await;
+            return Ok(cache.get(date).cloned());
         }
 
         Ok(None)
@@ -706,6 +721,77 @@ fn day_or_skip<T>(date: Date, result: Result<T>) -> Option<T> {
     result
         .inspect_err(|e| warn!("skipping the day file for {date}: {e:#}"))
         .ok()
+}
+
+/// Fold phase of [`DataService::get_weekly_summary`]: accumulate one day's
+/// load into the running `summary` and `week_projects` rollup.
+///
+/// A day with neither content nor a parse (no file on disk, or unreadable)
+/// counts as a zero day rather than being dropped from `summary.days`, so the
+/// week's day list always has one entry per requested date.
+fn fold_day_into_summary(
+    summary: &mut WeeklySummary,
+    week_projects: &mut HashMap<String, (u32, Vec<String>)>,
+    day_date: Date,
+    content: Option<String>,
+    parsed: Option<TimeTrackingData>,
+) {
+    let (Some(content), Some(data)) = (content, parsed) else {
+        summary.per_day.insert(day_date, 0);
+        summary.days.push((day_date, String::new(), None));
+        return;
+    };
+
+    summary.total_minutes += data.total_minutes;
+    summary.dead_time_minutes += data.dead_time_minutes;
+    summary.per_day.insert(day_date, data.total_minutes);
+
+    for warning in &data.warnings {
+        if !warning.contains("Error parsing time range '#'") {
+            // Skip markdown header warnings
+            summary
+                .warnings
+                .push(format!("{}: {}", format_day_with_date(&day_date), warning));
+        }
+    }
+
+    for project in &data.projects {
+        let entry = week_projects
+            .entry(project.name.clone())
+            .or_insert((0, Vec::new()));
+        entry.0 += project.total_minutes;
+        for note in &project.notes {
+            entry
+                .1
+                .push(format!("{}: {}", format_day_with_date(&day_date), note));
+        }
+    }
+
+    summary.days.push((day_date, content, Some(data)));
+}
+
+/// Finalize phase of [`DataService::get_weekly_summary`]: turn the
+/// project-rollup map into the sorted [`WeeklyProject`] list.
+///
+/// Ties on minutes fall back to the name so the ordering is stable from run
+/// to run; iterating the `HashMap` alone is not.
+fn finalize_weekly_projects(
+    week_projects: HashMap<String, (u32, Vec<String>)>,
+) -> Vec<WeeklyProject> {
+    let mut projects: Vec<WeeklyProject> = week_projects
+        .into_iter()
+        .map(|(name, (total_minutes, notes))| WeeklyProject {
+            name,
+            total_minutes,
+            notes,
+        })
+        .collect();
+    projects.sort_by(|a, b| {
+        b.total_minutes
+            .cmp(&a.total_minutes)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    projects
 }
 
 /// The date a day file's name encodes, or `None` for anything else that
@@ -1219,6 +1305,120 @@ mod tests {
         // Read file
         let content = service.read_day(&test_date).await.unwrap();
         assert!(content.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_day_file_does_not_clobber_content_written_after_the_exists_check() {
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 29);
+
+        // Simulate the racing writer having already won: the file exists
+        // with real content by the time the template write would land.
+        let path = service.get_file_path(test_date).await.unwrap();
+        tokio::fs::write(&path, "real user content\n")
+            .await
+            .unwrap();
+
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            after, "real user content\n",
+            "template write clobbered real content"
+        );
+    }
+
+    /// The template's bytes must actually be on disk when the call returns,
+    /// not merely handed to `write_all`. `tokio::fs::File` has no `Drop` impl
+    /// that waits for outstanding writes — without an explicit `flush`, the
+    /// real write (and its `io::Result`) can still be in flight, or can have
+    /// failed silently, after this function has already returned `Ok`. Both
+    /// call sites (`display::mod` and the TUI) open `$EDITOR` on the path
+    /// immediately afterwards, so the content has to be there by the time
+    /// this returns, not merely soon.
+    #[tokio::test]
+    async fn a_configured_template_lands_in_the_created_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let template_path = dir.path().join("template.md");
+        tokio::fs::write(&template_path, "## {date}\n\n- \n")
+            .await
+            .unwrap();
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().join("days"),
+            ParseSettings {
+                prefix: None,
+                suffix: None,
+                template_file: Some(template_path.to_str().unwrap().to_string()),
+            },
+        );
+        let test_date = date!(2026 - 08 - 29);
+
+        let file_path = service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(
+            content, "## 2026-08-29\n\n- \n",
+            "the template's bytes must be on disk, byte-for-byte, not just requested"
+        );
+    }
+
+    /// A template read that fails must not leave a permanent empty day file.
+    ///
+    /// The file used to be created *before* `create_template_content` ran, so
+    /// a broken `template_file` (missing, or otherwise unreadable) left a
+    /// zero-byte day file on disk even though the call returned `Err`. Every
+    /// later call then took the `AlreadyExists` arm and skipped the template
+    /// entirely — the failure became permanent and silent, and fixing the
+    /// template path afterwards changed nothing.
+    #[tokio::test]
+    async fn a_broken_template_path_leaves_no_day_file_behind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing_template = dir.path().join("no-such-template.md");
+        let service = DataService::new_with_dir(
+            60,
+            dir.path().join("days"),
+            ParseSettings {
+                prefix: None,
+                suffix: None,
+                template_file: Some(missing_template.to_str().unwrap().to_string()),
+            },
+        );
+        let test_date = date!(2026 - 08 - 29);
+
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .expect_err("a missing template file must fail the call");
+
+        let file_path = service.get_file_path(test_date).await.unwrap();
+        assert!(
+            !file_path.exists(),
+            "a failed template read must not leave a day file behind"
+        );
+
+        // Fix the template and retry. Because the first call never created a
+        // file, this must take the create arm and apply the template, not
+        // the AlreadyExists arm that would silently skip it.
+        tokio::fs::write(&missing_template, "fixed template for {date}\n")
+            .await
+            .unwrap();
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(
+            content, "fixed template for 2026-08-29\n",
+            "a later call with a fixed template must still apply it"
+        );
     }
 
     #[tokio::test]

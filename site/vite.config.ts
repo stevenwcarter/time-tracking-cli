@@ -16,6 +16,9 @@ export default defineConfig(() => {
     test: {
       globals: true,
       environment: 'jsdom',
+      env: {
+        TZ: 'America/New_York',
+      },
       setupFiles: ['./setupVitest.ts'],
       coverage: {
         reporter: ['text', 'html', 'cobertura', 'lcov', 'json-summary'],

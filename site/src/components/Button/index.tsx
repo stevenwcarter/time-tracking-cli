@@ -17,11 +17,18 @@ export interface ButtonProps {
 }
 
 export const MyButton = (props: ButtonProps) => {
-  const { block, disabled, children, nomargin, type, className, truetype, ...remainingProps } =
-    props;
+  const {
+    block: _block,
+    disabled,
+    children,
+    nomargin,
+    type: _type,
+    className,
+    truetype,
+    ...remainingProps
+  } = props;
 
   const classes = clsx(
-    // 'text-black',
     'transition',
     'text-white',
     'cursor-pointer',
@@ -37,8 +44,6 @@ export const MyButton = (props: ButtonProps) => {
     className?.indexOf('rounded') === -1 ? 'rounded-l-full rounded-r-full' : '',
     'py-2 px-6',
     props.size === 'sm' ? 'leading-[1.1875rem]' : 'text-sm',
-    // getVariant(type, disabled),
-    // block && 'w-full',
     className,
   );
 

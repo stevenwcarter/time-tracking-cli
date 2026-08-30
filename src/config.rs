@@ -6,7 +6,7 @@ use dirs::home_dir;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
 
@@ -23,6 +23,12 @@ use tracing::error;
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static CONFIG_LOAD_ERR: OnceLock<String> = OnceLock::new();
 
+/// Which [`DisplayFormatter`] renders output.
+///
+/// Chosen by the `--formatter` flag, the `formatter` key in the config file,
+/// or ad hoc by the TUI's yank commands. Defined twice — once deriving
+/// clap's `ValueEnum`, once without — so the type survives a build with the
+/// `cli` feature turned off.
 #[cfg(feature = "cli")]
 #[derive(ValueEnum, Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,6 +37,12 @@ pub enum Formatter {
     Markdown,
     Plain,
 }
+/// Which [`DisplayFormatter`] renders output.
+///
+/// Chosen by the `formatter` key in the config file, or ad hoc by the TUI's
+/// yank commands. The `cli`-less twin of the definition above: same
+/// variants, no clap `ValueEnum` derive, because there are no arguments to
+/// parse it out of.
 #[cfg(not(feature = "cli"))]
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -129,6 +141,14 @@ fn today_date() -> Date {
         .date()
 }
 
+/// The process-wide configuration: the CLI arguments layered over the values
+/// read from the TOML config file, with the accessors below filling in a
+/// default for anything neither supplies.
+///
+/// Resolved exactly once into a `OnceLock` — [`Config::get`] parses real
+/// argv on the way, [`Config::get_no_args`] does not — and re-exported from
+/// the crate root as the `Config` every other module reads its settings
+/// from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Formatter to use ("plain", "markdown", "default")
@@ -188,12 +208,10 @@ impl Default for Config {
         Self {
             formatter: Some(Formatter::Default),
             week_start_day: Some("Saturday".to_string()),
-            data_directory: Some(
-                get_time_tracking_dir_with_override(None)
-                    .unwrap()
-                    .display()
-                    .to_string(),
-            ),
+            // Left unresolved on purpose: every consumer re-derives this
+            // through get_data_directory(), which surfaces a Result instead
+            // of panicking when there is no home directory to find.
+            data_directory: None,
             template_file: None,
             prefix: None,
             suffix: None,
@@ -246,6 +264,14 @@ impl Config {
         Self::try_init(false)
     }
 
+    /// The process-wide configuration, parsing real argv on the first call.
+    ///
+    /// This is the accessor other modules' comments name by hand (e.g.
+    /// `DataDir::FromConfig` in [`data_svc`](crate::data_svc)).
+    /// [`Config::get_no_args`] and [`Config::try_get_no_args`] resolve the
+    /// same singleton without touching argv, which is what the library
+    /// paths and the tests use — whichever runs first wins, so a process
+    /// that wants its arguments honoured must reach here before them.
     pub fn get() -> &'static Config {
         Self::init(true)
     }
@@ -255,110 +281,15 @@ impl Config {
         let args = if use_args {
             Args::parse()
         } else {
-            Args {
-                date: None,
-                stdin: false,
-                positional_date: None,
-                week: false,
-                week_start_day: None,
-                data_directory: None,
-                template_file: None,
-                formatter: None,
-                noedit: false,
-                #[cfg(feature = "webapp")]
-                serve: false,
-                #[cfg(feature = "tui")]
-                tui: false,
-                #[cfg(feature = "webapp")]
-                port: None,
-            }
+            synthetic_args()
         };
 
         let config_path = get_config_path()?;
+        let mut config = load_or_create_config_file(&config_path)?;
 
-        let mut config = if config_path.exists() {
-            let content = fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&content)?;
-            config
-        } else {
-            // Create default config file
-            let default_config = Config::default();
-            fs::create_dir_all(
-                config_path
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
-            )?;
-            let toml_content = toml::to_string_pretty(&default_config)?;
-            fs::write(&config_path, toml_content)?;
-            let mut file = OpenOptions::new().append(true).open(&config_path)?;
-            write_config_comments(&mut file)?;
-            default_config
-        };
-
-        if let Some(week_start_day) = args.week_start_day {
-            config.week_start_day = Some(week_start_day);
-        }
-        if let Some(data_directory) = args.data_directory {
-            config.data_directory = Some(data_directory);
-        }
-        if let Some(template_file) = args.template_file {
-            config.template_file = Some(template_file);
-        }
-        if let Some(formatter) = args.formatter {
-            config.formatter = Some(formatter);
-        }
-        if args.stdin {
-            config.stdin = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if args.serve {
-            config.serve = Some(true);
-        }
-        if args.week {
-            config.week = true;
-        }
-
-        {
-            let date_str = args.date.or(args.positional_date);
-
-            let date = match date_str {
-                Some(date_str) => {
-                    // Parse the provided date
-
-                    use interim::{Dialect, parse_date_string};
-                    let now =
-                        OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
-                    let date_time = parse_date_string(&date_str, now, Dialect::Us);
-                    match date_time {
-                        Ok(date_time) => date_time.date(),
-                        Err(e) => {
-                            eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
-                            today_date()
-                        }
-                    }
-                }
-                None => {
-                    // Use today's date
-                    today_date()
-                }
-            };
-            config.date = date;
-        }
-
-        #[cfg(feature = "tui")]
-        if args.tui {
-            config.tui = Some(true);
-        }
-
-        if args.noedit {
-            config.noedit = true;
-        }
-
-        #[cfg(feature = "webapp")]
-        if let Some(port) = args.port {
-            config.port = Some(port);
-        }
+        apply_arg_overrides(&mut config, &args);
+        config.date = resolve_requested_date(args.date.or(args.positional_date));
+        resolve_data_directory(&mut config)?;
 
         Ok(config)
     }
@@ -368,11 +299,12 @@ impl Config {
 
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&content)?;
+            let mut config: Config = toml::from_str(&content)?;
+            resolve_data_directory(&mut config)?;
             Ok(config)
         } else {
             // Create default config file
-            let default_config = Config::default();
+            let mut default_config = Config::default();
             fs::create_dir_all(
                 config_path
                     .parent()
@@ -382,6 +314,7 @@ impl Config {
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;
             write_config_comments(&mut file)?;
+            resolve_data_directory(&mut default_config)?;
             Ok(default_config)
         }
     }
@@ -422,7 +355,153 @@ impl Config {
     }
 }
 
+/// The `Args` [`Config::load`] uses in place of `Args::parse()` when it is
+/// not meant to consult real argv (`use_args = false`): every field at its
+/// no-op value, so [`apply_arg_overrides`] and [`resolve_requested_date`]
+/// leave the loaded config untouched.
+#[cfg(feature = "cli")]
+fn synthetic_args() -> Args {
+    Args {
+        date: None,
+        stdin: false,
+        positional_date: None,
+        week: false,
+        week_start_day: None,
+        data_directory: None,
+        template_file: None,
+        formatter: None,
+        noedit: false,
+        #[cfg(feature = "webapp")]
+        serve: false,
+        #[cfg(feature = "tui")]
+        tui: false,
+        #[cfg(feature = "webapp")]
+        port: None,
+    }
+}
+
+/// Reads `config_path` if it exists, otherwise writes a freshly defaulted
+/// config there (plus its explanatory comments) and returns that default.
+#[cfg(feature = "cli")]
+fn load_or_create_config_file(config_path: &Path) -> Result<Config> {
+    if config_path.exists() {
+        let content = fs::read_to_string(config_path)?;
+        let config: Config = toml::from_str(&content)?;
+        Ok(config)
+    } else {
+        // Create default config file
+        let default_config = Config::default();
+        fs::create_dir_all(
+            config_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("config path has no parent directory"))?,
+        )?;
+        let toml_content = toml::to_string_pretty(&default_config)?;
+        fs::write(config_path, toml_content)?;
+        let mut file = OpenOptions::new().append(true).open(config_path)?;
+        write_config_comments(&mut file)?;
+        Ok(default_config)
+    }
+}
+
+/// Layers every `Some`/`true` field of `args` onto `config`, other than the
+/// date fields -- those are [`resolve_requested_date`]'s job, since parsing
+/// them can fail and needs its own fallback.
+#[cfg(feature = "cli")]
+fn apply_arg_overrides(config: &mut Config, args: &Args) {
+    if let Some(week_start_day) = args.week_start_day.clone() {
+        config.week_start_day = Some(week_start_day);
+    }
+    if let Some(data_directory) = args.data_directory.clone() {
+        config.data_directory = Some(data_directory);
+    }
+    if let Some(template_file) = args.template_file.clone() {
+        config.template_file = Some(template_file);
+    }
+    if let Some(formatter) = args.formatter.clone() {
+        config.formatter = Some(formatter);
+    }
+    if args.stdin {
+        config.stdin = true;
+    }
+
+    #[cfg(feature = "webapp")]
+    if args.serve {
+        config.serve = Some(true);
+    }
+    if args.week {
+        config.week = true;
+    }
+
+    #[cfg(feature = "tui")]
+    if args.tui {
+        config.tui = Some(true);
+    }
+
+    if args.noedit {
+        config.noedit = true;
+    }
+
+    #[cfg(feature = "webapp")]
+    if let Some(port) = args.port {
+        config.port = Some(port);
+    }
+}
+
+/// The effective date for a run: `date_str` (from `--date` or the
+/// positional argument) parsed via `interim`, or today's date when there is
+/// none or parsing fails.
+/// Fill in `data_directory` when neither the config file nor the CLI supplied one.
+///
+/// [`Config::default`] deliberately leaves it `None` so constructing a default
+/// config cannot panic where the home directory is unresolvable. But
+/// [`Config::get_data_directory`] is a public accessor, and out-of-repo
+/// consumers read it directly rather than re-resolving through
+/// [`get_time_tracking_dir`](crate::get_time_tracking_dir) — the
+/// `time-tracking-nvim` plugin does exactly that, and treats `None` as "not a
+/// time-tracking buffer". So every *loaded* config must carry a real value.
+///
+/// Resolving here rather than in `Default` keeps the fallible path: an
+/// unresolvable home surfaces as an `Err` the caller can report, instead of the
+/// `unwrap()` panic this used to be.
+fn resolve_data_directory(config: &mut Config) -> Result<()> {
+    if config.data_directory.is_none() {
+        config.data_directory = Some(
+            get_time_tracking_dir_with_override(None)?
+                .display()
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "cli")]
+fn resolve_requested_date(date_str: Option<String>) -> Date {
+    match date_str {
+        Some(date_str) => {
+            // Parse the provided date
+
+            use interim::{Dialect, parse_date_string};
+            let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+            let date_time = parse_date_string(&date_str, now, Dialect::Us);
+            match date_time {
+                Ok(date_time) => date_time.date(),
+                Err(e) => {
+                    eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
+                    today_date()
+                }
+            }
+        }
+        None => {
+            // Use today's date
+            today_date()
+        }
+    }
+}
+
 fn write_config_comments(file: &mut impl Write) -> Result<()> {
+    file.write_all(b"\n# Optional data directory where day files are stored\n")?;
+    file.write_all(b"#data_directory = \"~/.time-tracking\"\n")?;
     file.write_all(b"\n# Optional template file which will be used to create each new day note\n")?;
     file.write_all(b"#template_file = ~/.time-tracking/template.md\n")?;
     file.write_all(
@@ -492,7 +571,9 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.week_start_day, Some("Saturday".to_string()));
-        assert!(config.data_directory.unwrap().ends_with("/.time-tracking"));
+        // Left unresolved on purpose since T21 -- see
+        // `default_config_does_not_resolve_the_home_directory` below.
+        assert_eq!(config.data_directory, None);
         assert_eq!(config.template_file, None);
         assert_eq!(config.daily_target_hours, Some(8.0));
     }
@@ -519,6 +600,33 @@ mod tests {
     fn test_mouse_missing_key_deserializes_to_none() {
         let config: Config = toml::from_str("").expect("deserialize");
         assert_eq!(config.mouse, None);
+    }
+
+    #[test]
+    fn a_loaded_config_always_carries_a_data_directory() {
+        // The contract out-of-repo consumers depend on. `time-tracking-nvim`
+        // calls `config.get_data_directory().unwrap_or("")` and feeds the
+        // result straight to `fs::canonicalize`, so a `None` here silently
+        // stops it recognising time-tracking buffers. `Config::default` is
+        // allowed to leave it `None` (see the test below); a *loaded* config
+        // is not.
+        let _guard = ConfigHomeGuard::new();
+        let config = Config::load(false).expect("load should succeed");
+        assert!(
+            config.get_data_directory().is_some(),
+            "a loaded config must resolve data_directory for external consumers"
+        );
+    }
+
+    #[test]
+    fn default_config_does_not_resolve_the_home_directory() {
+        // Must not panic even when the home directory cannot be resolved;
+        // consumers re-resolve data_directory lazily through a Result.
+        let config = Config::default();
+        assert!(
+            config.data_directory.is_none(),
+            "Config::default must not eagerly resolve a data directory"
+        );
     }
 
     #[test]
@@ -750,5 +858,182 @@ mod tests {
         };
 
         assert_eq!(config.get_week_start_day(), "");
+    }
+
+    // --- T6 characterization: `Config::load`'s current behavior, pinned
+    // before splitting it into phases. ---
+    //
+    // `ConfigHomeGuard` redirects `XDG_CONFIG_HOME` (what `dirs::config_dir`
+    // reads on Linux) at a fresh temp directory so these tests never touch
+    // the developer's real `~/.config/time-tracking-cli/config.toml`.
+    //
+    // `Config::load(true)` is never called from these tests: it parses real
+    // process argv via `Args::parse()`, and clap calls `process::exit` on a
+    // parse error, which would abort the whole test binary on the harness's
+    // own arguments. That is exactly the hazard `DataService::get` already
+    // routes tests around by using `DataService::new_with_dir` instead
+    // (see its doc comment) -- so these tests characterize the
+    // `use_args = false` path plus the argument-handling logic in isolation.
+
+    /// Serializes the tests below that mutate `XDG_CONFIG_HOME`: it is
+    /// process-wide state and `cargo test` runs on multiple threads by
+    /// default, so without this a test's redirected config path could leak
+    /// into another test running concurrently.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that points `get_config_path()` at a throwaway directory
+    /// for the duration of a test, restoring the previous `XDG_CONFIG_HOME`
+    /// (or clearing it, if it was unset) on drop.
+    struct ConfigHomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+        temp_dir: TempDir,
+    }
+
+    impl ConfigHomeGuard {
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let temp_dir = TempDir::new().expect("create temp config home");
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            // SAFETY: mutating the environment races with concurrent reads
+            // on other threads; `ENV_LOCK` above serializes every test that
+            // touches this variable, and no other test in this crate reads
+            // or writes it.
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+            }
+            Self {
+                _lock: lock,
+                previous,
+                temp_dir,
+            }
+        }
+
+        fn config_toml_path(&self) -> std::path::PathBuf {
+            self.temp_dir
+                .path()
+                .join("time-tracking-cli")
+                .join("config.toml")
+        }
+    }
+
+    impl Drop for ConfigHomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `new` above -- still held under `ENV_LOCK`.
+            unsafe {
+                match &self.previous {
+                    Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn config_load_creates_default_config_file_when_missing() {
+        let guard = ConfigHomeGuard::new();
+        let config_path = guard.config_toml_path();
+        assert!(!config_path.exists());
+
+        let config = Config::load(false).expect("load should create a default config");
+
+        assert!(config_path.exists(), "load should write the config file");
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("week_start_day = \"Saturday\""));
+        assert_eq!(config.formatter, Some(Formatter::Default));
+        assert_eq!(config.week_start_day, Some("Saturday".to_string()));
+        assert_eq!(config.template_file, None);
+        assert_eq!(config.daily_target_hours, Some(8.0));
+    }
+
+    #[test]
+    fn config_load_reads_existing_config_file_rather_than_overwriting() {
+        let guard = ConfigHomeGuard::new();
+        let config_path = guard.config_toml_path();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let existing = "week_start_day = \"Wednesday\"\ndaily_target_hours = 4.0\n";
+        fs::write(&config_path, existing).unwrap();
+
+        let config = Config::load(false).expect("load should read the existing file");
+
+        assert_eq!(config.week_start_day, Some("Wednesday".to_string()));
+        assert_eq!(config.daily_target_hours, Some(4.0));
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            existing,
+            "load must not overwrite an existing config file"
+        );
+    }
+
+    #[test]
+    fn config_load_without_date_args_defaults_to_today() {
+        let _guard = ConfigHomeGuard::new();
+        let config = Config::load(false).expect("load should succeed");
+        assert_eq!(config.date, today_date());
+    }
+
+    #[test]
+    fn config_load_date_literal_today_resolves_to_todays_date() {
+        let resolved = resolve_requested_date(Some("today".to_string()));
+        assert_eq!(resolved, today_date());
+    }
+
+    #[test]
+    fn config_load_date_explicit_yyyy_mm_dd_resolves_to_that_date() {
+        let resolved = resolve_requested_date(Some("2024-03-15".to_string()));
+        assert_eq!(resolved, time::macros::date!(2024 - 03 - 15));
+    }
+
+    #[test]
+    fn config_load_date_relative_phrase_resolves_relative_to_today() {
+        let resolved = resolve_requested_date(Some("yesterday".to_string()));
+        assert_eq!(resolved, today_date().previous_day().unwrap());
+    }
+
+    #[test]
+    fn config_load_arg_overrides_take_precedence_over_config_file_values() {
+        let mut config = Config {
+            week_start_day: Some("Sunday".to_string()),
+            data_directory: Some("/from/config/file".to_string()),
+            template_file: Some("/from/config/file/template.md".to_string()),
+            formatter: Some(Formatter::Markdown),
+            ..Config::default()
+        };
+
+        let args = Args {
+            stdin: true,
+            week: true,
+            week_start_day: Some("Monday".to_string()),
+            data_directory: Some("/from/args".to_string()),
+            template_file: Some("/from/args/template.md".to_string()),
+            formatter: Some(Formatter::Plain),
+            noedit: true,
+            #[cfg(feature = "webapp")]
+            serve: true,
+            #[cfg(feature = "tui")]
+            tui: true,
+            #[cfg(feature = "webapp")]
+            port: Some(9999),
+            ..synthetic_args()
+        };
+
+        apply_arg_overrides(&mut config, &args);
+
+        assert_eq!(config.week_start_day, Some("Monday".to_string()));
+        assert_eq!(config.data_directory, Some("/from/args".to_string()));
+        assert_eq!(
+            config.template_file,
+            Some("/from/args/template.md".to_string())
+        );
+        assert_eq!(config.formatter, Some(Formatter::Plain));
+        assert!(config.stdin);
+        assert!(config.week);
+        assert!(config.noedit);
+        #[cfg(feature = "webapp")]
+        assert_eq!(config.serve, Some(true));
+        #[cfg(feature = "tui")]
+        assert_eq!(config.tui, Some(true));
+        #[cfg(feature = "webapp")]
+        assert_eq!(config.port, Some(9999));
     }
 }

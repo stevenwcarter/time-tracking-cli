@@ -2,10 +2,11 @@ import DateSelector from 'components/DateSelector';
 import WeeklySummary from 'components/WeeklySummary';
 import { useWeekData } from 'hooks/useWeekData';
 import { useParams } from 'react-router';
+import { parseDateString } from 'utils/date';
 
 export const Homepage = () => {
   const { date: inputDate } = useParams();
-  const date = inputDate ? new Date(inputDate) : new Date();
+  const date = inputDate ? parseDateString(inputDate) : new Date();
   const [data] = useWeekData(date);
 
   return (

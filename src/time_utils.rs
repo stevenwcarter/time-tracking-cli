@@ -3,6 +3,12 @@ use time::{Date, Duration, Weekday};
 
 use crate::DATE_FORMAT;
 
+/// Parse a weekday from its full name or three-letter abbreviation, matched
+/// case-insensitively ("monday", "Mon", "MON").
+///
+/// Anything else is an error naming all seven valid options, since this is
+/// where a bad `week_start_day` — from `--week-start-day` or the config
+/// file — surfaces to the user.
 pub fn parse_weekday(day_str: &str) -> Result<Weekday> {
     // eq_ignore_ascii_case avoids the to_lowercase() heap allocation
     let eq = |s: &str| day_str.eq_ignore_ascii_case(s);
@@ -33,6 +39,8 @@ pub fn parse_weekday(day_str: &str) -> Result<Weekday> {
     )
 }
 
+/// The seven consecutive dates of the week containing `date`, in order,
+/// starting on `week_start_day`.
 pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> [Date; 7] {
     // Calculate how many days to go back to reach the week start day
     let current_weekday = date.weekday();
@@ -47,6 +55,8 @@ pub fn get_week_dates(date: &Date, week_start_day: Weekday) -> [Date; 7] {
     std::array::from_fn(|i| week_start + Duration::days(i as i64))
 }
 
+/// Format a date as its weekday name followed by the ISO date, e.g.
+/// "Monday 2023-10-09".
 pub fn format_day_with_date(date: &Date) -> String {
     format!("{} {}", date.weekday(), date.format(&DATE_FORMAT).unwrap())
 }
