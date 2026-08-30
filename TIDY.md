@@ -33,12 +33,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Add `pub(crate) const DEAD_TIME_ERROR_THRESHOLD_MINUTES: u32 = 90;` to src/display/mod.rs and use it at line 139 (`if data.dead_time_minutes < DEAD_TIME_ERROR_THRESHOLD_MINUTES`), then have src/tui/project_list.rs:30 reference `crate::display::DEAD_TIME_ERROR_THRESHOLD_MINUTES` instead of redefining the same literal — that constant's own doc comment at project_list.rs:26-29 already warns the two must never drift apart; line 139 sits inside the dead-time block T28 extracts as `push_dead_time` (lines 134-156), so if T28 runs first apply this inside the extracted function.
 - [ ] execute   [ ] skip
 
-### T8. Fix the plain formatter's 40-line dash rule and share banner rendering with the default formatter: `PlainDisplayFormatter::weekly_totals` (src/display/plain.rs:60)
-- Lenses: duplication
-- Risk: low
-- Proposed fix: src/display/plain.rs:60 uses `"-\n".repeat(40)` where src/display/default.rs:60 uses `"-".repeat(40)` plus a single newline, so plain output emits 40 lines each containing one dash instead of one 40-column rule; cli/tests/golden/weekly_plain.txt pins this broken output and must be regenerated in the same commit. Then remove the drift's cause: default.rs:45-52 (weekly_header) is byte-identical to plain.rs:45-52, default.rs:124-130 and plain.rs:123-130 (daily_breakdowns_header) produce identical output via different code, and default.rs:135-140 vs plain.rs:135-141 (day_header) differ only by the emoji prefix — extend the `DaySummaryStyle` / `format_day_summary_impl` mechanism already used for `day_summary` (src/display/mod.rs:78-199) with a `title_prefix`/emoji field plus a shared `render_rule(width)` helper covering these banner/totals methods for both `DefaultDisplayFormatter` and `PlainDisplayFormatter`; markdown.rs differs meaningfully (Markdown headings) and should stay separate. Overlaps T29, which rewrites the `push_str(&format!(...))` sites in both files — do this one first, then re-derive T29's site list.
-- [x] execute   [ ] skip
-
 ### T50. Spurious empty save truncates the day file on first load: `DateEditor` debounced-save effect (site/src/components/DateEditor.tsx:54-67)
 - Lenses: opportunistic
 - Risk: high — needs characterization tests first
