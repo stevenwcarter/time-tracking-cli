@@ -211,12 +211,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Change the error context string at cli/src/main.rs:19 from "Coult not initialize tracing" to "Could not initialize tracing"; this line sits inside `main_impl`, which T11 splits and the doc-fixer queue also edits at lines 15-16, so re-locate it if either lands first.
 - [ ] execute   [ ] skip
 
-### T41. Delete the eleven-month-old commented-out clsx entries: `Button` clsx call (site/src/components/Button/index.tsx:24, +2 lines)
-- Lenses: dead-code
-- Risk: low
-- Proposed fix: Delete the three commented lines at site/src/components/Button/index.tsx:24, 40 and 41 (`// 'text-black',`, `// getVariant(type, disabled),`, `// block && 'w-full',`); `git blame -L 20,45 -- site/src/components/Button/index.tsx` dates all three to commit b3857caa on 2025-10-04, roughly eleven months old and well past the 30-day bar. Once line 40 is gone, `type` becomes an unused destructured field of `props` at line 20 — drop it from the destructure too. Pair with T17, which deletes the `getVariant` helper that call was the last reference to.
-- [x] execute   [ ] skip
-
 ### T42. Add a shared local-date string helper for the five toISOString call sites: `toDateString` (site/src/hooks/useDateData.ts:11, +4 sites)
 - Lenses: duplication
 - Risk: low
