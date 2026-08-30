@@ -57,7 +57,7 @@ time = { version = "0.3.44", features = [
 
 # Web server dependencies (optional, behind webapp feature)
 axum = { version = "0.8", optional = true }
-tower = { version = "0.5", optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = [
     "fs",
     "cors",

@@ -14,6 +14,9 @@ fn webapp_only_server_shutdown_channel_stays_alive() {
     // Use a tempdir for data, not the real data directory.
     // This prevents the test from touching ~/.time-tracking/.
     let data_dir = tempfile::tempdir().expect("failed to create temp dir");
+    // And a tempdir for HOME/XDG_CONFIG_HOME, so the run cannot create or
+    // read `~/.config/time-tracking-cli/config.toml` on the real machine.
+    let config_home = tempfile::tempdir().expect("failed to create config dir");
 
     // Find an available port by binding to port 0 (OS assigns ephemeral port)
     let listener =
@@ -25,21 +28,17 @@ fn webapp_only_server_shutdown_channel_stays_alive() {
     drop(listener); // Release the port for the server to use
 
     // Spawn ttcli with --serve, --port, --noedit (prevents editor hang),
-    // and --data-directory (prevents touching real data).
+    // and --data-directory/HOME/XDG_CONFIG_HOME scoped via `common::scoped`
+    // (prevents touching real data or config).
     // If the oneshot sender is dropped immediately (bare `_` bug), the server
     // will shut down within ~0.8ms and stop accepting connections.
     // `--noedit` already keeps this run away from the editor; going through
     // `common::ttcli` as well means the guarantee does not depend on that flag
     // surviving a future edit to this argument list.
-    let mut child = common::ttcli()
-        .args([
-            "--serve",
-            "--port",
-            &port.to_string(),
-            "--noedit",
-            "--data-directory",
-        ])
-        .arg(data_dir.path())
+    let mut cmd = common::ttcli();
+    cmd.args(["--serve", "--port", &port.to_string(), "--noedit"]);
+    common::scoped(&mut cmd, data_dir.path(), config_home.path());
+    let mut child = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -80,6 +79,7 @@ fn serving_prints_no_banner_to_stdout() {
     use std::time::Duration;
 
     let data_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let config_home = tempfile::tempdir().expect("failed to create config dir");
 
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("failed to bind to ephemeral port");
@@ -89,15 +89,10 @@ fn serving_prints_no_banner_to_stdout() {
         .port();
     drop(listener);
 
-    let mut child = common::ttcli()
-        .args([
-            "--serve",
-            "--port",
-            &port.to_string(),
-            "--noedit",
-            "--data-directory",
-        ])
-        .arg(data_dir.path())
+    let mut cmd = common::ttcli();
+    cmd.args(["--serve", "--port", &port.to_string(), "--noedit"]);
+    common::scoped(&mut cmd, data_dir.path(), config_home.path());
+    let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()

@@ -49,12 +49,20 @@ async fn main_impl() -> Result<()> {
     if config.stdin {
         let ignored = ignored_stdin_flags(config);
         if !ignored.is_empty() {
-            // Logged rather than printed: stdin mode writes its report to
-            // stdout, and that stream belongs to the caller.
-            tracing::warn!(
+            let message = format!(
                 "--stdin takes precedence; these flags were ignored: {}",
                 ignored.join(", ")
             );
+            // Logged for durability, and also printed to stderr: the default
+            // `RUST_LOG` records only `ERROR` events, and even those go to
+            // `~/.local/share/time-tracking-cli/log.txt`, not the terminal —
+            // so `tracing::warn!` alone reaches nobody. stdin mode writes its
+            // report to stdout, so that stream stays reserved for the
+            // caller; stderr is a separate stream and no TUI can be running
+            // on this path (this function returns before any TUI spawn), so
+            // there is no alternate-screen hazard in writing to it here.
+            tracing::warn!("{message}");
+            eprintln!("{message}");
         }
 
         let formatter = config.get_formatter();
@@ -130,6 +138,18 @@ fn spawn_webserver_if_configured(
 ) -> bool {
     use tracing::info;
 
+    // Whether the TUI will run must be read from `config` before it is
+    // cloned and moved into the spawned task below. Stderr is safe to write
+    // to only when the TUI is not running: `--serve` and `--tui` are
+    // independent flags with no `conflicts_with`, so this task can be
+    // running while the TUI owns the alternate screen and raw mode, and
+    // ratatui's diff renderer does not know a region something else wrote to
+    // has changed. With no TUI running there is no such hazard.
+    #[cfg(feature = "tui")]
+    let tui_will_run = config.tui == Some(true);
+    #[cfg(not(feature = "tui"))]
+    let tui_will_run = false;
+
     let mut running = false;
     if let Some(true) = config.serve
         && let Some(port) = config.port
@@ -139,13 +159,17 @@ fn spawn_webserver_if_configured(
         let config = config.clone();
         set.spawn(async move {
             if let Err(e) = time_tracking_cli::web::run_server(port, config, rx).await {
-                // Logged only. `--serve` and `--tui` are independent flags
-                // with no `conflicts_with`, so this task can be running while
-                // the TUI owns the alternate screen and raw mode — and
-                // ratatui's diff renderer does not know a region something
-                // else wrote to has changed. The `tracing::error!` above
-                // already carries the whole message to the log file.
+                // Always logged to the file, the way every other task
+                // failure in this file is.
                 error!("Error running web server: {}", e);
+                // Also surfaced on stderr when it is safe to (see above):
+                // the default `RUST_LOG` records only `ERROR` events, and
+                // even those go to `~/.local/share/time-tracking-cli/log.txt`,
+                // not the terminal, so `tracing::error!` alone would leave a
+                // failed `--serve` completely invisible.
+                if !tui_will_run {
+                    eprintln!("Error running web server: {}", e);
+                }
             }
         });
     }
