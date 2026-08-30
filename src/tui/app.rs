@@ -1742,8 +1742,24 @@ impl App {
         self.stop_watch();
         match self.data_svc.get_file_path(self.active_date).await {
             Ok(path) => self.watch = Some(spawn_mtime_watch(path, self.events.sender())),
-            Err(e) => tracing::warn!("could not resolve a path to watch: {e}"),
+            Err(e) => self.report_watch_failure(&e),
         }
+    }
+
+    /// Report a watch that could not be established, both ways.
+    ///
+    /// A `tracing::warn!` on its own goes to a log file the alternate screen
+    /// hides — the same failure mode the clipboard path was fixed for. When
+    /// this fires the mtime watch is not running, so external edits to the
+    /// active day silently stop being picked up for the rest of the session;
+    /// the user needs to see that, not just the log.
+    ///
+    /// A separate method rather than an inline arm because
+    /// `get_file_path` only fails under `DataDir::FromConfig`, which no test
+    /// service uses — this is what makes the branch reachable from a test.
+    fn report_watch_failure(&mut self, error: &anyhow::Error) {
+        tracing::warn!("could not resolve a path to watch: {error}");
+        self.set_status(format!("Could not watch for external changes: {error}"));
     }
 
     /// Install a freshly loaded day, dropping the project list when the day
@@ -3268,6 +3284,26 @@ mod tests {
 
         let message = status_text(&app).expect("a failed load must set a status");
         assert!(message.contains("permission denied"), "got {message:?}");
+    }
+
+    #[test]
+    fn a_failed_watch_retarget_reaches_the_status_line() {
+        // Every other fallible path in this file pairs its warn!/error! with
+        // a set_status, because — per the clipboard fix's own comment above
+        // `copy_to_clipboard` — a log-only failure "went to a log file the
+        // alternate screen hides" and was not observable at all. This one
+        // was log-only, so the mtime watch could stop and the user would
+        // never learn that external edits had stopped being detected.
+        let mut app = App::new(TuiContext::for_test());
+        assert_eq!(status_text(&app), None);
+
+        app.report_watch_failure(&anyhow::anyhow!("no such directory"));
+
+        let message = status_text(&app).expect("a failed watch must set a status");
+        assert!(
+            message.contains("no such directory"),
+            "the status must carry the cause: {message}"
+        );
     }
 
     /// The Critical this task's review caught: `raw_content` and
