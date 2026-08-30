@@ -158,6 +158,62 @@ impl<'a> WeeklyBarChart<'a> {
             })
             .collect()
     }
+    /// The block both `render` draws the chart inside and `date_at` derives
+    /// its hit-test origin from.
+    ///
+    /// One function for both, so a later padding or title change can't
+    /// move where the chart is drawn without also moving where clicks are
+    /// read from. `date_at` has no real title to pass, but `Block::inner`
+    /// only cares whether a title is *present* (it reserves the title's
+    /// row) — never what it says — so an empty one reproduces the same
+    /// geometry.
+    fn content_block(title: impl Into<Line<'static>>) -> Block<'static> {
+        Block::default()
+            .padding(Padding {
+                left: 1,
+                top: 1,
+                bottom: 1, // Extra bottom padding for day labels with day of month
+                ..Padding::default()
+            })
+            .border_type(BorderType::Rounded)
+            .title(title)
+    }
+
+    /// The day whose bar is drawn at (`x`, `y`) in `area`, or `None`.
+    ///
+    /// Reads its geometry from [`WeeklyBarChart::calculate_bar_dimensions`]
+    /// — the same function `render` lays the bars out with — so the two
+    /// cannot drift into disagreeing about where a bar is. The chart's
+    /// left edge comes from [`Block::inner`] on the identical block
+    /// `render` draws into ([`WeeklyBarChart::content_block`]), not a
+    /// hand-rolled offset: `render` draws into `block.inner(area)`, whose
+    /// origin is `area.x + 1` (one column of the block's own left
+    /// padding — this block has no left border) — not `area.x + 2`, which
+    /// `calculate_bar_dimensions`' `saturating_sub(4)` might suggest. That
+    /// `4` approximates content *width* for the bar-sizing formula; it is
+    /// not the origin and must not be read as one.
+    pub fn date_at(&self, area: Rect, x: u16, y: u16) -> Option<Date> {
+        if x < area.x || x >= area.x + area.width || y < area.y || y >= area.y + area.height {
+            return None;
+        }
+
+        let (bar_width, bar_gap) = self.calculate_bar_dimensions(area);
+        let stride = bar_width.checked_add(bar_gap)?;
+        if stride == 0 {
+            return None;
+        }
+
+        let inner = Self::content_block("").inner(area);
+        let offset = x.checked_sub(inner.x)?;
+
+        let index = offset / stride;
+        // The gap after a bar belongs to no day.
+        if offset % stride >= bar_width {
+            return None;
+        }
+        self.week_dates.get(usize::from(index)).copied()
+    }
+
     /// Calculate dynamic bar width and gap based on the available width.
     /// The y-axis ceiling is independent of the area — see `ceiling_for`.
     fn calculate_bar_dimensions(&self, area: Rect) -> (u16, u16) {
@@ -261,15 +317,7 @@ impl Widget for &mut WeeklyBarChart<'_> {
         let total_text = format!("{:.1}h total", total_hours);
 
         // Create the block with title and total hours
-        let block = Block::default()
-            .padding(Padding {
-                left: 1,
-                top: 1,
-                bottom: 1, // Extra bottom padding for day labels with day of month
-                ..Padding::default()
-            })
-            .border_type(BorderType::Rounded)
-            .title(title);
+        let block = WeeklyBarChart::content_block(title);
 
         // Render the block first
         let inner_area = block.inner(area);
@@ -340,6 +388,47 @@ mod tests {
             date!(2026 - 08 - 27),
             date!(2026 - 08 - 28),
         ]
+    }
+
+    /// Every bar resolves to its own day, at more than one width — the
+    /// widths are what exercise the shared `calculate_bar_dimensions`
+    /// rather than one hard-coded layout.
+    #[test]
+    fn each_bar_resolves_to_its_day() {
+        let theme = Theme::none();
+        let week = week();
+        let chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+
+        for width in [40_u16, 80, 120] {
+            let area = Rect::new(0, 0, width, 12);
+            let mut seen: Vec<Date> = Vec::new();
+            for x in area.x..area.x + area.width {
+                if let Some(d) = chart.date_at(area, x, area.y + 3)
+                    && !seen.contains(&d)
+                {
+                    seen.push(d);
+                }
+            }
+            assert_eq!(
+                seen.len(),
+                7,
+                "at width {width} every one of the seven days should be reachable, got {seen:?}"
+            );
+            for (i, d) in seen.iter().enumerate() {
+                assert_eq!(*d, week[i], "bars must resolve left-to-right at width {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn clicks_outside_the_chart_resolve_to_nothing() {
+        let theme = Theme::none();
+        let week = week();
+        let chart = WeeklyBarChart::new(date!(2026 - 08 - 24), &week, &theme);
+        let area = Rect::new(0, 0, 80, 12);
+
+        assert_eq!(chart.date_at(area, 500, 3), None);
+        assert_eq!(chart.date_at(area, 5, 500), None);
     }
 
     #[test]
