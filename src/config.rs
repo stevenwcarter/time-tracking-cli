@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
 
-use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::{
     DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
 };
@@ -208,12 +207,10 @@ impl Default for Config {
         Self {
             formatter: Some(Formatter::Default),
             week_start_day: Some("Saturday".to_string()),
-            data_directory: Some(
-                get_time_tracking_dir_with_override(None)
-                    .unwrap()
-                    .display()
-                    .to_string(),
-            ),
+            // Left unresolved on purpose: every consumer re-derives this
+            // through get_data_directory(), which surfaces a Result instead
+            // of panicking when there is no home directory to find.
+            data_directory: None,
             template_file: None,
             prefix: None,
             suffix: None,
@@ -544,7 +541,9 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.week_start_day, Some("Saturday".to_string()));
-        assert!(config.data_directory.unwrap().ends_with("/.time-tracking"));
+        // Left unresolved on purpose since T21 -- see
+        // `default_config_does_not_resolve_the_home_directory` below.
+        assert_eq!(config.data_directory, None);
         assert_eq!(config.template_file, None);
         assert_eq!(config.daily_target_hours, Some(8.0));
     }
@@ -571,6 +570,17 @@ mod tests {
     fn test_mouse_missing_key_deserializes_to_none() {
         let config: Config = toml::from_str("").expect("deserialize");
         assert_eq!(config.mouse, None);
+    }
+
+    #[test]
+    fn default_config_does_not_resolve_the_home_directory() {
+        // Must not panic even when the home directory cannot be resolved;
+        // consumers re-resolve data_directory lazily through a Result.
+        let config = Config::default();
+        assert!(
+            config.data_directory.is_none(),
+            "Config::default must not eagerly resolve a data directory"
+        );
     }
 
     #[test]

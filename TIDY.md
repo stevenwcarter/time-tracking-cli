@@ -41,12 +41,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: Extract `async fn spawn_webserver_if_configured(config: &Config, set: &mut JoinSet<()>, rx: ...) -> bool` for the `#[cfg(feature = "webapp")]` block (lines 43-62), `async fn show_report(config: &Config, week_start_weekday: Weekday) -> Result<()>` to replace both verbatim copies of the weekly/single-day dispatch (lines 82-88 and the `#[cfg(not(feature = "tui"))]` copy at 94-100), and `async fn wait_for_background_tasks(set: JoinSet<()>, webserver_running: bool) -> Result<()>` for lines 103-113; the doc-fixer queue independently deletes redundant comments at lines 83, 86, 95 and 98 and relocates the misplaced "Load configuration…" comment at lines 15-16, so those exact lines may already have shifted when this runs, and T40 fixes a typo at line 19 inside the same function.
 - [x] execute   [ ] skip
 
-### T21. Stop panicking in Config::default() when the home directory can't be resolved: `Config::default` (src/config.rs:188)
-- Lenses: idioms, opportunistic
-- Risk: medium
-- Proposed fix: `Config::default()` eagerly resolves the home directory with `Some(get_time_tracking_dir_with_override(None).unwrap().display().to_string())`, which panics wherever `dirs::home_dir()` returns None (a container with no `$HOME`, for example); set `data_directory: None` instead, since `get_data_directory()` / `get_time_tracking_dir_with_override(None)` already re-resolve lazily on demand and surface a `Result` error rather than panicking — that removes the panic and the eager work in one change, so no separate fallible-default plumbing is needed.
-- [x] execute   [ ] skip
-
 ### T23. Make DataService::clear_cache test-only or remove it: `DataService::clear_cache` (src/data_svc.rs:232)
 - Lenses: dead-code
 - Risk: medium
