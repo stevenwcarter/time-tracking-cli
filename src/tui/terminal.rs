@@ -45,6 +45,18 @@ impl TerminalModes {
 
     /// Give the terminal back, innermost mode first — the exact inverse of
     /// [`TerminalModes::enter`].
+    ///
+    /// That inverse order is a deliberate choice, not a leftover. The
+    /// `$EDITOR` handover this module replaced unwound in the opposite
+    /// order — `LeaveAlternateScreen` before `disable_raw_mode()` — while
+    /// `ratatui::restore()` (what actually runs at shutdown) disables raw
+    /// mode first and leaves the alternate screen second, the order used
+    /// here. So the codebase already had two different answers for how to
+    /// undo one conceptual operation; this regularises on the one
+    /// `ratatui::restore()` uses. The change is not observable — nothing
+    /// renders between the two calls either way — but it is a real change
+    /// from the code this module replaced, recorded here rather than left
+    /// to be rediscovered.
     pub fn leave(self) -> Result<()> {
         if self.mouse {
             stdout().execute(DisableMouseCapture)?;
@@ -78,16 +90,34 @@ impl Drop for PausedPoller<'_> {
     }
 }
 
+/// Combine the body's result with the terminal-restore result the way the
+/// editor handover always did it: the body's error is what the caller sees
+/// when both fail, but a restore failure must still surface when the body
+/// itself succeeded.
+///
+/// Pulled out of [`with_suspended_terminal`] and kept pure — no terminal, no
+/// `EventHandler` — so all four (body, restore) combinations can be checked
+/// directly. That is the whole of the "a failing body still restores the
+/// terminal" semantics; [`with_suspended_terminal`] itself only wires it to
+/// the real leave/enter calls.
+fn combine_results<T>(body: Result<T>, restore: Result<()>) -> Result<T> {
+    match restore {
+        Ok(()) => body,
+        Err(e) => body.and(Err(e)),
+    }
+}
+
 /// Hand the terminal back to the shell in cooked mode, run `body`, then take
 /// the terminal back and redraw from scratch.
 ///
 /// The poller is paused throughout: crossterm and whatever `body` hands the
 /// terminal to must not both be reading stdin.
 ///
-/// **`body`'s error does not skip the restore.** The result is combined the
-/// way the editor handover always did it — the body's error is what the
-/// caller sees, but the terminal is put back either way. Returning early on
-/// a body error would leave a cooked terminal under a running TUI.
+/// **`body`'s error does not skip the restore.** The result is combined by
+/// [`combine_results`] the way the editor handover always did it — the
+/// body's error is what the caller sees, but the terminal is put back
+/// either way. Returning early on a body error would leave a cooked
+/// terminal under a running TUI.
 pub async fn with_suspended_terminal<B, T, F, Fut>(
     events: &mut EventHandler,
     terminal: &mut Terminal<B>,
@@ -110,56 +140,47 @@ where
         Ok(())
     });
 
-    match restored {
-        Ok(()) => out,
-        Err(e) => out.and(Err(e)),
-    }
+    combine_results(out, restored)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::event::EventHandler;
-    use ratatui::{Terminal, backend::TestBackend};
 
-    /// The helper must pause the poller on the way in and resume it on the
-    /// way out. A missed resume does not error — it hangs — so this is the
-    /// only way the pairing is checked. Mirrors the existing editor
-    /// regression test in `app.rs`.
+    /// Regression: the editor handover paused the poller and left the
+    /// alternate screen before doing anything fallible, and the `?` on
+    /// `create_day_file_if_not_exists` skipped both the restore and
+    /// `events.resume()`. A paused `EventTask` emits neither ticks nor keys
+    /// and never notices its receiver closing, so the loop's next
+    /// `events.next().await` blocked forever — a wedged app outside the
+    /// alternate screen with raw mode off, and under `--tui --serve` a
+    /// process that never exited.
     ///
-    /// `with_suspended_terminal`'s own result is discarded: `modes.leave()`
-    /// and `modes.enter()` call real crossterm mode changes, and
-    /// `enable_raw_mode`/`disable_raw_mode` return `Err` when stdout is not
-    /// a tty, which is always true under `cargo test`. Only the pause
-    /// signals — which do not touch the real terminal — are asserted on.
-    #[tokio::test]
-    async fn suspending_pauses_and_resumes_the_poller() {
+    /// Driven through `PausedPoller` rather than through
+    /// `with_suspended_terminal` itself on purpose: `with_suspended_terminal`
+    /// calls `enable_raw_mode` (by way of [`TerminalModes::enter`]), and
+    /// crossterm reaches for `/dev/tty` directly rather than for the
+    /// captured stdout — falling back to the captured stdout only when
+    /// `/dev/tty` is absent, which is why this passes harmlessly in a
+    /// sandbox with no controlling tty but would leave a developer's real
+    /// terminal in raw mode if it ran there. The guard is the seam that
+    /// carries the invariant, and it is the seam this asserts on — never
+    /// drive this through `with_suspended_terminal` in a test.
+    #[test]
+    fn the_pause_guard_resumes_the_poller_on_the_way_out_of_a_failure() {
         let mut events = EventHandler::new();
-        let mut terminal = Terminal::new(TestBackend::new(20, 10)).expect("test backend");
-        let modes = TerminalModes { mouse: false };
 
-        let _ =
-            with_suspended_terminal(&mut events, &mut terminal, modes, || async { Ok(()) }).await;
+        let handover: Result<()> = (|| {
+            let _paused = PausedPoller::new(&mut events);
+            anyhow::bail!("create_day_file_if_not_exists: Read-only file system")
+        })();
 
-        assert_eq!(events.drain_pause_signals(), vec![true, false]);
-    }
-
-    /// A body that fails must still leave the terminal restored and the
-    /// poller resumed: the error is reported, the terminal is put back.
-    #[tokio::test]
-    async fn a_failing_body_still_resumes_the_poller() {
-        let mut events = EventHandler::new();
-        let mut terminal = Terminal::new(TestBackend::new(20, 10)).expect("test backend");
-        let modes = TerminalModes { mouse: false };
-
-        let result: anyhow::Result<()> =
-            with_suspended_terminal(&mut events, &mut terminal, modes, || async {
-                Err(anyhow::anyhow!("body failed"))
-            })
-            .await;
-
-        assert!(result.is_err(), "the body's error must be reported");
-        assert_eq!(events.drain_pause_signals(), vec![true, false]);
+        assert!(handover.is_err(), "the fixture must model a failure");
+        assert_eq!(
+            events.drain_pause_signals(),
+            vec![true, false],
+            "a failed handover must leave the poller running, not paused"
+        );
     }
 
     #[test]
@@ -167,5 +188,36 @@ mod tests {
         let a = TerminalModes { mouse: true };
         let b = a;
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn combine_results_passes_through_a_double_success() {
+        let combined = combine_results(Ok(42), Ok(()));
+        assert_eq!(combined.expect("both succeeded"), 42);
+    }
+
+    #[test]
+    fn combine_results_surfaces_the_bodys_error_when_restore_succeeds() {
+        let combined: Result<()> = combine_results(Err(anyhow::anyhow!("body failed")), Ok(()));
+        assert_eq!(combined.unwrap_err().to_string(), "body failed");
+    }
+
+    #[test]
+    fn combine_results_surfaces_the_restore_error_when_the_body_succeeds() {
+        let combined = combine_results(Ok(42), Err(anyhow::anyhow!("restore failed")));
+        assert_eq!(combined.unwrap_err().to_string(), "restore failed");
+    }
+
+    #[test]
+    fn combine_results_prefers_the_bodys_error_when_both_fail() {
+        let combined: Result<()> = combine_results(
+            Err(anyhow::anyhow!("body failed")),
+            Err(anyhow::anyhow!("restore failed")),
+        );
+        assert_eq!(
+            combined.unwrap_err().to_string(),
+            "body failed",
+            "the body's error is what the caller sees, per with_suspended_terminal's contract"
+        );
     }
 }
