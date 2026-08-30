@@ -365,13 +365,35 @@ impl DataService {
         self.ensure_data_dir().await?;
         let file_path = self.get_file_path(*date).await?;
 
-        if !file_path.exists() {
-            let template_content =
-                create_template_content(date, self.parse_opts.template_file()).await?;
-            fs::write(&file_path, template_content).await?;
+        // create_new is atomic: it either creates the file or fails with
+        // AlreadyExists. An exists()-then-write pair leaves a window in
+        // which another writer (a second ttcli, the TUI, the web server)
+        // creates and fills the file, and our template write then truncates
+        // their content back to empty.
+        //
+        // `create_template_content` can do real I/O (reading a configured
+        // template file) and can fail, so it stays inside the success arm:
+        // an existing file must never pay for it, and a broken template
+        // path must never turn an already-created day into an error.
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(mut file) => {
+                use tokio::io::AsyncWriteExt as _;
+                let template_content =
+                    create_template_content(date, self.parse_opts.template_file()).await?;
+                file.write_all(template_content.as_bytes()).await?;
 
-            // Invalidate cache since we just created the file
-            self.invalidate_date(date).await;
+                // Invalidate cache since we just created the file
+                self.invalidate_date(date).await;
+            }
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                // Someone else got there first; their content stands.
+            }
+            Err(e) => return Err(e.into()),
         }
 
         Ok(file_path)
@@ -1226,6 +1248,30 @@ mod tests {
         // Read file
         let content = service.read_day(&test_date).await.unwrap();
         assert!(content.is_some());
+    }
+
+    #[tokio::test]
+    async fn create_day_file_does_not_clobber_content_written_after_the_exists_check() {
+        let (service, _dir) = hermetic_service(60);
+        let test_date = date!(2026 - 08 - 29);
+
+        // Simulate the racing writer having already won: the file exists
+        // with real content by the time the template write would land.
+        let path = service.get_file_path(test_date).await.unwrap();
+        tokio::fs::write(&path, "real user content\n")
+            .await
+            .unwrap();
+
+        service
+            .create_day_file_if_not_exists(&test_date)
+            .await
+            .unwrap();
+
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            after, "real user content\n",
+            "template write clobbered real content"
+        );
     }
 
     #[tokio::test]

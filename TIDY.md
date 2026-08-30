@@ -47,12 +47,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Proposed fix: `clear_cache` is `pub` in non-test code but its only caller is a `#[cfg(test)]` test (data_svc.rs:1139, inside `mod tests` at line 723); either delete it and rebuild that test to clear the cache via `invalidate_date` per key, or move it under `#[cfg(test)]` alongside the analogous test-only helpers already in this file (e.g. `parse_count`). Confirmed via `git grep -n 'clear_cache'` — only the definition and that one in-test call exist repo-wide. Public-API removal — needs an explicit decision before execution.
 - [ ] execute   [ ] skip
 
-### T24. Replace the exists()-then-write template race with an atomic create-only write: `create_day_file_if_not_exists` (src/data_svc.rs:361)
-- Lenses: opportunistic
-- Risk: medium
-- Proposed fix: There is a TOCTOU window between `file_path.exists()` and the subsequent `fs::write` in which a concurrent process can create and populate the day file, after which this write clobbers real content with the empty template; replace the pair with an atomic create-only open — `tokio::fs::OpenOptions::new().write(true).create_new(true).open(&file_path)` — treating `ErrorKind::AlreadyExists` as "someone else already created it" and skipping the write instead of racing. Same shape as T43 in the config path; fix both the same way.
-- [x] execute   [ ] skip
-
 ### T25. Split get_weekly_summary into load, fold and finalize phases: `DataService::get_weekly_summary` (src/data_svc.rs:505-591, 87 lines)
 - Lenses: long-methods
 - Risk: low
