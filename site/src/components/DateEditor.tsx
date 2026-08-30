@@ -66,7 +66,7 @@ export const DateEditor = (props: DateEditorProps) => {
       lastSentData.current = debouncedData;
       updater(debouncedData);
     }
-  }, [debouncedData, updater, date, content, hasInitialized]);
+  }, [debouncedData, updater, date, hasInitialized]);
 
   return (
     <div className="w-full p-4 rounded shadow flex">
