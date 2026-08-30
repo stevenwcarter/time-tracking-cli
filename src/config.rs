@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use time::{Date, OffsetDateTime};
 
+use crate::file_utils::get_time_tracking_dir_with_override;
 use crate::{
     DefaultDisplayFormatter, DisplayFormatter, MarkdownDisplayFormatter, PlainDisplayFormatter,
 };
@@ -288,6 +289,7 @@ impl Config {
 
         apply_arg_overrides(&mut config, &args);
         config.date = resolve_requested_date(args.date.or(args.positional_date));
+        resolve_data_directory(&mut config)?;
 
         Ok(config)
     }
@@ -297,11 +299,12 @@ impl Config {
 
         if config_path.exists() {
             let content = fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&content)?;
+            let mut config: Config = toml::from_str(&content)?;
+            resolve_data_directory(&mut config)?;
             Ok(config)
         } else {
             // Create default config file
-            let default_config = Config::default();
+            let mut default_config = Config::default();
             fs::create_dir_all(
                 config_path
                     .parent()
@@ -311,6 +314,7 @@ impl Config {
             fs::write(&config_path, toml_content)?;
             let mut file = OpenOptions::new().append(true).open(&config_path)?;
             write_config_comments(&mut file)?;
+            resolve_data_directory(&mut default_config)?;
             Ok(default_config)
         }
     }
@@ -447,6 +451,30 @@ fn apply_arg_overrides(config: &mut Config, args: &Args) {
 /// The effective date for a run: `date_str` (from `--date` or the
 /// positional argument) parsed via `interim`, or today's date when there is
 /// none or parsing fails.
+/// Fill in `data_directory` when neither the config file nor the CLI supplied one.
+///
+/// [`Config::default`] deliberately leaves it `None` so constructing a default
+/// config cannot panic where the home directory is unresolvable. But
+/// [`Config::get_data_directory`] is a public accessor, and out-of-repo
+/// consumers read it directly rather than re-resolving through
+/// [`get_time_tracking_dir`](crate::get_time_tracking_dir) — the
+/// `time-tracking-nvim` plugin does exactly that, and treats `None` as "not a
+/// time-tracking buffer". So every *loaded* config must carry a real value.
+///
+/// Resolving here rather than in `Default` keeps the fallible path: an
+/// unresolvable home surfaces as an `Err` the caller can report, instead of the
+/// `unwrap()` panic this used to be.
+fn resolve_data_directory(config: &mut Config) -> Result<()> {
+    if config.data_directory.is_none() {
+        config.data_directory = Some(
+            get_time_tracking_dir_with_override(None)?
+                .display()
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(feature = "cli")]
 fn resolve_requested_date(date_str: Option<String>) -> Date {
     match date_str {
@@ -572,6 +600,22 @@ mod tests {
     fn test_mouse_missing_key_deserializes_to_none() {
         let config: Config = toml::from_str("").expect("deserialize");
         assert_eq!(config.mouse, None);
+    }
+
+    #[test]
+    fn a_loaded_config_always_carries_a_data_directory() {
+        // The contract out-of-repo consumers depend on. `time-tracking-nvim`
+        // calls `config.get_data_directory().unwrap_or("")` and feeds the
+        // result straight to `fs::canonicalize`, so a `None` here silently
+        // stops it recognising time-tracking buffers. `Config::default` is
+        // allowed to leave it `None` (see the test below); a *loaded* config
+        // is not.
+        let _guard = ConfigHomeGuard::new();
+        let config = Config::load(false).expect("load should succeed");
+        assert!(
+            config.get_data_directory().is_some(),
+            "a loaded config must resolve data_directory for external consumers"
+        );
     }
 
     #[test]
