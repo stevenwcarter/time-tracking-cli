@@ -207,46 +207,36 @@ async fn get_day_data_by_date(
 /// [`DataService`], which is what makes concurrent requests share its
 /// 30-second cache. The service is a parameter there and not here so tests
 /// can hand in a hermetic one instead of the global singleton.
-pub async fn get_day_data_impl(date: Date, state: &AppState) -> Result<DayData, StatusCode> {
-    get_day_data_impl_with(DataService::get(), date, state).await
+pub async fn get_day_data_impl(date: Date, _state: &AppState) -> Result<DayData, StatusCode> {
+    // `_state`: the endpoint's parse markers now come from the DataService,
+    // which resolves them from the same `Config::get()` this state was cloned
+    // from. The parameter stays because this is a public signature other
+    // crates may name.
+    get_day_data_impl_with(DataService::get(), date).await
 }
 
 pub(crate) async fn get_day_data_impl_with(
     svc: &DataService,
     date: Date,
-    state: &AppState,
 ) -> Result<DayData, StatusCode> {
     let date_str = date
         .format(&DATE_FORMAT)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let content = svc.read_day(&date).await.map_err(|e| {
-        // `read_day` attaches the path and the failing syscall via
-        // `.with_context`. Collapsing straight to a StatusCode threw all of
-        // it away, and every entry point funnels through here — a permission
-        // error, a broken symlink or a full disk reached the operator as a
-        // content-free 500. Log once, here, where the detail still exists.
+    // `parse_day`, not `read_day` + a fresh parse: the service memoizes the
+    // parse alongside the raw content, and going around it meant every REST
+    // and GraphQL call reparsed from scratch — fanned out ×7 per week
+    // request, and re-run on both queries per 500ms editor autosave.
+    let data = svc.parse_day(&date).await.map_err(|e| {
         tracing::error!(%date_str, error = %e, "failed to read day data");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let Some(content) = content else {
-        return Ok(DayData {
-            date: date_str,
-            total_hours: 0.0,
-            dead_time_hours: 0.0,
-            projects: vec![],
-            warnings: vec![],
-            start_time: None,
-            end_time: None,
-        });
+    // `None` is "no file on disk", the same case the old `read_day` -> `None`
+    // arm answered with an empty day.
+    let Some(data) = data else {
+        return Ok(DayData::empty(date));
     };
-
-    let data = time_tracking_parser::parse_time_tracking_data(
-        &content,
-        state.config.get_prefix(),
-        state.config.get_suffix(),
-    );
 
     let start_time = data.formatted_start_time();
     let end_time = data.formatted_end_time();
@@ -458,16 +448,91 @@ mod tests {
         (svc, dir)
     }
 
+    /// A hermetic service whose parse markers differ from `Config::default()`'s
+    /// (which has none), so a test can tell which of the two the endpoint
+    /// honoured.
+    fn service_with_markers(prefix: &str, suffix: &str) -> (DataService, TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = DataService::new_with_dir(
+            60,
+            dir.path().to_path_buf(),
+            ParseSettings {
+                prefix: Some(prefix.to_owned()),
+                suffix: Some(suffix.to_owned()),
+                template_file: None,
+            },
+        );
+        (svc, dir)
+    }
+
+    #[test]
+    fn repeated_day_requests_reuse_the_memoized_parse() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let svc = DataService::new_with_dir(60, dir.path().to_path_buf(), ParseSettings::default());
+        let day = date!(2026 - 08 - 24);
+        let rt = runtime();
+
+        rt.block_on(async {
+            let path = svc.get_file_path(day).await.unwrap();
+            tokio::fs::write(&path, "8-10 admin\n  - note\n")
+                .await
+                .unwrap();
+
+            for _ in 0..5 {
+                get_day_data_impl_with(&svc, day).await.expect("day data");
+            }
+        });
+
+        assert_eq!(
+            svc.parse_count(),
+            1,
+            "five requests for an unchanged day must run the parser once, \
+             not once per request"
+        );
+    }
+
+    #[test]
+    fn day_data_is_parsed_with_the_services_markers() {
+        // The endpoint used to parse with `state.config`'s markers; it now
+        // parses with the service's. Production keeps the two in step —
+        // `run_server` is handed a clone of the same `Config::get()` the
+        // process-wide `DataService` reads — so this pins which one actually
+        // governs the parse, and a future divergence fails here instead of
+        // silently changing endpoint output.
+        let (svc, _dir) = service_with_markers("```timetracking", "```");
+        let day = date!(2026 - 08 - 24);
+        let rt = runtime();
+
+        let data = rt.block_on(async {
+            let path = svc.get_file_path(day).await.unwrap();
+            tokio::fs::write(
+                &path,
+                "8-9 outside-the-fence\n```timetracking\n9-11 admin\n```\n",
+            )
+            .await
+            .unwrap();
+            get_day_data_impl_with(&svc, day).await.expect("day data")
+        });
+
+        let names: Vec<&str> = data.projects.iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            names.contains(&"admin"),
+            "the fenced entry must be parsed: {names:?}"
+        );
+        assert!(
+            !names.contains(&"outside-the-fence"),
+            "the service's markers must bound the parse: {names:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn an_unreadable_day_file_logs_its_cause_before_becoming_a_500() {
         let (svc, _dir) = unreadable_service();
-        let state = AppState::default();
         let rt = runtime();
 
-        let (result, logged) = capture_logs(|| {
-            rt.block_on(get_day_data_impl_with(&svc, date!(2026 - 08 - 24), &state))
-        });
+        let (result, logged) =
+            capture_logs(|| rt.block_on(get_day_data_impl_with(&svc, date!(2026 - 08 - 24))));
 
         assert_eq!(
             result.unwrap_err(),
@@ -485,6 +550,24 @@ mod tests {
         assert!(
             logged.contains("could not stat"),
             "the log must carry read_day's own context, not just a status: {logged}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parse_failure_still_logs_its_cause_before_becoming_a_500() {
+        // Guards the read-failure logging across this rewrite of the same
+        // `map_err`.
+        let (svc, _dir) = unreadable_service();
+        let rt = runtime();
+
+        let (result, logged) =
+            capture_logs(|| rt.block_on(get_day_data_impl_with(&svc, date!(2026 - 08 - 24))));
+
+        assert_eq!(result.unwrap_err(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            logged.contains("failed to read day data") && logged.contains("2026-08-24"),
+            "the read-failure log must survive the parse_day rewrite: {logged}"
         );
     }
 }
