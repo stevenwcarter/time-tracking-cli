@@ -234,6 +234,29 @@ impl WeekListState {
         self.list.selected()
     }
 
+    /// The project index drawn at row `y` when the rollup is rendered in
+    /// `area`, given `count` projects, or `None` outside the rows.
+    ///
+    /// Rows here are single-height, unlike the day view's project list, so
+    /// an index is read straight off `y` rather than walked.
+    pub fn index_at(&self, area: Rect, y: u16, count: usize) -> Option<usize> {
+        if y < area.y || y >= area.y.checked_add(area.height)? {
+            return None;
+        }
+        let index = self.list.offset() + usize::from(y - area.y);
+        (index < count).then_some(index)
+    }
+
+    /// Select `index`.
+    ///
+    /// Unlike [`ProjectListWidget::select_index`](super::project_list::ProjectListWidget::select_index),
+    /// this takes no bound of its own: [`Self::index_at`] is its only
+    /// caller and has already checked `index` against the rollup's
+    /// project count.
+    pub fn select_index(&mut self, index: usize) {
+        self.list.select(Some(index));
+    }
+
     /// Bring the selection back into range for a list of `len` rows.
     ///
     /// A week with no projects selects nothing; a selection left pointing
@@ -858,5 +881,23 @@ mod tests {
         let row = project_row(&project, 4);
         assert!(row.contains("a-very-long-project-code"), "got: {row:?}");
         assert!(row.contains("18:00"), "got: {row:?}");
+    }
+
+    #[test]
+    fn index_at_maps_rows_one_for_one() {
+        let state = WeekListState::default();
+        let area = Rect::new(0, 4, 60, 10);
+        assert_eq!(state.index_at(area, 4, 3), Some(0));
+        assert_eq!(state.index_at(area, 5, 3), Some(1));
+        assert_eq!(state.index_at(area, 6, 3), Some(2));
+        assert_eq!(state.index_at(area, 7, 3), None, "past the last project");
+        assert_eq!(state.index_at(area, 3, 3), None, "above the list");
+    }
+
+    #[test]
+    fn select_index_moves_the_selection() {
+        let mut state = WeekListState::default();
+        state.select_index(1);
+        assert_eq!(state.selected(), Some(1));
     }
 }

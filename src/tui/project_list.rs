@@ -321,6 +321,50 @@ impl ProjectListWidget {
     pub fn has_items(&self) -> bool {
         !self.project_list.items.is_empty()
     }
+
+    /// The project index drawn at row `y` when this list is rendered in
+    /// `area`, or `None` for the title row and for rows past the last item.
+    ///
+    /// Rows are **variable-height**: [`Self::render_list`] clamps each
+    /// item's [`ProjectItem::body_rows`] to the viewport via
+    /// [`clamp_item_rows`], so an index cannot be divided out of `y` —
+    /// this walks the same per-item heights instead, starting at
+    /// [`ListState::offset`]. Rather than replaying `clamp_item_rows`'s
+    /// kept-lines-plus-marker arithmetic, it uses the one fact that
+    /// matters here: the clamp always leaves an item exactly
+    /// `body_rows(width).min(viewport_rows.max(1))` rows tall.
+    ///
+    /// Current only because hit-testing runs after a draw, so the offset
+    /// a click lands on is the one already on screen.
+    pub fn index_at(&self, area: Rect, y: u16) -> Option<usize> {
+        let inner_y = area.y.checked_add(LIST_TITLE_ROWS)?;
+        if y < inner_y || y >= area.y.checked_add(area.height)? {
+            return None;
+        }
+
+        let body_width = area.width.saturating_sub(4);
+        let viewport_rows = usize::from(area.height.saturating_sub(LIST_TITLE_ROWS).max(1));
+        let target = usize::from(y - inner_y);
+
+        let mut row = 0_usize;
+        for index in self.project_list.state.offset()..self.project_list.items.len() {
+            let item = self.project_list.items.get(index)?;
+            let height = item.body_rows(body_width).min(viewport_rows);
+            let next = row + height;
+            if target < next {
+                return Some(index);
+            }
+            row = next;
+        }
+        None
+    }
+
+    /// Select `index`, ignoring one past the end.
+    pub fn select_index(&mut self, index: usize) {
+        if index < self.project_list.items.len() {
+            self.project_list.state.select(Some(index));
+        }
+    }
 }
 
 impl Widget for &mut ProjectListWidget {
@@ -654,6 +698,21 @@ mod tests {
     use crate::tui::context::TuiContext;
     use crate::tui::testing::{fixture_day, fixture_day_with_notes, render_to_string};
     use crate::tui::ui::MIN_ROWS;
+    use time_tracking_parser::ProjectSummary;
+
+    /// A project with `notes`, for tests that need a variable note count —
+    /// `crate::tui::testing::project` fixes it at two.
+    fn project(
+        name: &str,
+        total_minutes: u32,
+        notes: impl IntoIterator<Item = &'static str>,
+    ) -> ProjectSummary {
+        ProjectSummary {
+            name: name.to_owned(),
+            total_minutes,
+            notes: notes.into_iter().map(str::to_owned).collect(),
+        }
+    }
 
     #[test]
     fn pads_by_display_width_not_char_count() {
@@ -935,5 +994,64 @@ mod tests {
             screen.contains("Dead Time: 10:00 (10.00 hours)"),
             "got:\n{screen}"
         );
+    }
+
+    /// Rows are variable-height — `render_list` builds each item from
+    /// `clamp_item_rows(body(width), viewport_rows)` — so a click maps to an
+    /// index by walking heights, not by dividing. A day whose projects have
+    /// different note counts is what tells the two apart.
+    #[test]
+    fn index_at_walks_variable_row_heights() {
+        let data = TimeTrackingData {
+            total_minutes: 180,
+            dead_time_minutes: 0,
+            projects: vec![
+                project("one-note", 60, ["a"]),
+                project("three-notes", 60, ["a", "b", "c"]),
+                project("two-notes", 60, ["a", "b"]),
+            ],
+            warnings: Vec::new(),
+            start_time: None,
+            end_time: None,
+        };
+        let theme = Theme::none();
+        let widget = ProjectListWidget::new(&data, &theme);
+        let area = Rect::new(0, 0, 60, 30);
+
+        let mut hits: Vec<usize> = Vec::new();
+        for y in area.y..area.y + area.height {
+            if let Some(i) = widget.index_at(area, y)
+                && !hits.contains(&i)
+            {
+                hits.push(i);
+            }
+        }
+        assert_eq!(hits, vec![0, 1, 2], "each project reachable, in order");
+    }
+
+    #[test]
+    fn index_at_ignores_clicks_above_the_first_row() {
+        let theme = Theme::none();
+        let widget = ProjectListWidget::new(&fixture_day(), &theme);
+        let area = Rect::new(0, 5, 60, 30);
+        // The list's title row.
+        assert_eq!(widget.index_at(area, 5), None);
+    }
+
+    #[test]
+    fn select_index_moves_the_selection() {
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&fixture_day(), &theme);
+        widget.select_index(2);
+        assert_eq!(widget.selected_item(), Some(2));
+    }
+
+    #[test]
+    fn select_index_past_the_end_is_ignored() {
+        let theme = Theme::none();
+        let mut widget = ProjectListWidget::new(&fixture_day(), &theme);
+        let before = widget.selected_item();
+        widget.select_index(999);
+        assert_eq!(widget.selected_item(), before);
     }
 }
