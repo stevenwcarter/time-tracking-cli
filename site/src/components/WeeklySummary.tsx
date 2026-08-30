@@ -127,6 +127,7 @@ const WeeklySummary = ({ data }: WeeklySummaryProps) => {
   // Helper function to copy notes to clipboard
   const copyDayNotes = async (projectName: string, date: string) => {
     const notes = getNotesForProjectDate(projectName, date);
+    if (notes.length === 0) return;
     await copyNotesToClipboard(notes, 'Notes copied to clipboard!');
   };
 
