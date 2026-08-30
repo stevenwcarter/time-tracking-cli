@@ -19,37 +19,37 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: idioms
 - Risk: low
 - Proposed fix: Change `{ ignores: ["dist"] }` at site/eslint.config.js:10 to `{ ignores: ["dist", "build", "coverage"] }` — Vite's `outDir` is `build` (site/vite.config.ts:14), so today `eslint .` lints the entire 1.4MB production bundle; verified in this worktree that a bare `eslint .` pegged one core for 12+ minutes and had to be killed while `eslint . --ignore-pattern 'build/**'` completed in 1.07s with zero errors, and site/vite.config.ts already excludes `'**/build/**'` (line 24) and `['coverage', 'build']` (line 36) elsewhere, so the eslint config is the one place that still says `dist`; `site/build/` exists on any machine that has run `yarn build`, which `just gate` requires, so this hits every developer.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T2. Format the date picker's value from local components instead of UTC: `formatDate` (site/src/components/DateSelector.tsx:23)
 - Lenses: opportunistic
 - Risk: high — needs characterization tests first
 - Proposed fix: Blocked by T42 — land the shared helper first and call it here rather than hand-rolling a second formatter, because T42's helper must itself format from local components or this bug gets enshrined in it. `formatDate` builds its string with `d.toISOString().split('T')[0]`, so the "Today" button and the current-date display show the UTC calendar day rather than the user's; format from `getFullYear()` / `getMonth() + 1` / `getDate()`, zero-padded, so "today" matches the user's local calendar day at any hour.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T3. Split WeeklySummary into two hooks and two row subcomponents: `WeeklySummary` (site/src/components/WeeklySummary.tsx:37-255, 219 lines)
 - Lenses: long-methods
 - Risk: high — needs characterization tests first
 - Proposed fix: Extract a `useWeeklyTableData(weekData)` hook for the `tableData` useMemo (lines 41-93), a `useNotesLookup(weekData)` hook for `daysByDate` / `notesByDate` / `getNotesForProjectDate` / `formatNotesTooltip` / `copyNotesToClipboard` (lines 96-145), and subcomponents `ProjectRow` (lines 202-234) and `DailyTotalsRow` (lines 236-249) taking the derived data as props, leaving WeeklySummary to compose the hooks plus the `<table>` shell; coordinate with T20, which lifts the clipboard/toast body out of lines 119-145 into a shared `site/src/utils/clipboard.ts` — run T20 first and have `useNotesLookup` call that helper — and note the doc-fixer queue also rewrites the comment at line 85, so those lines may already have moved.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T4. Default the editor route's date from local components, not UTC: `DateEditorPage` fallback date (site/src/page/DateEditorPage.tsx:10)
 - Lenses: opportunistic
 - Risk: high — needs characterization tests first
 - Proposed fix: Blocked by T42 — use the shared local-components helper T42 introduces instead of `new Date().toISOString().split('T')[0]`, so landing on /editor with no `:date` param during the evening at a negative UTC offset no longer opens tomorrow's file; this matches the local-time handling already applied in WeeklySummary.tsx's day-of-week calculation, and line 20 of the same file repeats the identical expression and must change with it.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T5. Default the weekly route's week from a local date, not UTC: `WeeklySummaryPage` fallback date (site/src/page/WeeklySummaryPage.tsx:8)
 - Lenses: opportunistic
 - Risk: high — needs characterization tests first
 - Proposed fix: Blocked by T42 — compute the default day with the shared local-date helper T42 introduces and pass a local `YYYY-MM-DD` string into `useWeekData`, instead of handing it a raw `new Date()` that `useWeekData` / `useDateData` then format with `toISOString().split('T')[0]`, which shows next week's data to evening users behind UTC.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T6. Split Config::load into arg synthesis, file load-or-create, overrides and date resolution: `Config::load` (src/config.rs:248-358, 111 lines)
 - Lenses: long-methods
 - Risk: high — needs characterization tests first
 - Proposed fix: Extract `fn synthetic_args() -> Args` for the else-branch default Args (lines 251-269), `fn load_or_create_config_file(config_path: &Path) -> Result<Config>` for the read-or-write-default block (lines 271-290), `fn apply_arg_overrides(config: &mut Config, args: &Args)` for the run of `if let Some(...) = args.X` assignments (lines 292-355 minus the date block), and `fn resolve_requested_date(date_str: Option<String>) -> Date` for the interim-based date parsing (lines 316-341), so `Config::load` reads as four calls; interacts with T43, whose TOCTOU fix lands squarely inside lines 271-290 — run this split first and apply T43 to the extracted `load_or_create_config_file` — and with T22, which deletes `get_no_args` / `try_get_no_args` immediately above at lines 235-241.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T7. Share the 90-minute dead-time error threshold instead of hardcoding it twice: dead-time error threshold (src/display/mod.rs:139)
 - Lenses: idioms
@@ -61,7 +61,7 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: duplication
 - Risk: low
 - Proposed fix: src/display/plain.rs:60 uses `"-\n".repeat(40)` where src/display/default.rs:60 uses `"-".repeat(40)` plus a single newline, so plain output emits 40 lines each containing one dash instead of one 40-column rule; cli/tests/golden/weekly_plain.txt pins this broken output and must be regenerated in the same commit. Then remove the drift's cause: default.rs:45-52 (weekly_header) is byte-identical to plain.rs:45-52, default.rs:124-130 and plain.rs:123-130 (daily_breakdowns_header) produce identical output via different code, and default.rs:135-140 vs plain.rs:135-141 (day_header) differ only by the emoji prefix — extend the `DaySummaryStyle` / `format_day_summary_impl` mechanism already used for `day_summary` (src/display/mod.rs:78-199) with a `title_prefix`/emoji field plus a shared `render_rule(width)` helper covering these banner/totals methods for both `DefaultDisplayFormatter` and `PlainDisplayFormatter`; markdown.rs differs meaningfully (Markdown headings) and should stay separate. Overlaps T29, which rewrites the `push_str(&format!(...))` sites in both files — do this one first, then re-derive T29's site list.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ## Medium severity
 
@@ -69,85 +69,79 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove the `serde_json` dependency (Cargo.toml:71) and its entry in the `webapp` feature list (Cargo.toml:21); confirmed via `cargo machete` (flags it) and `git grep -n serde_json -- src cli/src build.rs` (zero hits) — web.rs and graphql.rs serialize through axum's `Json<T>` with `serde::{Deserialize, Serialize}`, never `serde_json` directly. Verify with `just gate`, since the `webapp`-only feature combination is the one at risk.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T10. Drop the unused juniper_graphql_ws dependency: `juniper_graphql_ws` (Cargo.toml:72)
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove the `juniper_graphql_ws` dependency (Cargo.toml:72-75) and its entry in the `webapp` feature list (Cargo.toml:24); confirmed via `cargo machete` (flags it) and `git grep -n juniper_graphql_ws -- src cli/src build.rs` (zero hits) — src/graphql.rs:138 defines `Schema = RootNode<Query, Mutation, EmptySubscription<GraphQLContext>>` and src/web.rs only mentions the literal string `"/graphql/subscriptions"` as a URL passed to `graphiql`/`playground`, with no subscription websocket route ever mounted. Verify with `just gate`.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T11. Split main_impl and de-duplicate its report dispatch: `main_impl` (cli/src/main.rs:14-116, 103 lines)
 - Lenses: long-methods
 - Risk: medium
 - Proposed fix: Extract `async fn spawn_webserver_if_configured(config: &Config, set: &mut JoinSet<()>, rx: ...) -> bool` for the `#[cfg(feature = "webapp")]` block (lines 43-62), `async fn show_report(config: &Config, week_start_weekday: Weekday) -> Result<()>` to replace both verbatim copies of the weekly/single-day dispatch (lines 82-88 and the `#[cfg(not(feature = "tui"))]` copy at 94-100), and `async fn wait_for_background_tasks(set: JoinSet<()>, webserver_running: bool) -> Result<()>` for lines 103-113; the doc-fixer queue independently deletes redundant comments at lines 83, 86, 95 and 98 and relocates the misplaced "Load configuration…" comment at lines 15-16, so those exact lines may already have shifted when this runs, and T40 fixes a typo at line 19 inside the same function.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T12. Drop the unused @react-hook/debounce dependency: `@react-hook/debounce` (site/package.json:19)
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove `"@react-hook/debounce": "^4.0.0"` (site/package.json:19) and run `yarn install` to update yarn.lock; confirmed via `grep -rn '@react-hook/debounce' site/src` (zero hits) — site/src/hooks/useDebounce.ts implements its own `useState`/`useEffect`/`setTimeout` debounce instead of importing the package.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T13. Drop the unused @uidotdev/usehooks dependency: `@uidotdev/usehooks` (site/package.json:22)
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove `"@uidotdev/usehooks": "^2.4.1"` (site/package.json:22) and run `yarn install`; confirmed via `grep -rln uidotdev site/src` (zero hits) and it is not a peer dependency of any other declared package.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T14. Drop the unused uuid dependency: `uuid` (site/package.json:32)
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove `"uuid": "^11.1.0"` (site/package.json:32) and run `yarn install`; confirmed via `grep -rn uuid site/src` (zero hits outside package.json) and it is not a peer or transitive requirement of any other declared dependency checked.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T15. Drop the unused webfontloader dependency: `webfontloader` (site/package.json:34)
 - Lenses: dead-code
 - Risk: high
 - Proposed fix: Remove `"webfontloader": "^1.6.28"` (site/package.json:34) and run `yarn install`; confirmed via `grep -rin webfont site/src site/index.html site/vite.config.ts` (zero hits).
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T16. Delete the never-imported BorderedTableCell component: `BorderedTableCell` (site/src/components/BorderedTableCell.tsx:1)
 - Lenses: dead-code
 - Risk: low
 - Proposed fix: Delete site/src/components/BorderedTableCell.tsx outright; confirmed via `git grep -n BorderedTableCell` scoped to site/ — only the file's own definition matches, with no imports in App.tsx, WeeklySummary.tsx, or any other page or component.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T17. Delete the now-unused getVariant export: `getVariant` (site/src/components/Button/ButtonTypes.ts:10-21)
 - Lenses: dead-code
 - Risk: low
 - Proposed fix: Delete `getVariant` (ButtonTypes.ts:10-21); confirmed via `grep -rn getVariant site/src` — the only non-definition hit is the commented-out call at site/src/components/Button/index.tsx:40 that T41 removes. Pair this with T41: either both land (delete the commented call and the helper) or neither, since the alternative resolution is to restore the call and actually wire the variant up.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T18. Remove the unread `content` dependency from the debounced-save effect: DateEditor save effect (site/src/components/DateEditor.tsx:55)
 - Lenses: idioms
 - Risk: low
 - Proposed fix: The debounced-save `useEffect` lists `content` in its dependency array but never reads `content` in the effect body, so it re-runs on every server refetch for no reason; change the array to `}, [debouncedData, updater, date, hasInitialized]);`.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T19. Drop the inline style that duplicates the textarea's Tailwind classes: DateEditor textarea (site/src/components/DateEditor.tsx:77)
 - Lenses: idioms
 - Risk: low
 - Proposed fix: The textarea carries `style={{ width: '50%', height: '100%' }}` even though `className` already sets `w-1/2` (width 50%), and `h-full` is the codebase's established way to say height 100% (see PageTemplate.tsx); drop the `style` prop entirely and use `className="w-1/2 p-2 border rounded mr-4 bg-gray-900 text-white h-full"`.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T20. Extract a shared clipboard-copy-with-toast helper: `copyProjectNotesToClipboard` / `copyNotesToClipboard` (site/src/components/DateSummary.tsx:22, +1 site)
 - Lenses: duplication
 - Risk: medium
 - Proposed fix: site/src/components/DateSummary.tsx:22-43 (`copyProjectNotesToClipboard`) and site/src/components/WeeklySummary.tsx:119-145 (`formatNotesTooltip` at 119 plus `copyNotesToClipboard` at 125) both join notes as `- ${note}` lines, `await navigator.clipboard.writeText(...)`, then fire `toast.success(msg, { position: 'top-right', autoClose: 2000, ... })` on success or `toast.error('Failed to copy to clipboard', { ... })` on failure; extract `copyNotesToClipboard(notes: string[], successMessage: string): Promise<void>` into site/src/utils/clipboard.ts with each caller supplying its own notes array and success message, leaving DateSummary's empty-notes early return and WeeklySummary's 'No notes for this day' tooltip fallback as caller-side concerns. Run this before T3, which restructures the WeeklySummary.tsx site into a `useNotesLookup` hook.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T21. Stop panicking in Config::default() when the home directory can't be resolved: `Config::default` (src/config.rs:188)
 - Lenses: idioms, opportunistic
 - Risk: medium
 - Proposed fix: `Config::default()` eagerly resolves the home directory with `Some(get_time_tracking_dir_with_override(None).unwrap().display().to_string())`, which panics wherever `dirs::home_dir()` returns None (a container with no `$HOME`, for example); set `data_directory: None` instead, since `get_data_directory()` / `get_time_tracking_dir_with_override(None)` already re-resolve lazily on demand and surface a `Result` error rather than panicking — that removes the panic and the eager work in one change, so no separate fallible-default plumbing is needed.
-- [ ] execute   [ ] skip
-
-### T22. Delete the never-called Config::get_no_args / try_get_no_args: `Config::get_no_args` (src/config.rs:235)
-- Lenses: dead-code
-- Risk: medium
-- Proposed fix: Delete `get_no_args` (config.rs:235) and `try_get_no_args` (config.rs:239); confirmed via `git grep -n 'get_no_args'` and `git grep -n 'try_get_no_args'` across the whole repo, where only their own definitions matched. Deleting `try_get_no_args` also strands the private `try_init` (config.rs:211) — delete it too, or fold its body into `try_get_no_args` before removing. Note that two entries in the doc-fixer queue (the `Config` struct doc at config.rs:133 and the `Config::get` doc at config.rs:243) name `get_no_args()` in their intent text, so those docs must not reference it once this lands, and T6 splits `Config::load` starting a few lines below. Public-API removal — needs an explicit decision before execution.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T23. Make DataService::clear_cache test-only or remove it: `DataService::clear_cache` (src/data_svc.rs:232)
 - Lenses: dead-code
@@ -159,13 +153,13 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: opportunistic
 - Risk: medium
 - Proposed fix: There is a TOCTOU window between `file_path.exists()` and the subsequent `fs::write` in which a concurrent process can create and populate the day file, after which this write clobbers real content with the empty template; replace the pair with an atomic create-only open — `tokio::fs::OpenOptions::new().write(true).create_new(true).open(&file_path)` — treating `ErrorKind::AlreadyExists` as "someone else already created it" and skipping the write instead of racing. Same shape as T43 in the config path; fix both the same way.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T25. Split get_weekly_summary into load, fold and finalize phases: `DataService::get_weekly_summary` (src/data_svc.rs:505-591, 87 lines)
 - Lenses: long-methods
 - Risk: low
 - Proposed fix: Extract `async fn load_days(&self, dates: &[Date]) -> Result<Vec<DayLoad>>` for the JoinSet spawn, collect and reorder (lines 506-528), `fn fold_day(summary: &mut WeeklySummary, week_projects: &mut HashMap<String, (u32, Vec<String>)>, day_date: Date, content: Option<String>, parsed: Option<TimeTrackingData>)` for the per-day accumulation (lines 531-563), and `fn finalize_projects(week_projects: HashMap<String, (u32, Vec<String>)>) -> Vec<WeeklyProject>` for the sort and collect (lines 566-577), so `get_weekly_summary` reads as three calls; T26 deletes the thin `get_weekly_data` wrapper just below at lines 597-599, and T39 extracts the same load/fold shape from `web.rs::aggregate_week_days`, so consider whether the two can share the fold once both are extracted.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T26. Delete or gate the test-only DataService::get_weekly_data wrapper: `DataService::get_weekly_data` (src/data_svc.rs:597-599)
 - Lenses: dead-code
@@ -177,7 +171,7 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: opportunistic
 - Risk: medium
 - Proposed fix: `get_valid_entry` clones the entire `CacheEntry` — raw file text plus parsed data — merely to inspect `cached_at` and `file_mod_time`, on the documented ~97-calls-per-navigation hot path; copy only `cached_at` and `file_mod_time` (both `Copy`) while holding the lock to decide validity, then re-lock briefly to take just the field the caller needs (`data` or `parsed`), so an invalid or metadata-only check never clones the payload.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T28. Split format_day_summary_impl into its five already-commented sections: `format_day_summary_impl` (src/display/mod.rs:96-199, 104 lines)
 - Lenses: long-methods
@@ -263,13 +257,13 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - Lenses: dead-code
 - Risk: low
 - Proposed fix: Delete the three commented lines at site/src/components/Button/index.tsx:24, 40 and 41 (`// 'text-black',`, `// getVariant(type, disabled),`, `// block && 'w-full',`); `git blame -L 20,45 -- site/src/components/Button/index.tsx` dates all three to commit b3857caa on 2025-10-04, roughly eleven months old and well past the 30-day bar. Once line 40 is gone, `type` becomes an unused destructured field of `props` at line 20 — drop it from the destructure too. Pair with T17, which deletes the `getVariant` helper that call was the last reference to.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T42. Add a shared local-date string helper for the five toISOString call sites: `toDateString` (site/src/hooks/useDateData.ts:11, +4 sites)
 - Lenses: duplication
 - Risk: low
 - Proposed fix: `date.toISOString().split('T')[0]` is repeated at site/src/hooks/useDateData.ts:11, site/src/hooks/useWeekData.ts:6, site/src/components/DateSelector.tsx:23 (`formatDate`), and site/src/page/DateEditorPage.tsx:10 and :20; add a single `toDateString(date: Date): string` helper in a new site/src/utils/date.ts (no utils module exists yet) and use it at all five call sites. Critically, the helper MUST format from LOCAL components — `` `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` `` — not `toISOString()`, because T2, T4 and T5 are the same UTC-versus-local bug seen at three of these call sites and a helper that merely centralises `toISOString()` would enshrine it; land this first, then T2, T4 and T5 become calls to it.
-- [ ] execute   [ ] skip
+- [x] execute   [ ] skip
 
 ### T43. Replace the exists()-then-write config race with an atomic create-if-absent open: default config write (src/config.rs:273)
 - Lenses: opportunistic
@@ -314,3 +308,10 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 - [ ] execute   [ ] skip
 
 ## Skip (do not re-flag in future runs)
+
+### T22. Delete the never-called Config::get_no_args / try_get_no_args: `Config::get_no_args` (src/config.rs:235)
+- Lenses: dead-code
+- Risk: medium
+- Proposed fix: Delete `get_no_args` (config.rs:235) and `try_get_no_args` (config.rs:239); confirmed via `git grep -n 'get_no_args'` and `git grep -n 'try_get_no_args'` across the whole repo, where only their own definitions matched. Deleting `try_get_no_args` also strands the private `try_init` (config.rs:211) — delete it too, or fold its body into `try_get_no_args` before removing. Note that two entries in the doc-fixer queue (the `Config` struct doc at config.rs:133 and the `Config::get` doc at config.rs:243) name `get_no_args()` in their intent text, so those docs must not reference it once this lands, and T6 splits `Config::load` starting a few lines below. Public-API removal — needs an explicit decision before execution.
+- User note: this is called by a vim plugin (time-tracking-nvim)
+- [ ] execute   [x] skip
