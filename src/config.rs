@@ -779,4 +779,274 @@ mod tests {
 
         assert_eq!(config.get_week_start_day(), "");
     }
+
+    // --- T6 characterization: `Config::load`'s current behavior, pinned
+    // before splitting it into phases. ---
+    //
+    // `ConfigHomeGuard` redirects `XDG_CONFIG_HOME` (what `dirs::config_dir`
+    // reads on Linux) at a fresh temp directory so these tests never touch
+    // the developer's real `~/.config/time-tracking-cli/config.toml`.
+    //
+    // `Config::load(true)` is never called from these tests: it parses real
+    // process argv via `Args::parse()`, and clap calls `process::exit` on a
+    // parse error, which would abort the whole test binary on the harness's
+    // own arguments. That is exactly the hazard `DataService::get` already
+    // routes tests around by using `DataService::new_with_dir` instead
+    // (see its doc comment) -- so these tests characterize the
+    // `use_args = false` path plus the argument-handling logic in isolation.
+
+    /// Serializes the tests below that mutate `XDG_CONFIG_HOME`: it is
+    /// process-wide state and `cargo test` runs on multiple threads by
+    /// default, so without this a test's redirected config path could leak
+    /// into another test running concurrently.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// RAII guard that points `get_config_path()` at a throwaway directory
+    /// for the duration of a test, restoring the previous `XDG_CONFIG_HOME`
+    /// (or clearing it, if it was unset) on drop.
+    struct ConfigHomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+        temp_dir: TempDir,
+    }
+
+    impl ConfigHomeGuard {
+        fn new() -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let temp_dir = TempDir::new().expect("create temp config home");
+            let previous = std::env::var_os("XDG_CONFIG_HOME");
+            // SAFETY: mutating the environment races with concurrent reads
+            // on other threads; `ENV_LOCK` above serializes every test that
+            // touches this variable, and no other test in this crate reads
+            // or writes it.
+            unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+            }
+            Self {
+                _lock: lock,
+                previous,
+                temp_dir,
+            }
+        }
+
+        fn config_toml_path(&self) -> std::path::PathBuf {
+            self.temp_dir
+                .path()
+                .join("time-tracking-cli")
+                .join("config.toml")
+        }
+    }
+
+    impl Drop for ConfigHomeGuard {
+        fn drop(&mut self) {
+            // SAFETY: see `new` above -- still held under `ENV_LOCK`.
+            unsafe {
+                match &self.previous {
+                    Some(val) => std::env::set_var("XDG_CONFIG_HOME", val),
+                    None => std::env::remove_var("XDG_CONFIG_HOME"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn config_load_creates_default_config_file_when_missing() {
+        let guard = ConfigHomeGuard::new();
+        let config_path = guard.config_toml_path();
+        assert!(!config_path.exists());
+
+        let config = Config::load(false).expect("load should create a default config");
+
+        assert!(config_path.exists(), "load should write the config file");
+        let written = fs::read_to_string(&config_path).unwrap();
+        assert!(written.contains("week_start_day = \"Saturday\""));
+        assert_eq!(config.formatter, Some(Formatter::Default));
+        assert_eq!(config.week_start_day, Some("Saturday".to_string()));
+        assert_eq!(config.template_file, None);
+        assert_eq!(config.daily_target_hours, Some(8.0));
+    }
+
+    #[test]
+    fn config_load_reads_existing_config_file_rather_than_overwriting() {
+        let guard = ConfigHomeGuard::new();
+        let config_path = guard.config_toml_path();
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        let existing = "week_start_day = \"Wednesday\"\ndaily_target_hours = 4.0\n";
+        fs::write(&config_path, existing).unwrap();
+
+        let config = Config::load(false).expect("load should read the existing file");
+
+        assert_eq!(config.week_start_day, Some("Wednesday".to_string()));
+        assert_eq!(config.daily_target_hours, Some(4.0));
+        assert_eq!(
+            fs::read_to_string(&config_path).unwrap(),
+            existing,
+            "load must not overwrite an existing config file"
+        );
+    }
+
+    #[test]
+    fn config_load_without_date_args_defaults_to_today() {
+        let _guard = ConfigHomeGuard::new();
+        let config = Config::load(false).expect("load should succeed");
+        assert_eq!(config.date, today_date());
+    }
+
+    /// Mirrors the date-resolution block that lives inline in `Config::load`
+    /// as of this commit (before the T6 split), so these tests pin that
+    /// exact logic rather than `interim`'s behavior in general -- there is
+    /// no seam to reach it through `Config::load` itself, since the
+    /// `use_args = false` path this suite otherwise exercises always passes
+    /// `None`. Once `Config::load` grows `resolve_requested_date`, the tidy
+    /// commit deletes this helper and calls the real function instead.
+    fn characterize_resolve_requested_date(date_str: Option<String>) -> Date {
+        match date_str {
+            Some(date_str) => {
+                use interim::{Dialect, parse_date_string};
+                let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+                let date_time = parse_date_string(&date_str, now, Dialect::Us);
+                match date_time {
+                    Ok(date_time) => date_time.date(),
+                    Err(e) => {
+                        eprintln!("Could not parse provided date: '{date_str}' - {:?}", e);
+                        today_date()
+                    }
+                }
+            }
+            None => today_date(),
+        }
+    }
+
+    #[test]
+    fn config_load_date_literal_today_resolves_to_todays_date() {
+        let resolved = characterize_resolve_requested_date(Some("today".to_string()));
+        assert_eq!(resolved, today_date());
+    }
+
+    #[test]
+    fn config_load_date_explicit_yyyy_mm_dd_resolves_to_that_date() {
+        let resolved = characterize_resolve_requested_date(Some("2024-03-15".to_string()));
+        assert_eq!(resolved, time::macros::date!(2024 - 03 - 15));
+    }
+
+    #[test]
+    fn config_load_date_relative_phrase_resolves_relative_to_today() {
+        let resolved = characterize_resolve_requested_date(Some("yesterday".to_string()));
+        assert_eq!(resolved, today_date().previous_day().unwrap());
+    }
+
+    /// Mirrors the override-application block that lives inline in
+    /// `Config::load` as of this commit (before the T6 split): same
+    /// rationale as `characterize_resolve_requested_date` above. Once
+    /// `Config::load` grows `apply_arg_overrides`, the tidy commit deletes
+    /// this helper and calls the real function instead.
+    fn characterize_apply_arg_overrides(config: &mut Config, args: Args) {
+        if let Some(week_start_day) = args.week_start_day {
+            config.week_start_day = Some(week_start_day);
+        }
+        if let Some(data_directory) = args.data_directory {
+            config.data_directory = Some(data_directory);
+        }
+        if let Some(template_file) = args.template_file {
+            config.template_file = Some(template_file);
+        }
+        if let Some(formatter) = args.formatter {
+            config.formatter = Some(formatter);
+        }
+        if args.stdin {
+            config.stdin = true;
+        }
+
+        #[cfg(feature = "webapp")]
+        if args.serve {
+            config.serve = Some(true);
+        }
+        if args.week {
+            config.week = true;
+        }
+
+        #[cfg(feature = "tui")]
+        if args.tui {
+            config.tui = Some(true);
+        }
+
+        if args.noedit {
+            config.noedit = true;
+        }
+
+        #[cfg(feature = "webapp")]
+        if let Some(port) = args.port {
+            config.port = Some(port);
+        }
+    }
+
+    /// The same synthetic `Args` `Config::load(false)` builds internally
+    /// today, for tests that need a baseline to override individual fields
+    /// on.
+    fn args_with_no_overrides() -> Args {
+        Args {
+            date: None,
+            stdin: false,
+            positional_date: None,
+            week: false,
+            week_start_day: None,
+            data_directory: None,
+            template_file: None,
+            formatter: None,
+            noedit: false,
+            #[cfg(feature = "webapp")]
+            serve: false,
+            #[cfg(feature = "tui")]
+            tui: false,
+            #[cfg(feature = "webapp")]
+            port: None,
+        }
+    }
+
+    #[test]
+    fn config_load_arg_overrides_take_precedence_over_config_file_values() {
+        let mut config = Config {
+            week_start_day: Some("Sunday".to_string()),
+            data_directory: Some("/from/config/file".to_string()),
+            template_file: Some("/from/config/file/template.md".to_string()),
+            formatter: Some(Formatter::Markdown),
+            ..Config::default()
+        };
+
+        let args = Args {
+            stdin: true,
+            week: true,
+            week_start_day: Some("Monday".to_string()),
+            data_directory: Some("/from/args".to_string()),
+            template_file: Some("/from/args/template.md".to_string()),
+            formatter: Some(Formatter::Plain),
+            noedit: true,
+            #[cfg(feature = "webapp")]
+            serve: true,
+            #[cfg(feature = "tui")]
+            tui: true,
+            #[cfg(feature = "webapp")]
+            port: Some(9999),
+            ..args_with_no_overrides()
+        };
+
+        characterize_apply_arg_overrides(&mut config, args);
+
+        assert_eq!(config.week_start_day, Some("Monday".to_string()));
+        assert_eq!(config.data_directory, Some("/from/args".to_string()));
+        assert_eq!(
+            config.template_file,
+            Some("/from/args/template.md".to_string())
+        );
+        assert_eq!(config.formatter, Some(Formatter::Plain));
+        assert!(config.stdin);
+        assert!(config.week);
+        assert!(config.noedit);
+        #[cfg(feature = "webapp")]
+        assert_eq!(config.serve, Some(true));
+        #[cfg(feature = "tui")]
+        assert_eq!(config.tui, Some(true));
+        #[cfg(feature = "webapp")]
+        assert_eq!(config.port, Some(9999));
+    }
 }
