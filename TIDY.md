@@ -59,12 +59,6 @@ Last triage: 2026-08-29 against `tidy/2026-08-29` @ 816020d. Toolchain: cargo bu
 
 ## Medium severity
 
-### T10. Drop the unused juniper_graphql_ws dependency: `juniper_graphql_ws` (Cargo.toml:72)
-- Lenses: dead-code
-- Risk: high
-- Proposed fix: Remove the `juniper_graphql_ws` dependency (Cargo.toml:72-75) and its entry in the `webapp` feature list (Cargo.toml:24); confirmed via `cargo machete` (flags it) and `git grep -n juniper_graphql_ws -- src cli/src build.rs` (zero hits) — src/graphql.rs:138 defines `Schema = RootNode<Query, Mutation, EmptySubscription<GraphQLContext>>` and src/web.rs only mentions the literal string `"/graphql/subscriptions"` as a URL passed to `graphiql`/`playground`, with no subscription websocket route ever mounted. Verify with `just gate`.
-- [x] execute   [ ] skip
-
 ### T11. Split main_impl and de-duplicate its report dispatch: `main_impl` (cli/src/main.rs:14-116, 103 lines)
 - Lenses: long-methods
 - Risk: medium

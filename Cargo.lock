@@ -2740,7 +2740,6 @@ dependencies = [
  "interim",
  "juniper",
  "juniper_axum",
- "juniper_graphql_ws",
  "libc",
  "ratatui",
  "rust-embed",

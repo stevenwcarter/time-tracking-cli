@@ -20,7 +20,6 @@ webapp = [
     "tower-http",
     "juniper",
     "juniper_axum",
-    "juniper_graphql_ws",
     "rust-embed",
     "axum-embed",
     "cli",
@@ -66,9 +65,6 @@ tower-http = { version = "0.6", features = [
     "compression-zstd",
     "compression-deflate",
     "full",
-], optional = true }
-juniper_graphql_ws = { git = "https://github.com/graphql-rust/juniper", rev = "0e14736ad1acbb8a25f142ec426203c8797c4755", features = [
-    "graphql-transport-ws",
 ], optional = true }
 juniper = { git = "https://github.com/graphql-rust/juniper", rev = "0e14736ad1acbb8a25f142ec426203c8797c4755", features = [
     "chrono",
