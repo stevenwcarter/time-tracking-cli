@@ -98,6 +98,9 @@ interim = { version = "0.2.1", features = ["time_0_3"] }
 
 [dev-dependencies]
 tempfile = "3.8"
+# `test-util` only: the poller tests in `tui/event.rs` run on a paused clock,
+# so "acknowledged before the next tick" is exact rather than a race.
+tokio = { version = "1.0", features = ["test-util"] }
 
 # A hard dependency rather than an optional one behind `tui`: a `dep:libc`
 # reference inside the `tui` feature would name a dependency that does not

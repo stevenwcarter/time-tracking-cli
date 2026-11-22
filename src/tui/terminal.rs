@@ -18,7 +18,7 @@ use ratatui::crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 
-use super::event::EventHandler;
+use super::event::{EventHandler, PauseAck};
 
 /// Every terminal mode the TUI turns on beyond the terminal's defaults.
 ///
@@ -74,13 +74,21 @@ impl TerminalModes {
 /// [`with_suspended_terminal`] because the failure mode is invisible: a
 /// paused poller emits nothing at all, so a missed resume does not error, it
 /// hangs. The pairing has to be structural, not remembered.
+///
+/// Pausing is only a request, though, and the guard existing does not mean
+/// the poller has stopped: [`PausedPoller::new`] also hands back the
+/// [`PauseAck`] that says when it has.
 struct PausedPoller<'a>(&'a mut EventHandler);
 
 impl<'a> PausedPoller<'a> {
-    /// Pause `events` until the returned guard is dropped.
-    fn new(events: &'a mut EventHandler) -> Self {
-        events.pause();
-        Self(events)
+    /// Ask `events` to pause until the returned guard is dropped.
+    ///
+    /// Synchronous, and so unable to wait for the poller itself: the
+    /// [`PauseAck`] is returned for the caller to await before it gives the
+    /// terminal to anything else.
+    fn new(events: &'a mut EventHandler) -> (Self, PauseAck) {
+        let stopped = events.pause();
+        (Self(events), stopped)
     }
 }
 
@@ -110,8 +118,18 @@ fn combine_results<T>(body: Result<T>, restore: Result<()>) -> Result<T> {
 /// Hand the terminal back to the shell in cooked mode, run `body`, then take
 /// the terminal back and redraw from scratch.
 ///
-/// The poller is paused throughout: crossterm and whatever `body` hands the
-/// terminal to must not both be reading stdin.
+/// **No crossterm reader exists while `body` runs**: crossterm and whatever
+/// `body` hands the terminal to must not both be reading stdin. Asking the
+/// poller to pause is not that. It is another task, so a request it has not
+/// yet seen leaves it reading; and a poller that merely stops polling still
+/// reads, because crossterm's `EventStream` keeps a background thread
+/// blocked on the tty until the stream is dropped. An editor started under
+/// either lost input to it — nvim asks the terminal for its background
+/// colour on start-up, crossterm sometimes took the reply, and on resume the
+/// TUI replayed it as keystrokes: the `g` of `rgb:…` opened the jump-to-date
+/// prompt and the rest was typed into it. So the terminal is not touched
+/// until the poller has acknowledged the pause, which it does only after
+/// dropping its reader, and it builds a fresh one on resume.
 ///
 /// **`body`'s error does not skip the restore.** The result is combined by
 /// [`combine_results`] the way the editor handover always did it — the
@@ -138,7 +156,8 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    let _paused = PausedPoller::new(events);
+    let (_paused, stopped) = PausedPoller::new(events);
+    stopped.stopped().await;
 
     let left = modes.leave();
     let out = body().await;
@@ -180,7 +199,7 @@ mod tests {
         let mut events = EventHandler::new();
 
         let handover: Result<()> = (|| {
-            let _paused = PausedPoller::new(&mut events);
+            let (_paused, _stopped) = PausedPoller::new(&mut events);
             anyhow::bail!("create_day_file_if_not_exists: Read-only file system")
         })();
 

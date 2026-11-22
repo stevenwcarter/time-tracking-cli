@@ -1,11 +1,11 @@
 #![allow(clippy::new_without_default)]
 use anyhow::{Context, Result};
-use futures::{FutureExt, StreamExt};
+use futures::{Stream, StreamExt};
 use ratatui::crossterm::event::Event as CrosstermEvent;
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, io, time::Duration};
 use time::Date;
 use time_tracking_parser::TimeTrackingData;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::data_svc::WeeklySummary;
 
@@ -249,6 +249,43 @@ impl AppEventSender {
     }
 }
 
+/// What [`EventHandler`] tells the poller over the pause channel.
+#[derive(Debug)]
+enum PauseSignal {
+    /// Stop reading the terminal, then confirm through the carried sender.
+    ///
+    /// The confirmation is the point of the variant: "pause" as a bare flag
+    /// only ever meant "stop at some later turn", and the caller is about to
+    /// hand the terminal to another program *now*.
+    Pause(oneshot::Sender<()>),
+    /// Start reading the terminal again.
+    Resume,
+}
+
+/// The poller's confirmation that a pause has taken effect.
+///
+/// Returned by [`EventHandler::pause`]. Until [`PauseAck::stopped`] resolves
+/// the poller may still own a terminal reader, so nothing else may be given
+/// the terminal before then.
+#[derive(Debug)]
+pub struct PauseAck(oneshot::Receiver<()>);
+
+impl PauseAck {
+    /// Wait until the poller holds no terminal reader.
+    ///
+    /// A poller that is gone — its task ended, taking the unanswered request
+    /// with it — is not reading the terminal either, so a dropped sender
+    /// counts as stopped rather than as an error: the caller is on its way to
+    /// run an editor, and there is nothing it could do with the failure.
+    ///
+    /// A poller that was never started cannot answer at all, and this then
+    /// waits forever. `App::run` always calls [`EventHandler::start`] before
+    /// its loop; a unit test, which never does, must not await this.
+    pub async fn stopped(self) {
+        let _ = self.0.await;
+    }
+}
+
 /// Terminal event handler.
 #[derive(Debug)]
 pub struct EventHandler {
@@ -257,7 +294,7 @@ pub struct EventHandler {
     /// Event receiver channel.
     receiver: mpsc::UnboundedReceiver<Event>,
     /// Pause sender to control the event task
-    pause_sender: mpsc::UnboundedSender<bool>,
+    pause_sender: mpsc::UnboundedSender<PauseSignal>,
     /// The poller, held until [`EventHandler::start`] spawns it.
     task: Option<EventTask>,
 }
@@ -343,14 +380,21 @@ impl EventHandler {
         self.receiver.try_recv().ok()
     }
 
-    /// Pause event polling (for editor sessions)
-    pub fn pause(&mut self) {
-        let _ = self.pause_sender.send(true);
+    /// Pause event polling (for editor sessions).
+    ///
+    /// Only *asks*: the poller is another task and has not stopped by the
+    /// time this returns. Await the returned [`PauseAck`] before handing the
+    /// terminal to anything else — see [`EventTask::run_with`] for what the
+    /// acknowledgement guarantees.
+    pub fn pause(&mut self) -> PauseAck {
+        let (ack, stopped) = oneshot::channel();
+        let _ = self.pause_sender.send(PauseSignal::Pause(ack));
+        PauseAck(stopped)
     }
 
     /// Resume event polling
     pub fn resume(&mut self) {
-        let _ = self.pause_sender.send(false);
+        let _ = self.pause_sender.send(PauseSignal::Resume);
     }
 
     /// Every pause/resume signal sent so far, oldest first, consuming them.
@@ -362,14 +406,16 @@ impl EventHandler {
     /// inferred from the shape of the code. A paused poller emits neither
     /// ticks nor keys, so the symptom in production is a hang, which no test
     /// can wait for.
+    ///
+    /// `true` is a pause and `false` a resume.
     #[cfg(test)]
     pub fn drain_pause_signals(&mut self) -> Vec<bool> {
         let Some(task) = self.task.as_mut() else {
             return Vec::new();
         };
         let mut signals = Vec::new();
-        while let Ok(paused) = task.pause_receiver.try_recv() {
-            signals.push(paused);
+        while let Ok(signal) = task.pause_receiver.try_recv() {
+            signals.push(matches!(signal, PauseSignal::Pause(_)));
         }
         signals
     }
@@ -381,14 +427,14 @@ struct EventTask {
     /// Event sender channel.
     sender: mpsc::UnboundedSender<Event>,
     /// Pause receiver channel.
-    pause_receiver: mpsc::UnboundedReceiver<bool>,
+    pause_receiver: mpsc::UnboundedReceiver<PauseSignal>,
 }
 
 impl EventTask {
     /// Constructs a new instance of [`EventThread`].
     fn new(
         sender: mpsc::UnboundedSender<Event>,
-        pause_receiver: mpsc::UnboundedReceiver<bool>,
+        pause_receiver: mpsc::UnboundedReceiver<PauseSignal>,
     ) -> Self {
         Self {
             sender,
@@ -396,41 +442,73 @@ impl EventTask {
         }
     }
 
-    /// Runs the event thread.
+    /// Runs the event thread against the real terminal.
+    async fn run(self) -> Result<()> {
+        self.run_with(crossterm::event::EventStream::new).await
+    }
+
+    /// Emits tick events at a fixed rate and forwards terminal events in
+    /// between — but only while running, and only through a reader that
+    /// exists while running.
     ///
-    /// Emits tick events at a fixed rate and polls for crossterm events in
-    /// between — but only while running. Each turn first drains
-    /// `pause_receiver`, and while paused the loop sleeps in short bursts
-    /// and reads no input at all, which is what hands the terminal to the
-    /// editor an [`EventHandler::pause`] caller is about to launch.
-    async fn run(mut self) -> Result<()> {
+    /// **No reader exists between acknowledging a pause and the resume.**
+    /// Not polling the reader is not enough: crossterm's `EventStream` parks
+    /// a background thread in a blocking read of the tty whenever it has
+    /// returned `Pending`, and that thread stops only when the stream is
+    /// dropped. A paused poller that kept its stream therefore went on
+    /// racing the editor for input, and whatever it won — the terminal's
+    /// reply to the editor's start-up colour query, say — was replayed into
+    /// the TUI as keystrokes on resume. So a pause drops the reader *before*
+    /// it is acknowledged, and a resume builds a new one.
+    ///
+    /// The pause channel is a `select!` branch rather than something drained
+    /// at the top of the loop, so a pause is acted on when it is sent and not
+    /// a tick period later; the caller is waiting on the acknowledgement to
+    /// hand the terminal over.
+    ///
+    /// Generic over how a reader is made only so a test can count readers
+    /// without a tty; [`EventTask::run`] is the one production caller.
+    async fn run_with<S, F>(mut self, mut make_reader: F) -> Result<()>
+    where
+        S: Stream<Item = io::Result<CrosstermEvent>> + Unpin,
+        F: FnMut() -> S,
+    {
         let tick_rate = Duration::from_secs_f64(1.0 / TICK_FPS);
-        let mut reader = crossterm::event::EventStream::new();
         let mut tick = tokio::time::interval(tick_rate);
-        let mut paused = false;
+        // `None` is what "paused" means.
+        let mut reader = Some(make_reader());
 
         loop {
-            // Check for pause/resume signals
-            while let Ok(pause_signal) = self.pause_receiver.try_recv() {
-                paused = pause_signal;
-            }
-
-            if paused {
-                // When paused, just sleep and check for resume signals
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            let Some(active) = reader.as_mut() else {
+                match self.pause_receiver.recv().await {
+                    // Already stopped, but the sender is still waiting on it.
+                    Some(PauseSignal::Pause(ack)) => {
+                        let _ = ack.send(());
+                    }
+                    Some(PauseSignal::Resume) => reader = Some(make_reader()),
+                    None => break,
+                }
                 continue;
-            }
+            };
 
-            let tick_delay = tick.tick();
-            let crossterm_event = reader.next().fuse();
             tokio::select! {
               _ = self.sender.closed() => {
                 break;
               }
-              _ = tick_delay => {
+              signal = self.pause_receiver.recv() => match signal {
+                Some(PauseSignal::Pause(ack)) => {
+                    // Order is the invariant: the reader is gone before
+                    // anyone is told it is.
+                    reader = None;
+                    let _ = ack.send(());
+                }
+                Some(PauseSignal::Resume) => {}
+                None => break,
+              },
+              _ = tick.tick() => {
                 self.send(Event::Tick);
               }
-              Some(Ok(evt)) = crossterm_event => {
+              Some(Ok(evt)) = active.next() => {
                 self.send(Event::Crossterm(evt));
               }
             };
@@ -449,6 +527,183 @@ impl EventTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+    use tokio::task::JoinHandle;
+
+    /// Stands in for `crossterm::event::EventStream` away from a tty: never
+    /// yields an event, and counts itself in and out of a shared tally so a
+    /// test can ask how many readers exist at a given instant.
+    ///
+    /// Existence is the thing worth counting. The real stream's background
+    /// thread reads the terminal for as long as the stream is alive, polled
+    /// or not, and stops only when it is dropped.
+    struct FakeReader(Arc<AtomicUsize>);
+
+    impl FakeReader {
+        fn new(live: &Arc<AtomicUsize>) -> Self {
+            live.fetch_add(1, Ordering::SeqCst);
+            Self(Arc::clone(live))
+        }
+    }
+
+    impl Drop for FakeReader {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Stream for FakeReader {
+        type Item = io::Result<CrosstermEvent>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Pending
+        }
+    }
+
+    /// A poller spawned over [`FakeReader`]s and already parked mid-turn.
+    struct RunningPoller {
+        handler: EventHandler,
+        /// How many [`FakeReader`]s exist right now.
+        live: Arc<AtomicUsize>,
+        poller: JoinHandle<Result<()>>,
+    }
+
+    impl RunningPoller {
+        /// Spawn the poller and wait for its first tick.
+        ///
+        /// The first tick fires immediately, so once it has arrived the task
+        /// is parked waiting on the *next* one, a full tick period away. That
+        /// is the state a pause has to cut through; a pause sent before the
+        /// task had run at all would be seen on its way in and prove nothing.
+        async fn spawn() -> Self {
+            let mut handler = EventHandler::new();
+            let task = handler.task.take().expect("a new handler holds its task");
+            let live = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&live);
+            let poller = tokio::spawn(task.run_with(move || FakeReader::new(&counter)));
+
+            let first = handler.next().await.expect("the poller is running");
+            assert!(matches!(first, Event::Tick));
+            assert_eq!(live.load(Ordering::SeqCst), 1, "a running poller reads");
+
+            Self {
+                handler,
+                live,
+                poller,
+            }
+        }
+
+        fn live_readers(&self) -> usize {
+            self.live.load(Ordering::SeqCst)
+        }
+
+        /// Pause and wait for the acknowledgement, bounded so a poller that
+        /// never answers fails the test instead of hanging the suite.
+        async fn pause_acknowledged(&mut self) {
+            let ack = self.handler.pause();
+            tokio::time::timeout(Duration::from_secs(5), ack.stopped())
+                .await
+                .expect("the poller must acknowledge a pause");
+        }
+    }
+
+    /// Regression: `e` handed the terminal to `$EDITOR` while the poller
+    /// still owned a crossterm `EventStream`, whose background thread kept
+    /// reading the tty and raced the editor for input. nvim asks the terminal
+    /// for its background colour on start-up; crossterm sometimes won the
+    /// reply (`ESC ] 11;rgb:2828/2c2c/3434 ESC \`) and replayed it as keys
+    /// once the editor quit — the `g` of `rgb` opened the jump-to-date prompt
+    /// and the rest was typed into it.
+    ///
+    /// So the acknowledgement has to mean "no reader exists", not "the pause
+    /// was noted": the count is taken at the instant the ack resolves, which
+    /// is the instant `with_suspended_terminal` gives the terminal away.
+    #[tokio::test(start_paused = true)]
+    async fn an_acknowledged_pause_leaves_no_reader_to_steal_the_editors_terminal_replies() {
+        let mut poller = RunningPoller::spawn().await;
+
+        poller.pause_acknowledged().await;
+
+        assert_eq!(
+            poller.live_readers(),
+            0,
+            "a reader that outlives the ack is still reading the tty under the editor"
+        );
+    }
+
+    /// The other half of the pause: a poller that dropped its reader and
+    /// never built another would leave the TUI deaf after the editor quit.
+    #[tokio::test(start_paused = true)]
+    async fn resuming_builds_a_fresh_reader() {
+        let mut poller = RunningPoller::spawn().await;
+        poller.pause_acknowledged().await;
+
+        poller.handler.resume();
+
+        // Sleeps rather than yields between looks: the clock is paused and
+        // only advances while every task is idle, so a loop that merely
+        // yielded would keep it — and this timeout — from ever moving.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while poller.live_readers() != 1 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("a resumed poller must read the terminal again");
+    }
+
+    /// A pause used to be looked at only on the top of the loop, so it waited
+    /// out the rest of the tick period — up to 250ms in which the editor was
+    /// already starting. The fake reader never yields and the clock is
+    /// paused, so nothing but the pause itself can wake the poller inside the
+    /// bound here; a poller waiting for its next tick misses it.
+    #[tokio::test(start_paused = true)]
+    async fn a_pause_is_acknowledged_without_waiting_for_a_tick_or_a_key() {
+        let mut poller = RunningPoller::spawn().await;
+        let tick_period = Duration::from_secs_f64(1.0 / TICK_FPS);
+
+        let ack = poller.handler.pause();
+
+        tokio::time::timeout(tick_period / 2, ack.stopped())
+            .await
+            .expect("a pause must not wait for the next tick");
+    }
+
+    /// Every pause gets its answer, including one sent to a poller that is
+    /// already paused — an unanswered ack would hang its caller for good.
+    #[tokio::test(start_paused = true)]
+    async fn a_second_pause_while_paused_is_still_acknowledged() {
+        let mut poller = RunningPoller::spawn().await;
+        poller.pause_acknowledged().await;
+
+        poller.pause_acknowledged().await;
+
+        assert_eq!(poller.live_readers(), 0);
+    }
+
+    /// A paused poller used to sleep-and-recheck forever, never noticing the
+    /// handler had gone. It now waits on the pause channel itself, so the
+    /// handler dropping its end is what ends the task.
+    #[tokio::test(start_paused = true)]
+    async fn a_paused_poller_exits_when_its_handler_is_dropped() {
+        let mut poller = RunningPoller::spawn().await;
+        poller.pause_acknowledged().await;
+
+        drop(poller.handler);
+
+        tokio::time::timeout(Duration::from_secs(5), poller.poller)
+            .await
+            .expect("a paused poller must notice its handler going away")
+            .expect("the poller task must not panic")
+            .expect("the poller exits cleanly");
+    }
 
     /// The property a watcher task depends on: a sender that outlives the
     /// borrow of the handler and can be handed to as many tasks as needed.
