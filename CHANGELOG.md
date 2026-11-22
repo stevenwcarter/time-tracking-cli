@@ -1,4 +1,16 @@
 Here are some recent changes:
+### [0.9.1](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.9.0...v0.9.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **tui:** stop reading the tty while the editor has the terminal ([85ae493](https://github.com/stevenwcarter/time-tracking-cli/commits/85ae493fc047daef925d6d5ea0a438288a743acd))
+
+
+### Docs
+
+* updated release documentation ([746edf9](https://github.com/stevenwcarter/time-tracking-cli/commits/746edf9ad6716bf31b0c6cb7321c9ef73d6dbd68))
+
 ## [0.9.0](https://github.com/stevenwcarter/time-tracking-cli/compare/v0.8.0...v0.9.0) (2026-09-02)
 
 
