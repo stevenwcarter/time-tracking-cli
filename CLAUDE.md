@@ -36,9 +36,12 @@ cd site && yarn test               # Vitest
 ```
 
 ### Releases
-```bash
-npm run release                    # Bump version + update CHANGELOG (standard-version)
-```
+Follow `RELEASE.md` — a manual version bump in `Cargo.toml`, `cli/Cargo.toml`
+and `package.json`, then `just changelog`, a `chore: vX.Y.Z release` commit, a
+signed `vX.Y.Z` tag, and `git push --follow-tags origin main`. The tag push
+triggers `.github/workflows/release.yml`, which builds and publishes the
+GitHub Release. Do **not** use `npm run release` or `release.toml`; both are
+stale (see `RELEASE.md`).
 
 Commits must follow conventional commit format (`feat:`, `fix:`, `chore:`, etc.) — enforced via Husky + commitlint.
 
